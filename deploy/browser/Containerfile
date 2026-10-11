@@ -1,0 +1,23 @@
+FROM docker.io/library/python:3.13-slim-trixie
+
+# Distribution packages retain the distribution's signature verification.
+RUN --mount=type=secret,id=trust_ca,target=/run/secrets/trust-ca.pem,mode=0444 \
+    sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && if [ -f /run/secrets/trust-ca.pem ]; then \
+         printf '%s\n' 'Acquire::https::CaInfo "/run/secrets/trust-ca.pem";' > /etc/apt/apt.conf.d/99-build-ca; \
+       fi \
+    && apt-get update -o APT::Update::Error-Mode=any \
+    && apt-get install -y --no-install-recommends \
+      chromium xvfb tigervnc-scraping-server novnc websockify openbox \
+      x11-utils ca-certificates fonts-liberation curl procps \
+    && rm -rf /var/lib/apt/lists/* /etc/apt/apt.conf.d/99-build-ca \
+    && groupadd --gid 10001 browser \
+    && useradd --uid 10001 --gid browser --create-home browser
+
+COPY --chmod=0555 start.sh healthcheck.sh /usr/local/bin/
+USER 10001:10001
+ENV HOME=/home/browser DISPLAY=:99
+EXPOSE 6080
+HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 \
+  CMD ["/usr/local/bin/healthcheck.sh"]
+ENTRYPOINT ["/usr/local/bin/start.sh"]

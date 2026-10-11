@@ -1,0 +1,267 @@
+openapi: 3.1.0
+info:
+  title: Private Gateway API
+  version: 0.1.0
+  description: >-
+    One local Xray node. Device changes remain pending until config/apply.
+    Profiles contain credentials and must not be cached, logged or shared.
+servers:
+  - url: http://127.0.0.1:8080
+security:
+  - bearerAuth: []
+paths:
+  /healthz:
+    get:
+      operationId: health
+      security: []
+      responses:
+        '200': {description: Process alive}
+  /readyz:
+    get:
+      operationId: ready
+      security: []
+      responses:
+        '200': {description: PostgreSQL reachable}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/status:
+    get:
+      operationId: status
+      responses:
+        '200':
+          description: Database and configuration revision state
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Status'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/nodes:
+    get:
+      operationId: listNodes
+      responses:
+        '200':
+          description: Local node public connection parameters
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nodes]
+                properties:
+                  nodes:
+                    type: array
+                    items: {$ref: '#/components/schemas/Node'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/devices:
+    get:
+      operationId: listDevices
+      responses:
+        '200':
+          description: Devices, including revoked records, without credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices]
+                properties:
+                  devices:
+                    type: array
+                    items: {$ref: '#/components/schemas/Device'}
+        default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createDevice
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: Letters, numbers, spaces, dots, underscores and hyphens; starts with a letter or number
+                node_id:
+                  type: string
+                  format: uuid
+                  default: 00000000-0000-4000-8000-000000000001
+      responses:
+        '201': {$ref: '#/components/responses/Device'}
+        '400': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/devices/{id}/profile:
+    parameters:
+      - {$ref: '#/components/parameters/DeviceID'}
+    get:
+      operationId: exportDevice
+      responses:
+        '200':
+          description: Sensitive Hiddify import URI, Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uri]
+                properties:
+                  uri: {type: string, format: uri}
+        '404': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/devices/{id}/revoke:
+    parameters:
+      - {$ref: '#/components/parameters/DeviceID'}
+    post:
+      operationId: revokeDevice
+      description: Idempotent. Actual network access ends after successful config/apply.
+      responses:
+        '200': {$ref: '#/components/responses/Device'}
+        '404': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/audit:
+    get:
+      operationId: listAudit
+      responses:
+        '200':
+          description: Newest 100 append-only audit events without credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: '#/components/schemas/AuditEvent'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/config/validate:
+    post:
+      operationId: validateConfig
+      description: Render current active devices and validate with the configured Xray binary.
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/config/apply:
+    post:
+      operationId: applyConfig
+      description: Validate, atomically write config, run fixed restart argv, roll back on failure and record applied revision.
+      responses:
+        '200': {$ref: '#/components/responses/Operation'}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/browser:
+    get:
+      operationId: browserStatus
+      responses:
+        '200': {$ref: '#/components/responses/Browser'}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/browser/start:
+    post:
+      operationId: startBrowser
+      responses:
+        '200': {$ref: '#/components/responses/Browser'}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/browser/stop:
+    post:
+      operationId: stopBrowser
+      description: Remove the ephemeral browser session, including cookies.
+      responses:
+        '200': {$ref: '#/components/responses/Browser'}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/metrics:
+    get:
+      operationId: metrics
+      responses:
+        '200':
+          description: Prometheus metrics, requires Bearer authentication
+          content:
+            text/plain:
+              schema: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  parameters:
+    DeviceID:
+      name: id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+  responses:
+    Error:
+      description: Unauthorized, invalid input, unavailable service or operation failure
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [error]
+            properties:
+              error: {type: string}
+    Device:
+      description: Device record without credential
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Device'}
+    Operation:
+      description: Successfully validated or applied config
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [status]
+            properties:
+              status: {type: string, enum: [valid, applied]}
+    Browser:
+      description: Browser readiness on the local rootless worker
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [running]
+            properties:
+              running: {type: boolean}
+              url: {type: string, format: uri, description: Worker loopback address; reach only through SSH tunnel}
+  schemas:
+    Node:
+      type: object
+      required: [id, name, host, port, server_name, public_key, short_id]
+      properties:
+        id: {type: string, format: uuid}
+        name: {type: string}
+        host: {type: string}
+        port: {type: integer, minimum: 1, maximum: 65535}
+        server_name: {type: string}
+        public_key: {type: string}
+        short_id: {type: string}
+    Device:
+      type: object
+      required: [id, node_id, name, created_at, revoked_at]
+      properties:
+        id: {type: string, format: uuid}
+        node_id: {type: string, format: uuid}
+        name: {type: string}
+        created_at: {type: string, format: date-time}
+        revoked_at: {type: [string, 'null'], format: date-time}
+    AuditEvent:
+      type: object
+      required: [id, action, device_id, created_at]
+      properties:
+        id: {type: integer, format: int64}
+        action: {type: string}
+        device_id: {type: [string, 'null'], format: uuid}
+        created_at: {type: string, format: date-time}
+    Status:
+      type: object
+      required: [database, node_id, devices, active_devices, desired_revision, applied_revision, xray_configured]
+      properties:
+        database: {type: string, enum: [ok]}
+        node_id: {type: string, format: uuid}
+        devices: {type: integer, minimum: 0}
+        active_devices: {type: integer, minimum: 0}
+        desired_revision: {type: integer, minimum: 1}
+        applied_revision: {type: integer, minimum: 0}
+        xray_configured: {type: boolean, description: Restart command configured; does not establish Xray process health}
