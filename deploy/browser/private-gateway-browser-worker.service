@@ -1,0 +1,11 @@
+[Unit]
+Description=Private Gateway rootless browser Podman worker
+Requires=private-gateway-browser-worker.socket
+After=private-gateway-browser-worker.socket
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/podman system service --time=0
+Delegate=yes
+KillMode=process
+Restart=on-failure
