@@ -72,7 +72,7 @@ beforeEach(() => {
         ],
       });
     if (path === "/api/v1/browser")
-      return Response.json({ running: false, url: "http://127.0.0.1:7900" });
+      return Response.json({ running: false, url: "" });
     if (path === "/api/v1/devices/d1/profile") {
       profileRequests++;
       return Response.json({ uri: profileURI });

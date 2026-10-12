@@ -749,11 +749,12 @@ function Dashboard({
                       другого компьютера создайте SSH-туннель.
                     </p>
                     <code className="ssh-command">
-                      ssh -L 7900:127.0.0.1:7900 USER@SERVER
+                      ssh -L 127.0.0.1:6080:127.0.0.1:6080 USER@SERVER
                     </code>
                     <span className="hint">
-                      Затем откройте http://127.0.0.1:7900. Подставьте
-                      пользователя, сервер и настроенный порт.
+                      Затем откройте http://127.0.0.1:6080/vnc.html.
+                      Подставьте пользователя и сервер; при изменении порта
+                      браузера замените 6080 в обеих частях команды.
                     </span>
                     <ErrorNotice error={browser.error || browserAction.error} />
                     <div className="button-group">
