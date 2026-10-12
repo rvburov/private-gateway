@@ -5,3 +5,5 @@ web/node_modules/
 web/dist/
 coverage.out
 *.log
+__pycache__/
+*.py[cod]

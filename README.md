@@ -13,6 +13,7 @@
 - Управление изолированным браузером через rootless Podman, noVNC только на loopback.
 - Журнал действий, защищённые Prometheus metrics, HTTP instrumentation OpenTelemetry.
 - CI: тесты Go/PostgreSQL, проверка гонок, сборка панели и тесты интерфейса.
+- Установщик Ubuntu 26.04 и обновление проверенной сборки из GitHub Actions через отдельную учётную запись.
 
 Добавление или отзыв устройства **создаёт ожидающую применения ревизию**. Чтобы реально изменить доступ, выполните `config apply`. Панель показывает различие между желаемой и применённой ревизиями. Ключ отозванного устройства перестаёт работать после успешного применения.
 
@@ -37,7 +38,8 @@ set -a
 source .env
 set +a
 bin/gatewayctl status
-bin/gatewayctl device add macbook
+bin/gatewayctl node list
+bin/gatewayctl device add macbook --node NODE_ID
 bin/gatewayctl device list
 bin/gatewayctl config validate
 bin/gatewayctl config apply
@@ -87,4 +89,4 @@ npm run build
 - [Проверки IP, DNS, IPv6, WebRTC и kill switch](docs/privacy-checks.md)
 - [Изолированный браузер](docs/browser.md)
 
-Версия 0.1 управляет одним локальным Xray-узлом. Распределённые агенты, очереди, PgBouncer, автоматическая установка VPS, Grafana и экспортёр OpenTelemetry — следующие этапы. Сетевые проверки Hiddify на MacBook/телефоне и проверка утечек выполняются после развёртывания; VPN не гарантирует анонимность браузера.
+Версия 0.1 управляет одним локальным Xray-узлом. Распределённые агенты, очереди, PgBouncer, Grafana и экспортёр OpenTelemetry — следующие этапы. Первую установку и rootless worker необходимо проверить на целевом VPS; прохождение CI не заменяет эту проверку. Сетевые проверки Hiddify на MacBook/телефоне и проверка утечек выполняются после развёртывания; VPN не гарантирует анонимность браузера.

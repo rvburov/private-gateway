@@ -56,3 +56,20 @@ jobs:
       - name: Test web interactions
         working-directory: web
         run: npm test
+      - name: Test release artifact validation
+        run: python3 scripts/test-release.py
+      - name: Check production shell scripts
+        run: bash -n scripts/build-release.sh deploy/production/install.sh
+      - name: Test production deployment helper
+        run: python3 -m unittest discover -s tests/deployment -v
+      - name: Build production release
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: bash scripts/build-release.sh "$RUNNER_TEMP/release"
+      - name: Upload production release and installer
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-gateway-linux-amd64
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          retention-days: 30
