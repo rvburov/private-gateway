@@ -13,6 +13,7 @@ Usage: sudo bash install/install.sh --host IP_OR_DNS [options]
   --target HOST:PORT   REALITY TLS target (default: www.microsoft.com:443)
   --archive FILE       Release archive (default: ../release.tar.gz beside install/)
   --deploy-key FILE    Optional dedicated GitHub Actions public Ed25519 key
+  --resume             Continue an installation stopped after browser worker setup
   --help               Show this help without changing the server
 
 Requires Ubuntu 26.04 amd64, systemd, Python 3, and an unused server.
@@ -29,9 +30,11 @@ gateway_port=443
 server_name=www.microsoft.com
 target=www.microsoft.com:443
 deploy_key=''
+resume=false
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
+    --resume) resume=true; shift ;;
     --host|--port|--server-name|--target|--archive|--deploy-key)
       (($# >= 2)) || fail "Missing value after $1"
       case "$1" in
@@ -59,6 +62,52 @@ flock -n 9 || fail 'Another installation is already running.'
 
 trap 'printf "Installation did not finish (line %s). Existing database, keys and files have been preserved. Do not delete them or rerun blindly; inspect the failed command first.\n" "$LINENO" >&2' ERR
 
+if [[ $resume == true ]]; then
+  # This path is deliberately narrow: it cannot create or overwrite credentials.
+  for account in gateway gateway-browser; do
+    getent passwd "$account" >/dev/null || fail "Resume requires the existing $account account."
+  done
+  if getent passwd gateway-deploy >/dev/null; then
+    fail 'Deployment account already exists; inspect the later installation failure before resuming.'
+  fi
+  for path in /etc/private-gateway/gateway.env /etc/systemd/system/gateway-api.service \
+    /etc/systemd/system/private-gateway-xray.service \
+    /etc/tmpfiles.d/private-gateway-browser.conf \
+    /home/gateway-browser/.config/systemd/user/private-gateway-browser-worker.socket \
+    /home/gateway-browser/.config/systemd/user/private-gateway-browser-worker.service; do
+    [[ -f "$path" && ! -L "$path" ]] || fail "Resume requires $path."
+  done
+  [[ ! -e /etc/sudoers.d/private-gateway-deploy && ! -e /var/lib/private-gateway-deploy/.ssh/authorized_keys ]] || fail 'Deployment setup already started; inspect it before resuming.'
+  [[ -L /opt/private-gateway/current ]] || fail 'Resume requires the existing release symlink.'
+  release=$(readlink -f /opt/private-gateway/current)
+  [[ "$release" =~ ^/opt/private-gateway/releases/[0-9a-f]{40}$ && -x "$release/bin/gateway-api" && -f "$release/browser/Containerfile" ]] || fail 'Existing release is invalid; inspect it before resuming.'
+  python3 - "$gateway_host" "$gateway_port" "$deploy_key" <<'PY'
+import base64
+import pathlib
+import struct
+import sys
+
+host, port, keyfile = sys.argv[1:]
+values = dict(line.split('=', 1) for line in pathlib.Path('/etc/private-gateway/gateway.env').read_text().splitlines() if '=' in line)
+if values.get('GATEWAY_HOST', '').strip("'\"") != host or values.get('GATEWAY_PORT', '').strip("'\"") != port:
+    raise SystemExit('Resume host/port differ from the preserved server configuration.')
+if keyfile:
+    fields = pathlib.Path(keyfile).read_text().strip().split()
+    try:
+        blob = base64.b64decode(fields[1], validate=True)
+        valid = fields[0] == 'ssh-ed25519' and blob[:19] == struct.pack('>I', 11) + b'ssh-ed25519' + struct.pack('>I', 32) and len(blob) == 51
+    except (ValueError, IndexError):
+        valid = False
+    if not valid:
+        raise SystemExit('Resume deploy key must be an OpenSSH public Ed25519 key.')
+PY
+  worker_uid=$(id -u gateway-browser)
+  systemctl is-active --quiet postgresql.service "user@$worker_uid.service" || fail 'PostgreSQL and the browser user manager must be active before resuming.'
+  if systemctl is-active --quiet gateway-api.service || systemctl is-active --quiet private-gateway-xray.service; then
+    fail 'Application services already started; inspect the later installation failure before resuming.'
+  fi
+  printf 'Validated interrupted installation; continuing with browser worker setup.\n'
+else
 # Validate arguments, the host and the target before package/service changes.
 python3 - "$gateway_host" "$gateway_port" "$server_name" "$target" "$deploy_key" <<'PY'
 import base64
@@ -261,6 +310,11 @@ done
 loginctl enable-linger gateway-browser
 worker_uid=$(id -u gateway-browser)
 systemctl start "user@$worker_uid.service"
+fi
+
+# A service account cannot traverse the administrator's private home directory.
+# Use a public working directory for every remaining runuser and Podman command.
+cd /
 worker() {
   runuser -u gateway-browser -- env HOME=/home/gateway-browser \
     XDG_RUNTIME_DIR="/run/user/$worker_uid" \
