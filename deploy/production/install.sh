@@ -208,7 +208,7 @@ python3 "$script_dir/private-gateway-deploy.py" --check < "$archive"
 apt-get update -o APT::Update::Error-Mode=any
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   postgresql-18 postgresql-client-18 polkitd curl python3 podman uidmap \
-  slirp4netns fuse-overlayfs dbus-user-session sudo ca-certificates
+  slirp4netns passt fuse-overlayfs dbus-user-session sudo ca-certificates
 systemctl enable --now postgresql.service
 systemctl start polkit.service
 runuser -u postgres -- psql -X --port=5432 --dbname=postgres -v ON_ERROR_STOP=1 --tuples-only --no-align \
@@ -323,6 +323,7 @@ worker() {
 worker systemctl --user daemon-reload
 worker systemctl --user enable --now private-gateway-browser-worker.socket
 worker podman info --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["host"]["security"]["rootless"] and d["host"]["cgroupVersion"] == "v2" else "Rootless Podman with cgroup v2 is required.")'
+command -v pasta >/dev/null || fail 'Rootless Podman requires pasta. Install the Ubuntu passt package, then use --resume after checking the installation state.'
 worker podman build --tag localhost/private-gateway-browser:0.1 --file "$release/browser/Containerfile" "$release/browser"
 
 # EnvironmentFile keeps tokens and the database password out of process arguments.
