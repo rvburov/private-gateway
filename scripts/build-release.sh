@@ -60,11 +60,26 @@ def copy_regular_tree(source, destination):
             shutil.copyfile(path, target)
 
 copy_regular_tree(Path("web/dist"), payload / "web")
-copy_regular_tree(Path("deploy/browser"), payload / "browser")
+for name in ("start.sh", "healthcheck.sh", "smoke.py"):
+    source = Path("deploy/browser") / name
+    if not stat.S_ISREG(source.lstat().st_mode):
+        raise SystemExit(f"Browser release file must be regular: {source}")
+    (payload / "browser").mkdir(exist_ok=True)
+    shutil.copyfile(source, payload / "browser" / name)
+for name in ("compose.yml", "Caddyfile.template", "Dockerfile.api", "Dockerfile.xray",
+             "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py", "install.sh"):
+    source = Path("deploy/docker") / name
+    if not stat.S_ISREG(source.lstat().st_mode):
+        raise SystemExit(f"Docker release file must be regular: {source}")
+    (payload / "docker").mkdir(exist_ok=True)
+    shutil.copyfile(source, payload / "docker" / name)
+shutil.copyfile(Path("scripts/verify-release.py"), payload / "docker/verify-release.py")
 required = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
-            "browser/Containerfile", "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
-            "browser/private-gateway-browser-worker.socket", "browser/private-gateway-browser-worker.service",
-            "browser/tmpfiles.conf"}
+            "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
+            "docker/compose.yml", "docker/Caddyfile.template", "docker/Dockerfile.api",
+            "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
+            "docker/xray-worker.py", "docker/wait-xray.py", "docker/install.sh",
+            "docker/verify-release.py"}
 files = {path.relative_to(payload).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
          for path in sorted(payload.rglob("*")) if path.is_file()}
 if not required <= files.keys():
@@ -83,18 +98,16 @@ with archive_path.open("wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mod
             archive.addfile(member, io.BytesIO(content))
 checksum = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
-# Only Git-tracked bootstrap files are distributed; never include a local key or env file.
+# Bootstrap files contain no generated keys or local environment files.
 install = temporary / "install"
-tracked = subprocess.check_output(["git", "ls-files", "-z", "--", "deploy/production"]).split(b"\0")
-for encoded in filter(None, tracked):
-    source = Path(os.fsdecode(encoded))
+for source in (Path("deploy/docker/install.sh"), Path("scripts/verify-release.py")):
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Installer source must be a regular file: {source}")
-    target = install / source.relative_to("deploy/production")
+    target = install / ("install.sh" if source.name == "install.sh" else source.name)
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-if not (install / "install.sh").is_file() or not (install / "private-gateway-deploy.py").is_file():
-    raise SystemExit("Commit the production installer and deployment helper before building a release")
+if not (install / "install.sh").is_file() or not (install / "verify-release.py").is_file():
+    raise SystemExit("The Docker installer and release verifier are required")
 destination_install = output / "install"
 if destination_install.is_symlink() or (destination_install.exists() and not destination_install.is_dir()):
     raise SystemExit("Output install path is not a regular directory")

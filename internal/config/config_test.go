@@ -31,6 +31,11 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 			t.Fatalf("unsafe address accepted: %s", address)
 		}
 	}
+	t.Setenv("GATEWAY_ALLOW_CONTAINER_LISTEN", "1")
+	t.Setenv("GATEWAY_LISTEN", "0.0.0.0:8080")
+	if _, err := Load(); err != nil {
+		t.Fatalf("Docker-private listen rejected: %v", err)
+	}
 	t.Setenv("GATEWAY_LISTEN", "127.0.0.1:8080")
 	t.Setenv("GATEWAY_MASTER_KEY", "bad")
 	if _, err := Load(); err == nil {

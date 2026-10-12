@@ -13,9 +13,10 @@ import zipfile
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
 REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
-            "browser/Containerfile", "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
-            "browser/private-gateway-browser-worker.socket", "browser/private-gateway-browser-worker.service",
-            "browser/tmpfiles.conf"}
+            "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
+            "docker/compose.yml", "docker/Caddyfile.template", "docker/Dockerfile.api",
+            "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
+            "docker/xray-worker.py", "docker/wait-xray.py", "docker/verify-release.py"}
 
 
 def canonical_path(name):
@@ -43,7 +44,7 @@ def verify_tar(path, version, architecture="amd64"):
             name = member.name.rstrip("/") if member.isdir() else member.name
             if not canonical_path(name) or name in members or not (member.isfile() or member.isdir()):
                 raise ValueError("Invalid, duplicate, or non-regular release entry")
-            if name != "manifest.json" and name not in ("bin", "web", "browser") and not name.startswith(("bin/", "web/", "browser/")):
+            if name != "manifest.json" and name not in ("bin", "web", "browser", "docker") and not name.startswith(("bin/", "web/", "browser/", "docker/")):
                 raise ValueError("Unexpected release path")
             members[name] = member
             size += member.size
@@ -112,15 +113,35 @@ def unpack_artifact(artifact, output, version, architecture="amd64"):
     return target
 
 
+def verify_standalone_tar(path, architecture="amd64"):
+    with tarfile.open(path, "r:gz") as archive:
+        member = archive.getmember("manifest.json")
+        if not member.isfile() or member.size > 2 * 1024 * 1024:
+            raise ValueError("Invalid release manifest")
+        with archive.extractfile(member) as source:
+            version = json.load(source, object_pairs_hook=unique_object).get("version")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9a-f]{40}", version):
+        raise ValueError("Invalid release version")
+    verify_tar(path, version, architecture)
+    return version
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("artifact", type=Path)
-    parser.add_argument("--version", required=True)
+    parser.add_argument("--version")
+    parser.add_argument("--tar", action="store_true", help="Verify a standalone release archive")
     parser.add_argument("--arch", choices=("amd64",), default="amd64")
-    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--output", type=Path)
     args = parser.parse_args()
-    path = unpack_artifact(args.artifact, args.output, args.version, args.arch)
-    print(f"Verified release {args.version}: {path}")
+    if args.tar:
+        version = verify_standalone_tar(args.artifact, args.arch)
+        print(version)
+    else:
+        if not args.version or not args.output:
+            parser.error("--version and --output are required for an Actions artifact")
+        path = unpack_artifact(args.artifact, args.output, args.version, args.arch)
+        print(f"Verified release {args.version}: {path}")
 
 
 if __name__ == "__main__":

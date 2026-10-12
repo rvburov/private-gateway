@@ -231,7 +231,7 @@ func (s *Server) browserOperation(w http.ResponseWriter, r *http.Request, fn fun
 	defer cancel()
 	result, err := fn(ctx)
 	if err != nil {
-		fail(w, 503, "browser worker unavailable; verify rootless Podman and browser image")
+		fail(w, 503, "browser worker unavailable; check the Docker browser service")
 		return
 	}
 	respond(w, 200, result)

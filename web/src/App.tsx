@@ -441,6 +441,7 @@ function Dashboard({
     browser.data?.url && /^https?:\/\//.test(browser.data.url)
       ? browser.data.url
       : undefined;
+  const publicBrowser = browserURL?.startsWith("https://") ?? false;
   const deviceTable = (items: Device[]) => (
     <div className="table-scroll">
       <table>
@@ -744,18 +745,15 @@ function Dashboard({
                             ? "Запущен"
                             : "Остановлен"}
                     </span>
-                    <p>
-                      Интерфейс доступен через локальный порт. Для подключения с
-                      другого компьютера создайте SSH-туннель.
-                    </p>
-                    <code className="ssh-command">
-                      ssh -L 127.0.0.1:6080:127.0.0.1:6080 USER@SERVER
-                    </code>
-                    <span className="hint">
-                      Затем откройте http://127.0.0.1:6080/vnc.html.
-                      Подставьте пользователя и сервер; при изменении порта
-                      браузера замените 6080 в обеих частях команды.
-                    </span>
+                    {publicBrowser ? (
+                      <p>
+                        После запуска нажмите «Открыть». Для входа в браузер
+                        используйте имя <strong>browser</strong> и тот же токен,
+                        которым входите в панель.
+                      </p>
+                    ) : (
+                      <p>Браузер доступен после установки Docker-стека на сервере.</p>
+                    )}
                     <ErrorNotice error={browser.error || browserAction.error} />
                     <div className="button-group">
                       <button

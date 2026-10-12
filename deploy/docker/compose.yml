@@ -1,0 +1,139 @@
+name: private-gateway
+
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: gateway
+      POSTGRES_USER: gateway
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    networks: [database]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gateway -d gateway"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    image: private-gateway/api:${PG_RELEASE_SHA:?Set PG_RELEASE_SHA}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    environment:
+      GATEWAY_DATABASE_URL: postgres://gateway:${POSTGRES_PASSWORD}@postgres:5432/gateway?sslmode=disable
+      GATEWAY_API_TOKEN: ${GATEWAY_API_TOKEN:?Set GATEWAY_API_TOKEN}
+      GATEWAY_MASTER_KEY: ${GATEWAY_MASTER_KEY:?Set GATEWAY_MASTER_KEY}
+      GATEWAY_REALITY_PRIVATE_KEY: ${GATEWAY_REALITY_PRIVATE_KEY:?Set GATEWAY_REALITY_PRIVATE_KEY}
+      GATEWAY_SHORT_ID: ${GATEWAY_SHORT_ID:?Set GATEWAY_SHORT_ID}
+      GATEWAY_HOST: ${GATEWAY_HOST:?Set GATEWAY_HOST}
+      GATEWAY_PORT: "443"
+      GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-www.microsoft.com}
+      GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:-www.microsoft.com:443}
+      GATEWAY_XRAY_CONFIG: /state/xray.json
+      GATEWAY_XRAY_BINARY: /usr/local/bin/xray
+      GATEWAY_XRAY_RESTART: '["/usr/local/bin/wait-xray.py"]'
+      GATEWAY_LISTEN: 0.0.0.0:8080
+      GATEWAY_ALLOW_CONTAINER_LISTEN: "1"
+      GATEWAY_WEB_DIR: /app/web
+      GATEWAY_BROWSER_WORKER_URL: http://browser:9000
+      GATEWAY_BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN}
+      GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}:8443/browser/vnc.html?autoconnect=true&resize=remote
+    volumes:
+      - ${GATEWAY_STATE_DIR:?Set GATEWAY_STATE_DIR}:/state
+    networks: [database, control, web]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=64m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+    restart: unless-stopped
+
+  xray:
+    image: private-gateway/xray:${PG_RELEASE_SHA}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.xray
+    volumes:
+      - ${GATEWAY_STATE_DIR}:/state
+    ports:
+      - "0.0.0.0:443:443/tcp"
+    networks: [vpn]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    restart: unless-stopped
+
+  browser:
+    image: private-gateway/browser:${PG_RELEASE_SHA}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.browser
+    environment:
+      BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN}
+    networks: [control, view]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777
+      - /run:rw,nosuid,nodev,noexec,size=16m,mode=755
+      - /home/browser:rw,nosuid,nodev,noexec,size=128m,mode=1777
+    shm_size: 256m
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    cpus: 2
+    pids_limit: 256
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:9000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.10.2-alpine
+    ports:
+      - "0.0.0.0:80:80/tcp"
+      - "0.0.0.0:8443:8443/tcp"
+    volumes:
+      - ${GATEWAY_CADDYFILE:?Set GATEWAY_CADDYFILE}:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks: [web, view]
+    depends_on:
+      api:
+        condition: service_healthy
+      browser:
+        condition: service_healthy
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+networks:
+  database:
+    internal: true
+  control:
+    internal: true
+  web:
+  view:
+  vpn:
+
+volumes:
+  postgres-data:
+  caddy-data:
+  caddy-config:

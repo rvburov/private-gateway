@@ -1,0 +1,13 @@
+FROM docker.io/library/python:3.13-slim-trixie@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
+
+RUN groupadd --gid 10001 gateway && useradd --uid 10001 --gid gateway --create-home gateway
+COPY --chmod=0555 bin/gateway-api bin/gatewayctl bin/xray /usr/local/bin/
+COPY --chmod=0555 docker/wait-xray.py /usr/local/bin/wait-xray.py
+COPY web/ /app/web/
+USER 10001:10001
+WORKDIR /app
+EXPOSE 8080
+HEALTHCHECK --interval=10s --timeout=3s --retries=6 \
+  CMD ["python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=2)"]
+ENTRYPOINT ["/usr/local/bin/gateway-api"]
+CMD ["serve"]

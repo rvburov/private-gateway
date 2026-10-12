@@ -6,4 +6,4 @@ getconf _NPROCESSORS_ONLN
 free -h
 df -h /
 if command -v ss >/dev/null; then ss -lnt; fi
-if command -v podman >/dev/null; then podman info --format '{{.Host.Security.Rootless}}'; fi
+if command -v docker >/dev/null; then docker compose version; fi

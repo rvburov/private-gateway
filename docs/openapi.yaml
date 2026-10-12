@@ -216,7 +216,7 @@ components:
             properties:
               status: {type: string, enum: [valid, applied]}
     Browser:
-      description: Browser readiness on the local rootless worker
+      description: Browser readiness on the private Docker worker
       content:
         application/json:
           schema:
@@ -224,7 +224,7 @@ components:
             required: [running]
             properties:
               running: {type: boolean}
-              url: {type: string, format: uri, description: Worker loopback address; reach only through SSH tunnel}
+              url: {type: string, format: uri, description: HTTPS address behind Caddy Basic Auth}
   schemas:
     Node:
       type: object

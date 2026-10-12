@@ -36,8 +36,8 @@ websockify --web=/usr/share/novnc 6080 127.0.0.1:5900 &
 novnc_pid=$!
 pids="$pids $novnc_pid"
 
-# Rootless OCI is the isolation boundary. Chrome's nested namespace/setuid
-# sandbox requires privileges denied by this deployment.
+# The restricted Docker container is the isolation boundary. Chrome's nested
+# namespace/setuid sandbox requires privileges denied by this deployment.
 chromium --no-sandbox --disable-dev-shm-usage --no-first-run \
     --no-default-browser-check --user-data-dir=/tmp/chromium \
     --window-size=1440,900 --start-maximized about:blank &

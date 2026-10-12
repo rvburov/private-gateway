@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/rvburov/private-gateway/internal/browser"
 	"github.com/rvburov/private-gateway/internal/model"
 	"github.com/rvburov/private-gateway/internal/secure"
 	"github.com/rvburov/private-gateway/internal/storage"
@@ -17,14 +16,16 @@ import (
 )
 
 type Config struct {
-	DSN     string
-	Token   string
-	Listen  string
-	WebDir  string
-	Cipher  *secure.Cipher
-	Node    model.Node
-	Xray    xray.Options
-	Browser browser.Options
+	DSN                string
+	Token              string
+	Listen             string
+	WebDir             string
+	Cipher             *secure.Cipher
+	Node               model.Node
+	Xray               xray.Options
+	BrowserWorkerURL   string
+	BrowserWorkerToken string
+	BrowserPublicURL   string
 }
 
 func Load() (Config, error) {
@@ -41,8 +42,9 @@ func Load() (Config, error) {
 	}
 	ip := net.ParseIP(host)
 	p, e := strconv.Atoi(port)
-	if ip == nil || !ip.IsLoopback() || e != nil || p < 1 || p > 65535 {
-		return c, errors.New("GATEWAY_LISTEN must be a loopback IP:port; use an SSH tunnel or TLS reverse proxy")
+	containerListen := os.Getenv("GATEWAY_ALLOW_CONTAINER_LISTEN") == "1" && host == "0.0.0.0"
+	if ip == nil || (!ip.IsLoopback() && !containerListen) || e != nil || p < 1 || p > 65535 {
+		return c, errors.New("GATEWAY_LISTEN must be loopback, or 0.0.0.0 with GATEWAY_ALLOW_CONTAINER_LISTEN=1 behind a private Docker network")
 	}
 	c.Cipher, err = secure.New(os.Getenv("GATEWAY_MASTER_KEY"))
 	if err != nil {
@@ -74,14 +76,9 @@ func Load() (Config, error) {
 			return c, errors.New("GATEWAY_XRAY_RESTART must be a nonempty JSON argv array")
 		}
 	}
-	browserPort, err := integer("GATEWAY_BROWSER_PORT", 6080)
-	if err != nil {
-		return c, err
-	}
-	if browserPort < 1024 || browserPort > 65535 {
-		return c, errors.New("GATEWAY_BROWSER_PORT must be 1024..65535")
-	}
-	c.Browser = browser.Options{Binary: value("GATEWAY_BROWSER_BINARY", "podman"), Image: value("GATEWAY_BROWSER_IMAGE", "localhost/private-gateway-browser:0.1"), Name: "private-gateway-browser", Port: browserPort, Connection: os.Getenv("GATEWAY_BROWSER_CONNECTION")}
+	c.BrowserWorkerURL = os.Getenv("GATEWAY_BROWSER_WORKER_URL")
+	c.BrowserWorkerToken = os.Getenv("GATEWAY_BROWSER_WORKER_TOKEN")
+	c.BrowserPublicURL = os.Getenv("GATEWAY_BROWSER_PUBLIC_URL")
 	return c, nil
 }
 func value(name, fallback string) string {

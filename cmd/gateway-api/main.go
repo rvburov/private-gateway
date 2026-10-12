@@ -82,7 +82,16 @@ func serve() error {
 	if err = store.EnsureNode(ctx, cfg.Node); err != nil {
 		return errors.New("cannot initialize node; run migrations and verify master key")
 	}
-	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browser.NewManager(cfg.Browser), httpapi.Options{Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0})
+	var browserManager httpapi.Browser = browser.DisabledManager{}
+	if cfg.BrowserWorkerURL != "" {
+		browserManager, err = browser.NewRemoteManager(browser.RemoteOptions{
+			URL: cfg.BrowserWorkerURL, Token: cfg.BrowserWorkerToken, PublicURL: cfg.BrowserPublicURL,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192}
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {

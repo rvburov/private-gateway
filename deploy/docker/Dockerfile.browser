@@ -1,0 +1,20 @@
+FROM docker.io/library/python:3.13-slim-trixie@sha256:70729b46c69b4f1e97c4822c1af3df53a1476cf5ddc6c087c0c10bc3a5678c2f
+
+RUN sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources \
+    && apt-get update -o APT::Update::Error-Mode=any \
+    && apt-get install -y --no-install-recommends \
+      chromium xvfb tigervnc-scraping-server novnc websockify openbox \
+      x11-utils ca-certificates fonts-liberation curl procps \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd --gid 10001 browser \
+    && useradd --uid 10001 --gid browser --create-home browser
+
+COPY --chmod=0555 browser/start.sh browser/healthcheck.sh /usr/local/bin/
+COPY --chmod=0555 browser/smoke.py /app/smoke.py
+COPY --chmod=0555 docker/browser-worker.py /usr/local/bin/browser-worker.py
+USER 10001:10001
+ENV HOME=/home/browser/private DISPLAY=:99
+EXPOSE 6080 9000
+HEALTHCHECK --interval=10s --timeout=3s --retries=5 \
+  CMD ["curl", "--fail", "--silent", "http://127.0.0.1:9000/health"]
+ENTRYPOINT ["python3", "/usr/local/bin/browser-worker.py"]
