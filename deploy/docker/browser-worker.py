@@ -33,9 +33,14 @@ def clean_temporary_state():
 
 
 def healthy():
-    return browser is not None and browser.poll() is None and subprocess.run(
-        ["/usr/local/bin/healthcheck.sh"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4
-    ).returncode == 0
+    if browser is None or browser.poll() is not None:
+        return False
+    try:
+        return subprocess.run(
+            ["/usr/local/bin/healthcheck.sh"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4
+        ).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def stop_browser():
