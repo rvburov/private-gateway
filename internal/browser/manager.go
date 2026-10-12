@@ -253,7 +253,7 @@ func (m *Manager) Start(ctx context.Context) (Status, error) {
 			"--read-only", "--memory=1024m", "--memory-swap=1024m", "--cpus=2", "--pids-limit=256",
 			"--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=256m,mode=1777",
 			"--tmpfs", "/run:rw,nosuid,nodev,noexec,size=16m,mode=755",
-			"--tmpfs", "/home/browser:rw,nosuid,nodev,noexec,size=128m,uid=10001,gid=10001,mode=700",
+			"--tmpfs", "/home/browser:rw,nosuid,nodev,noexec,size=128m,mode=1777",
 			"--shm-size=256m", "--network=slirp4netns:allow_host_loopback=false",
 			"--publish", "127.0.0.1:" + strconv.Itoa(m.options.Port) + ":6080/tcp",
 			m.options.Image,

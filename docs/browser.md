@@ -89,7 +89,7 @@ ssh -N -L 127.0.0.1:6080:127.0.0.1:6080 administrator@gateway-host
 
 ## Граница изоляции
 
-Manager задаёт non-root UID 10001, `--cap-drop=ALL`, `no-new-privileges`, read-only filesystem, отдельные PID/network namespaces, три ограниченных tmpfs, 1 ГБ памяти без дополнительного swap, 2 CPU и максимум 256 процессов. Host mounts отсутствуют. `slirp4netns:allow_host_loopback=false` закрывает доступ из контейнера к loopback-службам хоста через gateway slirp. Доступ в интернет разрешён; компонент не является firewall для всего исходящего трафика.
+Manager задаёт non-root UID 10001, `--cap-drop=ALL`, `no-new-privileges`, read-only filesystem, отдельные PID/network namespaces, три ограниченных tmpfs, 1 ГБ памяти без дополнительного swap, 2 CPU и максимум 256 процессов. Временный `/home/browser` монтируется с правом создания каталогов, а процесс браузера создаёт внутри него свой `private` с режимом `0700`: Podman не принимает `uid` и `gid` в опциях `--tmpfs`. Host mounts отсутствуют. `slirp4netns:allow_host_loopback=false` закрывает доступ из контейнера к loopback-службам хоста через gateway slirp. Доступ в интернет разрешён; компонент не является firewall для всего исходящего трафика.
 
 Chromium запускается с `--no-sandbox`: его вложенный namespace/setuid sandbox несовместим с запрещёнными здесь привилегиями на типичном хосте. Границей изоляции служит rootless OCI-контейнер и отдельный пользователь worker, а не Chromium process sandbox. Компрометация браузера может затронуть другие процессы и данные внутри этого временного контейнера. Изоляция ядром не равна отдельной VM; для более строгой границы используйте отдельную VM и отдельный worker protocol в последующей версии.
 

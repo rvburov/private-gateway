@@ -2,9 +2,10 @@
 set -eu
 
 # All state lives in explicit tmpfs mounts and disappears at stop.
-export HOME=/home/browser DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/browser-runtime
+export HOME=/home/browser/private DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/browser-runtime
 umask 077
-mkdir -p "$XDG_RUNTIME_DIR" /tmp/chromium
+mkdir -p "$HOME" "$XDG_RUNTIME_DIR" /tmp/chromium
+chmod 0700 "$HOME"
 pids=""
 cleanup() {
     trap - EXIT INT TERM

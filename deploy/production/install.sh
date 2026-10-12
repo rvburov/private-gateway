@@ -14,7 +14,7 @@ Usage: sudo bash install/install.sh --host IP_OR_DNS [options]
   --archive FILE       Release archive (default: ../release.tar.gz beside install/)
   --deploy-key FILE    Optional dedicated GitHub Actions public Ed25519 key
   --resume             Continue an installation stopped after browser worker setup
-  --resume-browser     Recheck the browser after API and Xray were started
+  --resume-browser     Install a corrected release and finish browser checks
   --help               Show this help without changing the server
 
 Requires Ubuntu 26.04 amd64, systemd, Python 3, and an unused server.
@@ -334,7 +334,15 @@ worker systemctl --user daemon-reload
 worker systemctl --user enable --now private-gateway-browser-worker.socket
 worker podman info --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["host"]["security"]["rootless"] and d["host"]["cgroupVersion"] == "v2" else "Rootless Podman with cgroup v2 is required.")'
 command -v pasta >/dev/null || fail 'Rootless Podman requires pasta. Install the Ubuntu passt package, then use --resume after checking the installation state.'
-worker podman build --format docker --tag localhost/private-gateway-browser:0.1 --file "$release/browser/Containerfile" "$release/browser"
+if [[ $resume_browser == true ]]; then
+  # The running API also needs the corrected browser arguments. Use the normal
+  # updater so the existing database and keys are backed up before switching.
+  install -o root -g root -m 0755 "$script_dir/private-gateway-deploy.py" /usr/local/sbin/private-gateway-deploy
+  /usr/local/sbin/private-gateway-deploy < "$archive"
+  release=$(readlink -f /opt/private-gateway/current)
+else
+  worker podman build --format docker --tag localhost/private-gateway-browser:0.1 --file "$release/browser/Containerfile" "$release/browser"
+fi
 
 # EnvironmentFile keeps tokens and the database password out of process arguments.
 gateway_command() {
@@ -391,7 +399,7 @@ systemctl is-active --quiet gateway-api.service private-gateway-xray.service
 
 # An interrupted first install may still have the older updater. Replace it
 # only after the browser succeeds and before enabling its restricted SSH user.
-if [[ $resume == true || $resume_browser == true ]]; then
+if [[ $resume == true ]]; then
   install -o root -g root -m 0755 "$script_dir/private-gateway-deploy.py" /usr/local/sbin/private-gateway-deploy
 fi
 

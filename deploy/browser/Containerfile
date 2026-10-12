@@ -16,7 +16,7 @@ RUN --mount=type=secret,id=trust_ca,target=/run/secrets/trust-ca.pem,mode=0444 \
 
 COPY --chmod=0555 start.sh healthcheck.sh /usr/local/bin/
 USER 10001:10001
-ENV HOME=/home/browser DISPLAY=:99
+ENV HOME=/home/browser/private DISPLAY=:99
 EXPOSE 6080
 HEALTHCHECK --interval=5s --timeout=3s --start-period=20s --retries=3 \
   CMD ["/usr/local/bin/healthcheck.sh"]
