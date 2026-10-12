@@ -175,7 +175,10 @@ compose build xray
 compose build browser
 
 api_token=$(sed -n 's/^GATEWAY_API_TOKEN=//p' "$env_file")
-browser_hash=$(docker run --rm --entrypoint caddy caddy:2.10.2-alpine hash-password --plaintext "$api_token")
+export CADDY_PASSWORD="$api_token"
+browser_hash=$(docker run --rm --env CADDY_PASSWORD --entrypoint /bin/sh \
+  caddy:2.10.2-alpine -c 'exec caddy hash-password --plaintext "$CADDY_PASSWORD"')
+unset CADDY_PASSWORD
 python3 - "$release/docker/Caddyfile.template" /etc/private-gateway-docker/Caddyfile "$domain" "$browser_hash" <<'PY'
 from pathlib import Path
 import re
