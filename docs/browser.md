@@ -49,12 +49,14 @@ GATEWAY_BROWSER_PORT=6080
 Соберите образ **от имени worker**, чтобы он попал в его rootless storage. Worker должен иметь доступ к отдельной копии каталога `deploy/browser`, без ключей и конфигурации приложения:
 
 ```sh
-podman build --tag localhost/private-gateway-browser:0.1 \
+podman build --format docker --tag localhost/private-gateway-browser:0.1 \
   --file deploy/browser/Containerfile deploy/browser
 podman info --format '{{.Host.Security.Rootless}}'
 ```
 
 Последняя команда должна вернуть `true`. Образ использует Debian-пакеты через HTTPS с проверкой подписей apt. При корпоративном HTTPS proxy передавайте существующие proxy bindings через `--build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY`. Для доверенного CA предусмотрен временный build secret `trust_ca`; например, BuildKit:
+
+Формат `docker` нужен для сохранения `HEALTHCHECK` в образе Podman. Без него стандартный OCI-формат Podman игнорирует проверку и API не сможет подтвердить готовность браузера.
 
 ```sh
 docker build --build-arg HTTP_PROXY --build-arg HTTPS_PROXY --build-arg NO_PROXY \

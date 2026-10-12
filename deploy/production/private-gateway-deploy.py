@@ -348,7 +348,7 @@ class Runtime:
 
     def build_browser(self, release):
         image = "localhost/private-gateway-browser:" + release.name
-        self.browser_command("build", "--tag", image, "--file",
+        self.browser_command("build", "--format", "docker", "--tag", image, "--file",
                              str(release / "browser" / "Containerfile"),
                              str(release / "browser"), timeout=1800)
         # Keep an active browser session intact while testing the new image.

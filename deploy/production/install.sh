@@ -14,6 +14,7 @@ Usage: sudo bash install/install.sh --host IP_OR_DNS [options]
   --archive FILE       Release archive (default: ../release.tar.gz beside install/)
   --deploy-key FILE    Optional dedicated GitHub Actions public Ed25519 key
   --resume             Continue an installation stopped after browser worker setup
+  --resume-browser     Recheck the browser after API and Xray were started
   --help               Show this help without changing the server
 
 Requires Ubuntu 26.04 amd64, systemd, Python 3, and an unused server.
@@ -31,10 +32,12 @@ server_name=www.microsoft.com
 target=www.microsoft.com:443
 deploy_key=''
 resume=false
+resume_browser=false
 while (($#)); do
   case "$1" in
     --help|-h) usage; exit 0 ;;
     --resume) resume=true; shift ;;
+    --resume-browser) resume_browser=true; shift ;;
     --host|--port|--server-name|--target|--archive|--deploy-key)
       (($# >= 2)) || fail "Missing value after $1"
       case "$1" in
@@ -51,6 +54,7 @@ while (($#)); do
 done
 
 [[ -n "$gateway_host" ]] || fail '--host is required; see --help'
+[[ $resume != true || $resume_browser != true ]] || fail 'Choose only one resume mode.'
 [[ $EUID == 0 ]] || fail 'Run this installer using sudo.'
 command -v python3 >/dev/null || fail 'Python 3 is required before installation.'
 [[ -f "$archive" ]] || fail "Release archive not found: $archive"
@@ -62,7 +66,7 @@ flock -n 9 || fail 'Another installation is already running.'
 
 trap 'printf "Installation did not finish (line %s). Existing database, keys and files have been preserved. Do not delete them or rerun blindly; inspect the failed command first.\n" "$LINENO" >&2' ERR
 
-if [[ $resume == true ]]; then
+if [[ $resume == true || $resume_browser == true ]]; then
   # This path is deliberately narrow: it cannot create or overwrite credentials.
   for account in gateway gateway-browser; do
     getent passwd "$account" >/dev/null || fail "Resume requires the existing $account account."
@@ -103,10 +107,16 @@ if keyfile:
 PY
   worker_uid=$(id -u gateway-browser)
   systemctl is-active --quiet postgresql.service "user@$worker_uid.service" || fail 'PostgreSQL and the browser user manager must be active before resuming.'
-  if systemctl is-active --quiet gateway-api.service || systemctl is-active --quiet private-gateway-xray.service; then
-    fail 'Application services already started; inspect the later installation failure before resuming.'
+  if [[ $resume_browser == true ]]; then
+    systemctl is-active --quiet gateway-api.service private-gateway-xray.service || fail 'Browser resume requires active API and Xray services.'
+    curl --noproxy '*' --fail --silent --max-time 3 http://127.0.0.1:8080/readyz >/dev/null || fail 'Browser resume requires a ready API.'
+    printf 'Validated running API and Xray; rebuilding and rechecking the browser.\n'
+  else
+    if systemctl is-active --quiet gateway-api.service || systemctl is-active --quiet private-gateway-xray.service; then
+      fail 'Application services already started; inspect the later installation failure before resuming.'
+    fi
+    printf 'Validated interrupted installation; continuing with browser worker setup.\n'
   fi
-  printf 'Validated interrupted installation; continuing with browser worker setup.\n'
 else
 # Validate arguments, the host and the target before package/service changes.
 python3 - "$gateway_host" "$gateway_port" "$server_name" "$target" "$deploy_key" <<'PY'
@@ -324,7 +334,7 @@ worker systemctl --user daemon-reload
 worker systemctl --user enable --now private-gateway-browser-worker.socket
 worker podman info --format json | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["host"]["security"]["rootless"] and d["host"]["cgroupVersion"] == "v2" else "Rootless Podman with cgroup v2 is required.")'
 command -v pasta >/dev/null || fail 'Rootless Podman requires pasta. Install the Ubuntu passt package, then use --resume after checking the installation state.'
-worker podman build --tag localhost/private-gateway-browser:0.1 --file "$release/browser/Containerfile" "$release/browser"
+worker podman build --format docker --tag localhost/private-gateway-browser:0.1 --file "$release/browser/Containerfile" "$release/browser"
 
 # EnvironmentFile keeps tokens and the database password out of process arguments.
 gateway_command() {
@@ -333,22 +343,23 @@ gateway_command() {
     --property=EnvironmentFile=/etc/private-gateway/gateway.env \
     --property=WorkingDirectory=/opt/private-gateway/current "$@"
 }
-gateway_command /opt/private-gateway/current/bin/gateway-api migrate
-systemctl enable --now gateway-api.service
-ready=false
-for attempt in {1..30}; do
-  if curl --noproxy '*' --fail --silent --max-time 3 http://127.0.0.1:8080/readyz >/dev/null; then
-    ready=true
-    break
-  fi
-  sleep 1
-done
-[[ "$ready" == true ]] || fail 'API readiness failed; inspect sudo journalctl -u gateway-api.service locally.'
-gateway_command /opt/private-gateway/current/bin/gatewayctl config validate
-gateway_command /opt/private-gateway/current/bin/gatewayctl config apply
-systemctl enable private-gateway-xray.service
-systemctl is-active --quiet private-gateway-xray.service
-python3 - "$gateway_port" <<'PY'
+if [[ $resume_browser != true ]]; then
+  gateway_command /opt/private-gateway/current/bin/gateway-api migrate
+  systemctl enable --now gateway-api.service
+  ready=false
+  for attempt in {1..30}; do
+    if curl --noproxy '*' --fail --silent --max-time 3 http://127.0.0.1:8080/readyz >/dev/null; then
+      ready=true
+      break
+    fi
+    sleep 1
+  done
+  [[ "$ready" == true ]] || fail 'API readiness failed; inspect sudo journalctl -u gateway-api.service locally.'
+  gateway_command /opt/private-gateway/current/bin/gatewayctl config validate
+  gateway_command /opt/private-gateway/current/bin/gatewayctl config apply
+  systemctl enable private-gateway-xray.service
+  systemctl is-active --quiet private-gateway-xray.service
+  python3 - "$gateway_port" <<'PY'
 import socket
 import sys
 import time
@@ -362,10 +373,14 @@ for attempt in range(20):
         time.sleep(0.5)
 print('Xray TCP listener is available locally.')
 PY
-gateway_command /opt/private-gateway/current/bin/gatewayctl status
+  gateway_command /opt/private-gateway/current/bin/gatewayctl status
+fi
 
 # Start and probe the real rootless browser, then remove the temporary session.
 # No cookies or browsing history are retained by this check.
+if [[ $resume_browser == true ]]; then
+  gateway_command /opt/private-gateway/current/bin/gatewayctl browser stop
+fi
 gateway_command /opt/private-gateway/current/bin/gatewayctl browser start
 if ! runuser -u gateway -- python3 "$release/browser/smoke.py" --port 6080; then
   gateway_command /opt/private-gateway/current/bin/gatewayctl browser stop || true
@@ -373,6 +388,12 @@ if ! runuser -u gateway -- python3 "$release/browser/smoke.py" --port 6080; then
 fi
 gateway_command /opt/private-gateway/current/bin/gatewayctl browser stop
 systemctl is-active --quiet gateway-api.service private-gateway-xray.service
+
+# An interrupted first install may still have the older updater. Replace it
+# only after the browser succeeds and before enabling its restricted SSH user.
+if [[ $resume == true || $resume_browser == true ]]; then
+  install -o root -g root -m 0755 "$script_dir/private-gateway-deploy.py" /usr/local/sbin/private-gateway-deploy
+fi
 
 # The deployment identity can only stream a release into the fixed root helper.
 # Its root-owned home and authorized_keys cannot be rewritten by that identity.
