@@ -1,4 +1,4 @@
-name: CI
+name: CI/CD
 
 on:
   push:
@@ -60,7 +60,7 @@ jobs:
         run: python3 scripts/test-release.py
       - name: Check Docker release scripts
         run: |
-          bash -n scripts/build-release.sh deploy/docker/install.sh
+          bash -n scripts/build-release.sh deploy/docker/install.sh deploy/docker/update.sh
           python3 -m py_compile scripts/verify-release.py deploy/docker/*.py
           python3 scripts/test-release.py
       - name: Build production release
@@ -114,3 +114,53 @@ jobs:
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
           retention-days: 30
+
+  deploy:
+    name: Deploy Docker to VPS
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    needs: verify
+    runs-on: ubuntu-latest
+    concurrency:
+      group: private-gateway-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: private-gateway-linux-amd64
+          path: ${{ runner.temp }}/release
+      - name: Verify the successful CI release
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check release.tar.gz.sha256
+          version=$(python3 "$GITHUB_WORKSPACE/scripts/verify-release.py" --tar release.tar.gz)
+          test "$version" = "$GITHUB_SHA"
+      - name: Deploy the current master commit
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          : "${DEPLOY_HOST:?Set DEPLOY_HOST in repository secrets}"
+          : "${DEPLOY_USER:?Set DEPLOY_USER in repository secrets}"
+          : "${DEPLOY_SSH_KEY:?Set DEPLOY_SSH_KEY in repository secrets}"
+          : "${DEPLOY_KNOWN_HOSTS:?Set DEPLOY_KNOWN_HOSTS in repository secrets}"
+          DEPLOY_PORT=${DEPLOY_PORT:-22}
+          [[ $DEPLOY_PORT =~ ^[0-9]+$ ]] || exit 1
+          latest=$(git ls-remote origin refs/heads/master | cut -f1)
+          if [[ $latest != "$GITHUB_SHA" ]]; then
+            echo 'A newer master commit exists; this release is superseded.'
+            exit 0
+          fi
+          install -d -m 0700 "$RUNNER_TEMP/deploy-ssh"
+          printf '%s\n' "$DEPLOY_SSH_KEY" > "$RUNNER_TEMP/deploy-ssh/id_ed25519"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > "$RUNNER_TEMP/deploy-ssh/known_hosts"
+          chmod 0600 "$RUNNER_TEMP/deploy-ssh/id_ed25519" "$RUNNER_TEMP/deploy-ssh/known_hosts"
+          { printf '%s\n' "$GITHUB_SHA"; cat "$RUNNER_TEMP/release/release.tar.gz"; } | \
+            ssh -T -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$RUNNER_TEMP/deploy-ssh/known_hosts" \
+              -i "$RUNNER_TEMP/deploy-ssh/id_ed25519" -p "$DEPLOY_PORT" \
+              "$DEPLOY_USER@$DEPLOY_HOST"
