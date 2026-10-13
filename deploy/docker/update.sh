@@ -68,6 +68,7 @@ rollback() {
   if [[ $success == true || $api_stopped != true ]]; then return; fi
   printf 'Deployment failed. Restoring the previous database and release. Backup: %s\n' "$backup" >&2
   if [[ $env_changed == true ]]; then cp -p "$backup/stack.env" "$env_file"; fi
+  compose_new stop api || true
   if [[ $pointer_changed == true ]]; then
     ln -s "$old_release" "$current.rollback"
     mv -Tf "$current.rollback" "$current"
