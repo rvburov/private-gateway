@@ -122,6 +122,7 @@ env_file=/etc/private-gateway-docker/stack.env
 compose_file="$release/docker/compose.yml"
 compose() { docker compose --env-file "$env_file" --file "$compose_file" "$@"; }
 backup=''
+access_backup=''
 old_api=false old_xray=false old_caddy=false old_postgres=false cutover=false success=false initialized=false
 if systemctl is-active --quiet gateway-api.service; then old_api=true; fi
 if systemctl is-active --quiet private-gateway-xray.service; then old_xray=true; fi
@@ -129,6 +130,21 @@ if systemctl is-active --quiet caddy.service; then old_caddy=true; fi
 if systemctl is-active --quiet postgresql.service; then old_postgres=true; fi
 rollback() {
   if [[ $success == true || $initialized != true ]]; then return; fi
+  if [[ -n $access_backup ]]; then
+    for item in helper verifier sudoers keys; do
+      case "$item" in
+        helper) path=/usr/local/sbin/private-gateway-docker-deploy ;;
+        verifier) path=/usr/local/lib/private-gateway-docker/verify-release.py ;;
+        sudoers) path=/etc/sudoers.d/private-gateway-deploy ;;
+        keys) path=/var/lib/private-gateway-deploy/.ssh/authorized_keys ;;
+      esac
+      if [[ -f $access_backup/$item ]]; then
+        cp -p "$access_backup/$item" "$path" || true
+      else
+        rm -f -- "$path" || true
+      fi
+    done
+  fi
   if [[ $cutover == true ]]; then
     printf 'Docker cutover failed. Restoring the previous services.\n' >&2
     compose stop caddy xray || true
@@ -259,8 +275,21 @@ if [[ $replace_legacy == true ]]; then
 fi
 # Reuse the dedicated SSH identity, allowing only the root-owned Docker updater.
 install -d -m 0755 /usr/local/lib/private-gateway-docker
-install -m 0755 "$release/docker/update.sh" /usr/local/sbin/private-gateway-docker-deploy
-install -m 0644 "$release/docker/verify-release.py" /usr/local/lib/private-gateway-docker/verify-release.py
+access_stage=$(mktemp -d /var/tmp/private-gateway-access.XXXXXXXX)
+for item in helper verifier sudoers keys; do
+  case "$item" in
+    helper) path=/usr/local/sbin/private-gateway-docker-deploy ;;
+    verifier) path=/usr/local/lib/private-gateway-docker/verify-release.py ;;
+    sudoers) path=/etc/sudoers.d/private-gateway-deploy ;;
+    keys) path=/var/lib/private-gateway-deploy/.ssh/authorized_keys ;;
+  esac
+  if [[ -f $path ]]; then cp -p "$path" "$access_stage/$item"; fi
+done
+access_backup=$access_stage
+install -m 0755 "$release/docker/update.sh" /usr/local/sbin/.private-gateway-docker-deploy.next
+mv -f /usr/local/sbin/.private-gateway-docker-deploy.next /usr/local/sbin/private-gateway-docker-deploy
+install -m 0644 "$release/docker/verify-release.py" /usr/local/lib/private-gateway-docker/.verify-release.next
+mv -f /usr/local/lib/private-gateway-docker/.verify-release.next /usr/local/lib/private-gateway-docker/verify-release.py
 if ! id gateway-deploy >/dev/null 2>&1; then
   useradd --system --user-group --home-dir /var/lib/private-gateway-deploy \
     --no-create-home --shell /bin/sh --password '*' gateway-deploy
@@ -279,6 +308,7 @@ unset public_key
 ln -sfn "$release" /opt/private-gateway-docker/current
 printf '%s\n' "$version" > /etc/private-gateway-docker/installed.version
 success=true
+rm -rf -- "$access_backup"
 printf '\nDocker installation verified. Panel: https://%s:8443/\nGateway: %s:443\n' "$domain" "$host"
 printf 'The new admin token is in %s; read it locally and never send it to chat.\n' "$env_file"
 if [[ -n $backup ]]; then
