@@ -127,7 +127,15 @@ for _ in $(seq 1 30); do
   fi
   sleep 2
 done
-[[ $ready == true ]] || fail 'Panel HTTPS readiness check failed.'
+if [[ $ready != true ]]; then
+  printf 'HTTPS readiness failed; final TLS request and Caddy logs follow.\n' >&2
+  curl --noproxy '*' --verbose --output /dev/null --max-time 10 \
+    --write-out 'HTTP %{http_code}; TLS verification %{ssl_verify_result}\n' \
+    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" \
+    2>&1 | tail -n 45 >&2 || true
+  compose_new logs --no-color --tail=80 caddy >&2 || true
+  fail 'Panel HTTPS readiness check failed.'
+fi
 compose_new exec -T api /usr/local/bin/gatewayctl status
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"
