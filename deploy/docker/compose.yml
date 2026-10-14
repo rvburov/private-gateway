@@ -121,6 +121,7 @@ services:
       browser:
         condition: service_healthy
     cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
