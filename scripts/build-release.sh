@@ -67,7 +67,8 @@ for name in ("start.sh", "healthcheck.sh", "smoke.py"):
     (payload / "browser").mkdir(exist_ok=True)
     shutil.copyfile(source, payload / "browser" / name)
 for name in ("compose.yml", "Caddyfile.template", "Dockerfile.api", "Dockerfile.xray",
-             "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py", "install.sh", "update.sh"):
+             "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py",
+             "vpn-smoke.py", "install.sh", "update.sh"):
     source = Path("deploy/docker") / name
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Docker release file must be regular: {source}")
@@ -78,7 +79,8 @@ required = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
             "docker/compose.yml", "docker/Caddyfile.template", "docker/Dockerfile.api",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
-            "docker/xray-worker.py", "docker/wait-xray.py", "docker/install.sh", "docker/update.sh",
+            "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
+            "docker/install.sh", "docker/update.sh",
             "docker/verify-release.py"}
 files = {path.relative_to(payload).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
          for path in sorted(payload.rglob("*")) if path.is_file()}

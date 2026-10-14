@@ -59,11 +59,14 @@ jobs:
       - name: Test release artifact validation
         run: python3 scripts/test-release.py
       - name: Check Docker release scripts
+        env:
+          PRIVATE_GATEWAY_REAL_XRAY_BINARY: ${{ runner.temp }}/xray/xray
         run: |
           bash -n scripts/build-release.sh deploy/docker/install.sh deploy/docker/update.sh \
             deploy/docker/bootstrap.sh deploy/docker/bootstrap-receiver.sh \
             scripts/test-first-deploy.sh
           python3 -m py_compile scripts/verify-release.py deploy/docker/*.py
+          python3 scripts/test-vpn-smoke.py
           python3 scripts/test-release.py
       - name: Build production release
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

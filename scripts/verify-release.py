@@ -16,7 +16,7 @@ REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
             "docker/compose.yml", "docker/Caddyfile.template", "docker/Dockerfile.api",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
-            "docker/xray-worker.py", "docker/wait-xray.py", "docker/install.sh",
+            "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py", "docker/install.sh",
             "docker/update.sh", "docker/verify-release.py"}
 
 
