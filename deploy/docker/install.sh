@@ -272,6 +272,11 @@ if [[ $ready != true ]]; then
   compose logs --no-color --tail=80 caddy >&2 || true
   fail 'Public HTTPS did not become ready. Check DNS, TCP 80/8443 and Caddy logs.'
 fi
+panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
+  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/") \
+  || fail 'Panel HTML could not be loaded through HTTPS.'
+[[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
+unset panel
 compose exec -T api /usr/local/bin/gatewayctl browser start
 compose exec -T browser python3 /app/smoke.py --port 6080
 compose exec -T api /usr/local/bin/gatewayctl browser stop

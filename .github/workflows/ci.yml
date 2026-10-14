@@ -77,6 +77,8 @@ jobs:
             docker build -f "$RUNNER_TEMP/docker-payload/docker/Dockerfile.$service" \
               -t "private-gateway/$service:ci" "$RUNNER_TEMP/docker-payload"
           done
+          docker run --rm --entrypoint python3 private-gateway/api:ci -c \
+            'from pathlib import Path; root = Path("/app/web"); assert b"<div id=\"root\"></div>" in (root / "index.html").read_bytes(); assets = list((root / "assets").iterdir()); assert assets; [asset.read_bytes() for asset in assets]'
           hash=$(docker run --rm --entrypoint caddy caddy:2.10.2-alpine \
             hash-password --plaintext ci-only-test-token)
           python3 - "$RUNNER_TEMP/docker-payload/docker/Caddyfile.template" \

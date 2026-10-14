@@ -136,6 +136,11 @@ if [[ $ready != true ]]; then
   compose_new logs --no-color --tail=80 caddy >&2 || true
   fail 'Panel HTTPS readiness check failed.'
 fi
+panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
+  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/") \
+  || fail 'Panel HTML could not be loaded through HTTPS.'
+[[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
+unset panel
 compose_new exec -T api /usr/local/bin/gatewayctl status
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"
