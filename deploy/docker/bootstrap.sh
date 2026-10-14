@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time VPS preparation. GitHub Actions sends the first full release later.
+# One-time VPS preparation from the small Actions bootstrap artifact.
 set -Eeuo pipefail
 umask 077
 
@@ -27,6 +27,14 @@ done
 [[ $ref =~ ^[0-9a-f]{40}$ ]] || fail 'Provide a full commit SHA with --ref.'
 [[ -f $deploy_key ]] || fail 'The SSH public key file is missing.'
 [[ ! -e /etc/private-gateway-docker/stack.env ]] || fail 'Docker is already installed.'
+bundle=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+[[ -f $bundle/commit.sha && $(cat "$bundle/commit.sha") == "$ref" ]] \
+  || fail 'The bootstrap bundle does not match --ref.'
+for file in bootstrap-receiver.sh verify-release.py SHA256SUMS; do
+  [[ -f $bundle/$file && ! -L $bundle/$file ]] || fail "Missing regular bundle file: $file"
+done
+(cd "$bundle" && sha256sum -c --status SHA256SUMS) \
+  || fail 'Bootstrap bundle checksum verification failed.'
 python3 - "$host" "$domain" "$deploy_key" <<'PY'
 import ipaddress
 from pathlib import Path
@@ -49,11 +57,8 @@ exec 9>/run/lock/private-gateway-docker-bootstrap-setup.lock
 flock -n 9 || fail 'Another bootstrap setup is running.'
 temporary=$(mktemp -d /var/tmp/private-gateway-bootstrap-setup.XXXXXXXX)
 trap 'rm -rf -- "$temporary"' EXIT
-base="https://raw.githubusercontent.com/rvburov/private-gateway/$ref"
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-  --max-time 30 "$base/deploy/docker/bootstrap-receiver.sh" -o "$temporary/receiver.sh"
-curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-  --max-time 30 "$base/scripts/verify-release.py" -o "$temporary/verify-release.py"
+cp -- "$bundle/bootstrap-receiver.sh" "$temporary/receiver.sh"
+cp -- "$bundle/verify-release.py" "$temporary/verify-release.py"
 bash -n "$temporary/receiver.sh"
 python3 -m py_compile "$temporary/verify-release.py"
 

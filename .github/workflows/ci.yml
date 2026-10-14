@@ -117,6 +117,24 @@ jobs:
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
           retention-days: 30
+      - name: Prepare one-time bootstrap bundle
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        run: |
+          install -d "$RUNNER_TEMP/bootstrap"
+          cp deploy/docker/bootstrap.sh "$RUNNER_TEMP/bootstrap/bootstrap.sh"
+          cp deploy/docker/bootstrap-receiver.sh "$RUNNER_TEMP/bootstrap/bootstrap-receiver.sh"
+          cp scripts/verify-release.py "$RUNNER_TEMP/bootstrap/verify-release.py"
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/bootstrap/commit.sha"
+          (cd "$RUNNER_TEMP/bootstrap" && sha256sum bootstrap.sh bootstrap-receiver.sh verify-release.py commit.sha > SHA256SUMS)
+          (cd "$RUNNER_TEMP/bootstrap" && sha256sum -c SHA256SUMS)
+      - name: Upload one-time bootstrap bundle
+        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        uses: actions/upload-artifact@v4
+        with:
+          name: private-gateway-bootstrap
+          path: ${{ runner.temp }}/bootstrap/
+          if-no-files-found: error
+          retention-days: 30
 
   deploy:
     name: Deploy Docker to VPS

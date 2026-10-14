@@ -13,24 +13,30 @@
 ## Первая настройка без ручной передачи архива
 
 1. Создайте пять GitHub Secrets из раздела ниже. Они нужны только для SSH-доставки, а секреты приложения создаются на VPS.
-2. Подключитесь к VPS под `romanburov`. В `SHA` укажите **полный SHA последнего коммита master**, в котором есть `deploy/docker/bootstrap.sh`. Эти команды загружают только небольшой установочный скрипт через HTTPS по закреплённому коммиту; архив приложения придёт позднее напрямую из GitHub Actions:
+2. Откройте **Actions → CI/CD** для последнего коммита `master`. После зелёного задания `verify` скачайте маленький артефакт **private-gateway-bootstrap** и распакуйте его на Windows, например в `$HOME\Downloads\private-gateway-bootstrap`. В нём пять файлов: `bootstrap.sh`, `bootstrap-receiver.sh`, `verify-release.py`, `commit.sha`, `SHA256SUMS`. Репозиторий закрытый, поэтому анонимная загрузка с `raw.githubusercontent.com` на VPS возвращает `404`. Большой артефакт **private-gateway-linux-amd64** скачивать не нужно.
+3. Скопируйте только эту папку на VPS из PowerShell:
+
+   ```powershell
+   scp -r "$HOME\Downloads\private-gateway-bootstrap" "romanburov@162.35.172.6:~/"
+   ```
+
+   Подключитесь к VPS под `romanburov`. Проверка checksum должна пройти до запуска скрипта. `SHA` берётся из `commit.sha` того же артефакта, так что он соответствует проверенной сборке:
 
    ```bash
-   SHA=ПОЛНЫЙ_SHA_КОММИТА
-   curl --fail --silent --show-error --location --proto '=https' --proto-redir '=https' \
-     "https://raw.githubusercontent.com/rvburov/private-gateway/$SHA/deploy/docker/bootstrap.sh" \
-     -o /tmp/private-gateway-bootstrap.sh
+   cd ~/private-gateway-bootstrap
+   sha256sum -c SHA256SUMS
+   SHA=$(cat commit.sha)
    test -f "$HOME/private-gateway-linux-amd64/deploy-key.pub"
-   sudo bash /tmp/private-gateway-bootstrap.sh \
+   sudo bash ./bootstrap.sh \
      --ref "$SHA" \
      --host 162.35.172.6 \
      --domain rb-gateway-3708079.duckdns.org \
      --deploy-key "$HOME/private-gateway-linux-amd64/deploy-key.pub"
    ```
 
-   Ожидаемая строка: `VPS is ready to receive the first Docker release from GitHub Actions.` Эта настройка сама по себе ещё не запускает Docker. Она сохраняет старые настройки SSH в `/var/backups/private-gateway/`. Не удаляйте старые файлы и службы до успешной установки и проверки клиента.
-3. Откройте **Actions → CI/CD** для текущего коммита: после зелёного `verify` этап `Deploy Docker to VPS` передаст архив, проверит его SHA и установит Docker. Если он уже упал до настройки SSH, нажмите **Re-run failed jobs**. При следующем коммите в `master` то же произойдёт автоматически. Первая установка может длиться несколько минут: Docker загружает образы и собирает браузер. Успех отмечен строкой `First Docker deployment verified: <SHA>`; затем последующие обновления выводят `Docker deployment verified: <SHA>`.
-4. Откройте `https://rb-gateway-3708079.duckdns.org:8443/`. Новый токен создан автоматически. Прочитайте его **на своём сервере**, не отправляя в переписку:
+   Запускайте `sudo bash` только если каждый файл получил `OK` и публичный ключ найден. Ожидаемая строка: `VPS is ready to receive the first Docker release from GitHub Actions.` Эта настройка сама по себе ещё не запускает Docker. Она сохраняет старые настройки SSH в `/var/backups/private-gateway/`. Не удаляйте старые файлы и службы до успешной установки и проверки клиента.
+4. Вернитесь в **Actions → CI/CD** для текущего коммита: после зелёного `verify` этап `Deploy Docker to VPS` передаст архив, проверит его SHA и установит Docker. Если он уже упал до настройки SSH, нажмите **Re-run failed jobs**. При следующем коммите в `master` то же произойдёт автоматически. Первая установка может длиться несколько минут: Docker загружает образы и собирает браузер. Успех отмечен строкой `First Docker deployment verified: <SHA>`; затем последующие обновления выводят `Docker deployment verified: <SHA>`.
+5. Откройте `https://rb-gateway-3708079.duckdns.org:8443/`. Новый токен создан автоматически. Прочитайте его **на своём сервере**, не отправляя в переписку:
 
    ```bash
    sudo sed -n 's/^GATEWAY_API_TOKEN=//p' /etc/private-gateway-docker/stack.env
@@ -38,8 +44,8 @@
 
    Введите токен в поле входа. Проверьте «API подключён», «База данных подключена», «Xray настроен» и равенство применённой и новой ревизий.
 
-5. Создайте новое устройство, нажмите «Проверить» и «Применить конфигурацию», скопируйте новый VLESS URI и импортируйте в Hiddify. Для телефона перенесите URI как текст. `127.0.0.1` в сообщении об импорте на iPhone относится к самому iPhone, не к серверу. Проверьте подключение с мобильного интернета и открытие HTTPS-сайта. Один успешный TCP-тест порта 443 не доказывает, что VLESS работает.
-6. Для браузера нажмите «Запустить браузер» и откройте ссылку из панели. Если браузер запросит HTTP Basic Auth, пользователь — `browser`, пароль — **тот же новый токен**. После завершения нажмите «Остановить браузер». Данные сессии находятся в tmpfs и стираются при остановке.
+6. Создайте новое устройство, нажмите «Проверить» и «Применить конфигурацию», скопируйте новый VLESS URI и импортируйте в Hiddify. Для телефона перенесите URI как текст. `127.0.0.1` в сообщении об импорте на iPhone относится к самому iPhone, не к серверу. Проверьте подключение с мобильного интернета и открытие HTTPS-сайта. Один успешный TCP-тест порта 443 не доказывает, что VLESS работает.
+7. Для браузера нажмите «Запустить браузер» и откройте ссылку из панели. Если браузер запросит HTTP Basic Auth, пользователь — `browser`, пароль — **тот же новый токен**. После завершения нажмите «Остановить браузер». Данные сессии находятся в tmpfs и стираются при остановке.
 
 ## GitHub Secrets для автоматического развёртывания
 
