@@ -4,6 +4,7 @@
 import base64
 import fcntl
 import hmac
+import json
 import os
 from pathlib import Path
 import re
@@ -99,6 +100,12 @@ def http_status(url, authorization):
         return error.code
 
 
+def login_configured(domain):
+    with build_opener(ProxyHandler({})).open(
+            "https://" + domain + ":8443/api/v1/auth/config", timeout=12) as response:
+        return json.load(response) == {"configured": True}
+
+
 def verify_access(new, old, domain, configured=False):
     base = "https://" + domain + ":8443"
     basic_new = "Basic " + base64.b64encode(("browser:" + new).encode()).decode()
@@ -123,14 +130,13 @@ def require_private(path):
 
 
 def rotate(env=ENV, caddyfile=CADDYFILE, compose=COMPOSE, backups=BACKUPS,
-           execute=run, verify=verify_access):
+           execute=run, verify=verify_access, detect=login_configured):
     if not compose.is_file():
         raise RotationError("installed Docker release is incomplete")
     old_env, old_caddyfile = env.read_bytes(), caddyfile.read_bytes()
     old_token = env_value(old_env, "GATEWAY_API_TOKEN")
-    configured = any(line.startswith("GATEWAY_ADMIN_USERNAME=") and line.split("=", 1)[1]
-                     for line in old_env.decode().splitlines())
     domain = env_value(old_env, "PANEL_DOMAIN")
+    configured = detect(domain)
     if not re.fullmatch(r"[A-Za-z0-9.-]+", domain) or not re.fullmatch(r"[0-9a-f]{64}", old_token):
         raise RotationError("invalid installed token or panel domain")
     new_token = secrets.token_hex(32)

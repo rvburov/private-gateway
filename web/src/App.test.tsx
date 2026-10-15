@@ -24,12 +24,14 @@ let profileRequests = 0;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminConfigured = false;
+let adminSetup = true;
 
 beforeEach(() => {
   revoked = false;
   revision = 1;
   profileRequests = 0;
   adminConfigured = false;
+  adminSetup = true;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -44,8 +46,15 @@ beforeEach(() => {
     if (path === "/api/v1/auth/config")
       return Response.json({ configured: adminConfigured });
     if (path === "/api/v1/auth/login") {
-      const input = JSON.parse(options.body as string) as { username: string; password: string; code: string };
-      return input.username === "admin" && input.password === "long-password" && input.code === "123456"
+      const input = JSON.parse(options.body as string) as { username: string; password: string };
+      return input.username === "admin" && input.password === "long-password"
+        ? Response.json({ status: adminSetup ? "totp_required" : "totp_setup_required", pending: "pending-token" })
+        : Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    if (path === "/api/v1/auth/2fa/setup") return Response.json({ secret: "TESTONLY1234567890", otpauth_uri: "otpauth://totp/Private%20Gateway:admin?secret=TESTONLY1234567890" });
+    if (path === "/api/v1/auth/2fa" || path === "/api/v1/auth/2fa/setup/confirm") {
+      const input = JSON.parse(options.body as string) as { code: string };
+      return options.headers && (options.headers as Record<string, string>).Authorization === "Bearer pending-token" && input.code === "123456"
         ? Response.json({ session: "admin-token" })
         : Response.json({ error: "unauthorized" }, { status: 401 });
     }
@@ -129,21 +138,37 @@ async function login() {
 }
 
 describe("administrator panel", () => {
-  it("requires username, password and authenticator code when configured", async () => {
+  it("requires password before the authenticator code when configured", async () => {
     adminConfigured = true;
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     expect(await screen.findByLabelText("Логин")).toBeTruthy();
     expect(screen.queryByLabelText("Токен доступа")).toBeNull();
     fireEvent.change(screen.getByLabelText("Логин"), { target: { value: "admin" } });
     fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "wrong" } });
-    fireEvent.change(screen.getByLabelText("Код аутентификации"), { target: { value: "123456" } });
-    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Неверный логин");
     expect(screen.queryByText("Ваш приватный шлюз")).toBeNull();
     fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "long-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
+    fireEvent.change(await screen.findByLabelText("Код аутентификации"), { target: { value: "123456" } });
     fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
     await screen.findByText("Ваш приватный шлюз");
     expect(screen.queryByLabelText("Код аутентификации")).toBeNull();
+  });
+
+  it("enrolls the authenticator in the browser after password verification", async () => {
+    adminConfigured = true;
+    adminSetup = false;
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    fireEvent.change(await screen.findByLabelText("Логин"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "long-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
+    expect(await screen.findByText("TESTONLY1234567890")).toBeTruthy();
+    expect(await screen.findByRole("img", { name: "QR-код приложения-аутентификатора" })).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Код аутентификации"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Подтвердить и войти" }));
+    await screen.findByText("Ваш приватный шлюз");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/auth/2fa/setup/confirm", expect.objectContaining({ method: "POST" }));
   });
 
   it("keeps the panel locked when authentication fails", async () => {

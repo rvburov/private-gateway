@@ -42,9 +42,9 @@ class RotationTest(unittest.TestCase):
             return "$2a$12$" + "b" * 53
         return ""
 
-    def rotate(self, verify):
+    def rotate(self, verify, configured=False):
         return rotation.rotate(self.env, self.caddyfile, self.compose, self.backups,
-                               self.execute, verify)
+                               self.execute, verify, lambda domain: configured)
 
     def test_rotates_api_and_browser_together_and_keeps_secrets_private(self):
         observed = []
@@ -94,9 +94,8 @@ class RotationTest(unittest.TestCase):
                 rotation.verify_access("2" * 64, self.old_token, "vpn.example.test")
 
     def test_rotation_keeps_mfa_and_uses_internal_cli_when_configured(self):
-        self.env.write_text(self.env.read_text() + "GATEWAY_ADMIN_USERNAME=admin\n")
         observed = []
-        self.rotate(lambda new, old, domain, configured: observed.append(configured))
+        self.rotate(lambda new, old, domain, configured: observed.append(configured), configured=True)
         self.assertEqual(observed, [True])
         self.assertTrue(any(any(item.endswith("/gatewayctl") for item in command) for command in self.calls))
         with patch.object(rotation, "http_status", side_effect=[401, 401, 502, 401]):

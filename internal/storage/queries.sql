@@ -44,3 +44,34 @@ SELECT * FROM audit_events ORDER BY id DESC LIMIT 100;
 
 -- name: CountDevices :one
 SELECT count(*) AS total, count(*) FILTER (WHERE revoked_at IS NULL) AS active FROM devices WHERE node_id=$1;
+
+-- name: GetAdministrator :one
+SELECT * FROM administrator_credentials WHERE id=1;
+
+-- name: ImportAdministrator :exec
+INSERT INTO administrator_credentials (id, username, password_hash)
+VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING;
+
+-- name: SetAdministrator :exec
+INSERT INTO administrator_credentials (id, username, password_hash)
+VALUES (1, $1, $2)
+ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username,
+    password_hash=EXCLUDED.password_hash, totp_secret_ciphertext=NULL,
+    totp_last_step=NULL, generation=administrator_credentials.generation+1,
+    updated_at=now();
+
+-- name: EnableAdministratorTOTP :execrows
+UPDATE administrator_credentials SET totp_secret_ciphertext=$1, totp_last_step=$2,
+    updated_at=now() WHERE id=1 AND generation=$3 AND totp_secret_ciphertext IS NULL;
+
+-- name: UseAdministratorTOTP :execrows
+UPDATE administrator_credentials SET totp_last_step=$1 WHERE id=1 AND generation=$2
+    AND totp_secret_ciphertext IS NOT NULL AND totp_last_step < $1;
+
+-- name: RestoreAdministrator :execrows
+UPDATE administrator_credentials SET username=$1, password_hash=$2,
+    totp_secret_ciphertext=$3, totp_last_step=$4, generation=generation+1,
+    updated_at=now() WHERE id=1 AND generation=$5;
+
+-- name: DeleteAdministrator :execrows
+DELETE FROM administrator_credentials WHERE id=1 AND generation=$1;

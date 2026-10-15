@@ -195,7 +195,7 @@ function Modal({
   );
 }
 
-function ProfileQRCode({ uri }: { uri: string }) {
+function ProfileQRCode({ uri, alt = "QR-код профиля подключения", caption = "В совместимом клиенте VLESS + REALITY выберите импорт через QR-код.", failure = "Не удалось создать QR-код. Скопируйте URI вручную." }: { uri: string; alt?: string; caption?: string; failure?: string }) {
   const [image, setImage] = useState("");
   const [failed, setFailed] = useState(false);
 
@@ -224,13 +224,13 @@ function ProfileQRCode({ uri }: { uri: string }) {
   return (
     <div className="profile-qr" id="profile-qr">
       {image ? (
-        <img src={image} alt="QR-код профиля подключения" width="288" height="288" />
+        <img src={image} alt={alt} width="288" height="288" />
       ) : failed ? (
-        <p>Не удалось создать QR-код. Скопируйте URI вручную.</p>
+        <p>{failure}</p>
       ) : (
         <p>Создаём QR-код…</p>
       )}
-      <p>В совместимом клиенте VLESS + REALITY выберите импорт через QR-код.</p>
+      <p>{caption}</p>
     </div>
   );
 }
@@ -242,6 +242,10 @@ export default function App() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
+  const [loginStep, setLoginStep] = useState<"password" | "totp" | "setup">("password");
+  const [pendingToken, setPendingToken] = useState("");
+  const [setupSecret, setSetupSecret] = useState("");
+  const [setupURI, setSetupURI] = useState("");
   const [configured, setConfigured] = useState<boolean | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
@@ -261,15 +265,42 @@ export default function App() {
     try {
       let credential: string;
       if (configured) {
-        const response = await fetch("/api/v1/auth/login", {
-          method: "POST",
-          credentials: "same-origin",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ username: username.trim(), password, code: code.trim() }),
+        if (loginStep === "password") {
+          const response = await fetch("/api/v1/auth/login", {
+            method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ username: username.trim(), password }),
+          });
+          if (!response.ok) throw new Error(response.status === 429
+            ? "Слишком много попыток. Повторите через пять минут."
+            : "Неверный логин или пароль.");
+          const result = (await response.json()) as { status: string; pending: string };
+          if (!result.pending || !["totp_required", "totp_setup_required"].includes(result.status)) throw new Error("Не удалось начать вход.");
+          setPendingToken(result.pending);
+          setPassword("");
+          if (result.status === "totp_setup_required") {
+            const setup = await fetch("/api/v1/auth/2fa/setup", {
+              method: "POST", credentials: "same-origin",
+              headers: { Authorization: `Bearer ${result.pending}` },
+            });
+            if (!setup.ok) throw new Error("Не удалось начать настройку аутентификатора. Повторите вход.");
+            const details = (await setup.json()) as { secret: string; otpauth_uri: string };
+            setSetupSecret(details.secret);
+            setSetupURI(details.otpauth_uri);
+            setLoginStep("setup");
+          } else {
+            setLoginStep("totp");
+          }
+          return;
+        }
+        const response = await fetch(loginStep === "setup" ? "/api/v1/auth/2fa/setup/confirm" : "/api/v1/auth/2fa", {
+          method: "POST", credentials: "same-origin",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${pendingToken}` },
+          body: JSON.stringify({ code: code.trim() }),
         });
-        if (!response.ok) throw new Error(response.status === 429
-          ? "Слишком много попыток. Повторите через пять минут."
-          : "Неверный логин, пароль или код аутентификации.");
+        if (!response.ok) throw new Error(response.status === 401
+          ? "Неверный код или время входа истекло. Проверьте код; при истечении времени начните вход заново."
+          : "Не удалось проверить код. Повторите попытку.");
         credential = ((await response.json()) as { session: string }).session;
       } else {
         credential = input.trim();
@@ -280,6 +311,10 @@ export default function App() {
       setInput("");
       setPassword("");
       setCode("");
+      setPendingToken("");
+      setSetupSecret("");
+      setSetupURI("");
+      setLoginStep("password");
     } catch (err) {
       setError(err);
     } finally {
@@ -295,6 +330,14 @@ export default function App() {
     }
     queryClient.clear();
     setToken("");
+    setError(null);
+  }
+  function backToPassword() {
+    setPendingToken("");
+    setSetupSecret("");
+    setSetupURI("");
+    setCode("");
+    setLoginStep("password");
     setError(null);
   }
   if (token) return <Dashboard token={token} onLogout={logout} />;
@@ -336,12 +379,22 @@ export default function App() {
             <Icon name="lock" size={26} />
           </span>
           <h2>Вход в панель</h2>
-          <p>{configured ? "Введите логин, пароль и код из приложения-аутентификатора." : "Введите токен администратора вашего шлюза. После настройки учётных данных через SSH здесь появится вход по паролю и коду."}</p>
-          {configured ? <>
+          <p>{configured
+            ? loginStep === "password" ? "Шаг 1 из 2: введите логин и пароль, заданные в терминале."
+              : loginStep === "setup" ? "Шаг 2 из 2: подключите приложение-аутентификатор и подтвердите код."
+                : "Шаг 2 из 2: введите код из приложения-аутентификатора."
+            : "Введите токен администратора вашего шлюза. После настройки логина и пароля через SSH здесь появится вход по паролю и коду."}</p>
+          {configured && loginStep === "password" ? <>
           <label htmlFor="username">Логин</label>
           <input id="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus />
           <label htmlFor="password">Пароль</label>
           <input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          </> : configured ? <>
+          <div className="login-identity">Входите как <strong>{username}</strong></div>
+          {loginStep === "setup" && setupURI && <>
+            <ProfileQRCode uri={setupURI} alt="QR-код приложения-аутентификатора" caption="Сканируйте QR-код в приложении-аутентификаторе на телефоне." failure="Не удалось создать QR-код. Введите ключ ниже вручную." />
+            <p className="setup-secret">Не получается сканировать? Введите ключ вручную: <code>{setupSecret}</code></p>
+          </>}
           <label htmlFor="code">Код аутентификации</label>
           <input id="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value)} required />
           </> : <>
@@ -370,11 +423,12 @@ export default function App() {
           <ErrorNotice error={error} />
           <button
             className="button primary full"
-            disabled={pending || (configured ? !username.trim() || !password || !/^[0-9]{6}$/.test(code.trim()) : !input.trim())}
+            disabled={pending || (configured ? loginStep === "password" ? !username.trim() || !password : !/^[0-9]{6}$/.test(code.trim()) : !input.trim())}
           >
-            {pending ? "Проверяем доступ…" : "Открыть панель"}
+            {pending ? "Проверяем доступ…" : configured && loginStep === "password" ? "Продолжить" : configured && loginStep === "setup" ? "Подтвердить и войти" : "Открыть панель"}
             <Icon name="arrow" size={18} />
           </button>
+          {configured && loginStep !== "password" && <button type="button" className="login-back" onClick={backToPassword}>← Назад к логину</button>}
           <div className="privacy-note">
             <Icon name="lock" size={14} />
             <span>

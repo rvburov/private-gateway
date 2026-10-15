@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
-"""Test terminal setup, secret handling and rollback without changing the VPS."""
+"""Test terminal password setup and rollback without changing a VPS."""
 
 import importlib.util
-import contextlib
-import io
+import json
 from pathlib import Path
 import stat
 import tempfile
@@ -23,59 +22,77 @@ class CredentialsTest(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.env = self.root / "stack.env"
-        self.env.write_text("PANEL_DOMAIN=example.test\nGATEWAY_API_TOKEN=old-token\n")
+        self.env.write_text("PANEL_DOMAIN=example.test\nGATEWAY_API_TOKEN=old-token\n"
+                            "GATEWAY_ADMIN_TOTP_SECRET=old-exposed-seed\n")
         self.original = self.env.read_bytes()
         self.compose = self.root / "compose.yml"
         self.compose.write_text("services: {}\n")
         self.backups = self.root / "backups"
+        self.calls = []
+        self.saved = False
 
-    def invoke(self, check, execute, username="admin"):
+    def execute(self, command, stdin=None):
+        self.calls.append((command, stdin))
+        if command[-1] == "admin-name":
+            return b"old-admin\n"
+        if command[-1] == "admin-backup":
+            if self.saved:
+                return b'{"exists":true,"username":"romanburov89@gmail.com","password_hash":"new-hash","generation":4}\n'
+            return b'{"exists":true,"username":"old-admin","password_hash":"old-hash","generation":3}\n'
+        if command[-1] == "admin-set":
+            self.new_credentials = json.loads(stdin)
+            self.saved = True
+        if command[-1] == "admin-restore":
+            self.saved = False
+        return b""
+
+    def invoke(self, check, execute=None):
         original_lstat = Path.lstat
         def root_owned(path):
             if path == self.env:
                 return types.SimpleNamespace(st_mode=stat.S_IFREG | 0o600, st_uid=0)
             return original_lstat(path)
-        secret = b"12345678901234567890"
+        def dump(_command, path):
+            path.write_bytes(b"test database backup")
         with patch.object(Path, "lstat", root_owned), \
-             patch.object(admin, "input", side_effect=[username, admin.code_at_step(secret, 1)], create=True), \
-             patch.object(admin.getpass, "getpass", side_effect=["very-long-password", "very-long-password"]), \
-             patch.object(admin.secrets, "token_bytes", side_effect=[b"0123456789abcdef", secret]), \
-             patch.object(admin.time, "time", return_value=59):
-            with contextlib.redirect_stdout(io.StringIO()):
-                return admin.setup(self.env, self.compose, self.backups, check, execute)
+             patch.object(admin, "input", return_value="romanburov89@gmail.com", create=True), \
+             patch.object(admin.getpass, "getpass", side_effect=["very-long-password", "very-long-password"]):
+            return admin.setup(self.env, self.compose, self.backups, execute or self.execute, check, dump)
 
-    def test_setup_preserves_other_secrets_and_verifies_login(self):
-        calls = []
+    def test_password_is_stored_in_db_and_authenticator_is_enrolled_in_browser(self):
         checked = []
-        result = self.invoke(lambda *args: checked.append(args), lambda command: calls.append(command))
-        self.assertIn("enabled", result)
-        self.assertNotIn("very-long-password", result)
+        result = self.invoke(lambda *args: checked.append(args))
+        self.assertIn("PostgreSQL", result)
+        self.assertEqual(checked, [("example.test", "romanburov89@gmail.com", "very-long-password")])
+        self.assertEqual(self.new_credentials["username"], "romanburov89@gmail.com")
+        self.assertTrue(self.new_credentials["password_hash"].startswith("pbkdf2_sha256:600000:"))
+        self.assertNotIn("very-long-password", json.dumps(self.new_credentials))
+        self.assertNotIn(b"GATEWAY_ADMIN_TOTP_SECRET=", self.env.read_bytes())
         self.assertIn(b"GATEWAY_API_TOKEN=old-token", self.env.read_bytes())
-        self.assertIn(b"GATEWAY_ADMIN_USERNAME=admin", self.env.read_bytes())
-        self.assertIn(b"GATEWAY_ADMIN_PASSWORD_HASH=pbkdf2_sha256:600000:", self.env.read_bytes())
-        self.assertEqual(checked[0][0:2], ("example.test", "admin"))
-        self.assertEqual(checked[0][3], admin.code_at_step(b"12345678901234567890", 1))
-        self.assertEqual((next(self.backups.iterdir()) / "stack.env").read_bytes(), self.original)
-        self.assertEqual(sum("--force-recreate" in command for command in calls), 1)
+        backup = next(self.backups.iterdir())
+        self.assertEqual((backup / "stack.env").read_bytes(), self.original)
+        self.assertTrue((backup / "gateway.dump").read_bytes())
+        self.assertEqual((backup / "administrator.json").stat().st_mode & 0o777, 0o600)
+        self.assertFalse(any(command[-1] == "admin-restore" for command, _ in self.calls))
 
-    def test_failed_verification_restores_original_env(self):
-        calls = []
-        def failed(*args):
+    def test_failed_verification_restores_database_and_environment(self):
+        def failed(*_args):
             raise admin.SetupError("simulated HTTPS failure")
         with self.assertRaisesRegex(admin.SetupError, "previous access restored"):
-            self.invoke(failed, lambda command: calls.append(command))
+            self.invoke(failed)
         self.assertEqual(self.env.read_bytes(), self.original)
-        self.assertEqual(sum("--force-recreate" in command for command in calls), 2)
+        self.assertTrue(any(command[-1] == "admin-restore" for command, _ in self.calls))
+        self.assertEqual(sum("--force-recreate" in command for command, _ in self.calls), 2)
 
-    def test_email_login_is_accepted(self):
-        checked = []
-        self.invoke(lambda *args: checked.append(args), lambda command: None, "romanburov89@gmail.com")
-        self.assertIn(b"GATEWAY_ADMIN_USERNAME=romanburov89@gmail.com", self.env.read_bytes())
-        self.assertEqual(checked[0][1], "romanburov89@gmail.com")
-
-    def test_invalid_authenticator_code_does_not_change_env(self):
-        self.assertFalse(admin.valid_code(b"12345678901234567890", "000000"))
+    def test_failed_write_before_database_change_keeps_old_credentials(self):
+        def fail_set(command, stdin=None):
+            if command[-1] == "admin-set":
+                raise admin.SetupError("simulated Docker failure")
+            return self.execute(command, stdin)
+        with self.assertRaisesRegex(admin.SetupError, "previous access restored"):
+            self.invoke(lambda *_args: None, fail_set)
         self.assertEqual(self.env.read_bytes(), self.original)
+        self.assertFalse(any(command[-1] == "admin-restore" for command, _ in self.calls))
 
 
 if __name__ == "__main__":

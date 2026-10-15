@@ -8,6 +8,16 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+type AdministratorCredential struct {
+	ID                   int32
+	Username             string
+	PasswordHash         string
+	TotpSecretCiphertext []byte
+	TotpLastStep         pgtype.Int8
+	Generation           int64
+	UpdatedAt            pgtype.Timestamptz
+}
+
 type AuditEvent struct {
 	ID        int64
 	Action    string

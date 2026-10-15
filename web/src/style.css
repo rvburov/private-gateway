@@ -942,6 +942,24 @@ textarea:focus {
 .login-form .button {
   padding: 13px;
 }
+.login-identity {
+  margin-bottom: 18px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #eff7f3;
+  color: #50677b;
+  overflow-wrap: anywhere;
+}
+.login-identity strong { color: #142a3d; }
+.login-form .profile-qr { margin-bottom: 16px; }
+.login-form .profile-qr img { max-width: 100%; height: auto; }
+.login-form .setup-secret {
+  margin: 0 0 18px;
+  color: #50677b;
+  overflow-wrap: anywhere;
+}
+.setup-secret code { display: block; margin-top: 6px; color: #142a3d; }
+.login-back { margin-top: 14px; color: #176d5c; background: transparent; border: 0; cursor: pointer; }
 .privacy-note {
   display: flex;
   gap: 8px;

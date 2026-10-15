@@ -67,6 +67,56 @@ func (q *Queries) CountDevices(ctx context.Context, nodeID pgtype.UUID) (CountDe
 	return i, err
 }
 
+const deleteAdministrator = `-- name: DeleteAdministrator :execrows
+DELETE FROM administrator_credentials WHERE id=1 AND generation=$1
+`
+
+func (q *Queries) DeleteAdministrator(ctx context.Context, generation int64) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteAdministrator, generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const enableAdministratorTOTP = `-- name: EnableAdministratorTOTP :execrows
+UPDATE administrator_credentials SET totp_secret_ciphertext=$1, totp_last_step=$2,
+    updated_at=now() WHERE id=1 AND generation=$3 AND totp_secret_ciphertext IS NULL
+`
+
+type EnableAdministratorTOTPParams struct {
+	TotpSecretCiphertext []byte
+	TotpLastStep         pgtype.Int8
+	Generation           int64
+}
+
+func (q *Queries) EnableAdministratorTOTP(ctx context.Context, arg EnableAdministratorTOTPParams) (int64, error) {
+	result, err := q.db.Exec(ctx, enableAdministratorTOTP, arg.TotpSecretCiphertext, arg.TotpLastStep, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
+const getAdministrator = `-- name: GetAdministrator :one
+SELECT id, username, password_hash, totp_secret_ciphertext, totp_last_step, generation, updated_at FROM administrator_credentials WHERE id=1
+`
+
+func (q *Queries) GetAdministrator(ctx context.Context) (AdministratorCredential, error) {
+	row := q.db.QueryRow(ctx, getAdministrator)
+	var i AdministratorCredential
+	err := row.Scan(
+		&i.ID,
+		&i.Username,
+		&i.PasswordHash,
+		&i.TotpSecretCiphertext,
+		&i.TotpLastStep,
+		&i.Generation,
+		&i.UpdatedAt,
+	)
+	return i, err
+}
+
 const getDevice = `-- name: GetDevice :one
 SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at FROM devices WHERE id=$1
 `
@@ -105,6 +155,21 @@ func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
 		&i.AppliedRevision,
 	)
 	return i, err
+}
+
+const importAdministrator = `-- name: ImportAdministrator :exec
+INSERT INTO administrator_credentials (id, username, password_hash)
+VALUES (1, $1, $2) ON CONFLICT (id) DO NOTHING
+`
+
+type ImportAdministratorParams struct {
+	Username     string
+	PasswordHash string
+}
+
+func (q *Queries) ImportAdministrator(ctx context.Context, arg ImportAdministratorParams) error {
+	_, err := q.db.Exec(ctx, importAdministrator, arg.Username, arg.PasswordHash)
+	return err
 }
 
 const insertAudit = `-- name: InsertAudit :exec
@@ -255,6 +320,34 @@ func (q *Queries) MarkApplied(ctx context.Context, id pgtype.UUID) error {
 	return err
 }
 
+const restoreAdministrator = `-- name: RestoreAdministrator :execrows
+UPDATE administrator_credentials SET username=$1, password_hash=$2,
+    totp_secret_ciphertext=$3, totp_last_step=$4, generation=generation+1,
+    updated_at=now() WHERE id=1 AND generation=$5
+`
+
+type RestoreAdministratorParams struct {
+	Username             string
+	PasswordHash         string
+	TotpSecretCiphertext []byte
+	TotpLastStep         pgtype.Int8
+	Generation           int64
+}
+
+func (q *Queries) RestoreAdministrator(ctx context.Context, arg RestoreAdministratorParams) (int64, error) {
+	result, err := q.db.Exec(ctx, restoreAdministrator,
+		arg.Username,
+		arg.PasswordHash,
+		arg.TotpSecretCiphertext,
+		arg.TotpLastStep,
+		arg.Generation,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const revokeDevice = `-- name: RevokeDevice :one
 UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at
 `
@@ -271,6 +364,25 @@ func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, err
 		&i.RevokedAt,
 	)
 	return i, err
+}
+
+const setAdministrator = `-- name: SetAdministrator :exec
+INSERT INTO administrator_credentials (id, username, password_hash)
+VALUES (1, $1, $2)
+ON CONFLICT (id) DO UPDATE SET username=EXCLUDED.username,
+    password_hash=EXCLUDED.password_hash, totp_secret_ciphertext=NULL,
+    totp_last_step=NULL, generation=administrator_credentials.generation+1,
+    updated_at=now()
+`
+
+type SetAdministratorParams struct {
+	Username     string
+	PasswordHash string
+}
+
+func (q *Queries) SetAdministrator(ctx context.Context, arg SetAdministratorParams) error {
+	_, err := q.db.Exec(ctx, setAdministrator, arg.Username, arg.PasswordHash)
+	return err
 }
 
 const upsertNode = `-- name: UpsertNode :exec
@@ -308,4 +420,22 @@ func (q *Queries) UpsertNode(ctx context.Context, arg UpsertNodeParams) error {
 		arg.ConfigHash,
 	)
 	return err
+}
+
+const useAdministratorTOTP = `-- name: UseAdministratorTOTP :execrows
+UPDATE administrator_credentials SET totp_last_step=$1 WHERE id=1 AND generation=$2
+    AND totp_secret_ciphertext IS NOT NULL AND totp_last_step < $1
+`
+
+type UseAdministratorTOTPParams struct {
+	TotpLastStep pgtype.Int8
+	Generation   int64
+}
+
+func (q *Queries) UseAdministratorTOTP(ctx context.Context, arg UseAdministratorTOTPParams) (int64, error) {
+	result, err := q.db.Exec(ctx, useAdministratorTOTP, arg.TotpLastStep, arg.Generation)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }

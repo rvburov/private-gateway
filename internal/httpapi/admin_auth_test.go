@@ -15,16 +15,23 @@ import (
 	"github.com/rvburov/private-gateway/internal/adminauth"
 )
 
-func TestAdministratorLoginUsesPasswordAndOneTimeCode(t *testing.T) {
-	secret := []byte("12345678901234567890")
+func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
+	store, pool, _, _ := integrationStore(t)
 	salt := []byte("0123456789abcdef")
 	hash, err := pbkdf2.Key(sha256.New, "a sufficiently long password", salt, 600000, 32)
 	if err != nil {
 		t.Fatal(err)
 	}
-	credentials := adminauth.Credentials{Username: "admin", PasswordHash: "pbkdf2_sha256:600000:" + hex.EncodeToString(salt) + ":" + hex.EncodeToString(hash), TOTPSecret: base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(secret)}
-	handler := New(nil, nil, nil, Options{Token: strings.Repeat("x", 64), Admin: credentials})
+	passwordHash := "pbkdf2_sha256:600000:" + hex.EncodeToString(salt) + ":" + hex.EncodeToString(hash)
+	// Upgrading a legacy env account imports only its password hash: a disclosed
+	// old TOTP seed cannot authenticate after this migration.
+	if err := store.ImportAdministrator(t.Context(), "admin@example.com", passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	const cliToken = "internal-cli-token-at-least-thirty-two-characters"
+	handler := New(store, nil, nil, Options{Token: cliToken})
 	call := func(method, path, body, bearer, remote string) *httptest.ResponseRecorder {
+		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
 		req.RemoteAddr = remote
 		if body != "" {
@@ -37,41 +44,95 @@ func TestAdministratorLoginUsesPasswordAndOneTimeCode(t *testing.T) {
 		handler.ServeHTTP(w, req)
 		return w
 	}
-	if got := call("GET", "/api/v1/auth/config", "", "", "192.0.2.1:1234").Body.String(); !strings.Contains(got, `"configured":true`) {
+	const remote = "192.0.2.1:1234"
+	if got := call("GET", "/api/v1/auth/config", "", "", remote).Body.String(); !strings.Contains(got, `"configured":true`) {
 		t.Fatal(got)
 	}
-	if got := call("GET", "/api/v1/metrics", "", strings.Repeat("x", 64), "192.0.2.1:1234").Code; got != 401 {
+	if got := call("GET", "/api/v1/metrics", "", cliToken, remote).Code; got != 401 {
 		t.Fatalf("external admin token: %d", got)
 	}
-	if got := call("GET", "/api/v1/metrics", "", strings.Repeat("x", 64), "127.0.0.1:1234").Code; got != 200 {
+	if got := call("GET", "/api/v1/metrics", "", cliToken, "127.0.0.1:1234").Code; got != 200 {
 		t.Fatalf("internal CLI token: %d", got)
 	}
-	code := adminauth.Code(secret, time.Now().Unix()/30)
-	loginBody := `{"username":"admin","password":"a sufficiently long password","code":"` + code + `"}`
-	if got := call("POST", "/api/v1/auth/login", `{"username":"admin","password":"bad","code":"`+code+`"}`, "", "192.0.2.1:1234").Code; got != 401 {
+	if got := call("POST", "/api/v1/auth/login", `{"username":"admin@example.com","password":"wrong"}`, "", remote).Code; got != 401 {
 		t.Fatalf("bad password: %d", got)
 	}
-	response := call("POST", "/api/v1/auth/login", loginBody, "", "192.0.2.1:1234")
-	if response.Code != 200 {
-		t.Fatalf("login: %d %s", response.Code, response.Body.String())
+	loginBody := `{"username":"admin@example.com","password":"a sufficiently long password"}`
+	first := call("POST", "/api/v1/auth/login", loginBody, "", remote)
+	var pending struct{ Status, Pending string }
+	if first.Code != 200 || json.Unmarshal(first.Body.Bytes(), &pending) != nil || pending.Status != "totp_setup_required" || len(pending.Pending) != 64 {
+		t.Fatalf("first password step: %d %s", first.Code, first.Body.String())
 	}
-	var session struct {
-		Session string `json:"session"`
+	if got := call("GET", "/api/v1/metrics", "", pending.Pending, remote).Code; got != 401 {
+		t.Fatalf("pending token accessed API: %d", got)
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &session); err != nil || len(session.Session) != 64 {
-		t.Fatal("invalid session response")
+	if got := call("POST", "/api/v1/auth/2fa/setup", "", "", remote).Code; got != 401 {
+		t.Fatalf("anonymous authenticator setup: %d", got)
 	}
-	if got := call("POST", "/api/v1/auth/login", loginBody, "", "192.0.2.1:1234").Code; got != 401 {
+	setup := call("POST", "/api/v1/auth/2fa/setup", "", pending.Pending, remote)
+	var details struct {
+		Secret string `json:"secret"`
+		URI    string `json:"otpauth_uri"`
+	}
+	if setup.Code != 200 || json.Unmarshal(setup.Body.Bytes(), &details) != nil || details.Secret == "" || !strings.Contains(details.URI, "admin%40example.com") {
+		t.Fatalf("browser setup: %d %s", setup.Code, setup.Body.String())
+	}
+	if got := call("POST", "/api/v1/auth/2fa/setup/confirm", `{"code":"000000"}`, pending.Pending, remote).Code; got != 401 {
+		t.Fatalf("bad enrollment code: %d", got)
+	}
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(details.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := adminauth.Code(secret, time.Now().Unix()/30)
+	confirmed := call("POST", "/api/v1/auth/2fa/setup/confirm", `{"code":"`+code+`"}`, pending.Pending, remote)
+	var session struct{ Session string }
+	if confirmed.Code != 200 || json.Unmarshal(confirmed.Body.Bytes(), &session) != nil || len(session.Session) != 64 {
+		t.Fatalf("enrollment: %d %s", confirmed.Code, confirmed.Body.String())
+	}
+	var ciphertext []byte
+	if err = pool.QueryRow(t.Context(), "SELECT totp_secret_ciphertext FROM administrator_credentials WHERE id=1").Scan(&ciphertext); err != nil || len(ciphertext) == 0 || strings.Contains(string(ciphertext), details.Secret) {
+		t.Fatal("TOTP secret was not stored encrypted")
+	}
+	if got := call("GET", "/api/v1/metrics", "", session.Session, remote).Code; got != 200 {
+		t.Fatalf("administrator session: %d", got)
+	}
+	// A new API process must read the encrypted seed and replay step from PostgreSQL.
+	handler = New(store, nil, nil, Options{Token: cliToken})
+	second := call("POST", "/api/v1/auth/login", loginBody, "", remote)
+	if second.Code != 200 || json.Unmarshal(second.Body.Bytes(), &pending) != nil || pending.Status != "totp_required" {
+		t.Fatalf("second login: %d %s", second.Code, second.Body.String())
+	}
+	if got := call("POST", "/api/v1/auth/2fa", `{"code":"`+code+`"}`, pending.Pending, remote).Code; got != 401 {
 		t.Fatalf("replayed TOTP: %d", got)
 	}
-	if got := call("GET", "/api/v1/metrics", "", session.Session, "192.0.2.1:1234").Code; got != 200 {
-		t.Fatalf("session: %d", got)
+	code = adminauth.Code(secret, time.Now().Unix()/30+1)
+	var nextSession struct{ Session string }
+	verified := call("POST", "/api/v1/auth/2fa", `{"code":"`+code+`"}`, pending.Pending, remote)
+	if verified.Code != 200 || json.Unmarshal(verified.Body.Bytes(), &nextSession) != nil {
+		t.Fatalf("new TOTP after restart: %d", verified.Code)
 	}
-	if got := call("POST", "/api/v1/auth/logout", "", session.Session, "192.0.2.1:1234").Code; got != 200 {
-		t.Fatalf("logout: %d", got)
+	snapshot, err := store.SnapshotAdministrator(t.Context())
+	if err != nil || !snapshot.Exists || len(snapshot.TOTPSecretCiphertext) == 0 {
+		t.Fatal("administrator backup is incomplete", err)
 	}
-	if got := call("GET", "/api/v1/metrics", "", session.Session, "192.0.2.1:1234").Code; got != 401 {
-		t.Fatalf("revoked session: %d", got)
+	if err := store.SetAdministrator(t.Context(), "admin@example.com", passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	if got := call("GET", "/api/v1/metrics", "", nextSession.Session, remote).Code; got != 401 {
+		t.Fatalf("old session survived password reset: %d", got)
+	}
+	third := call("POST", "/api/v1/auth/login", loginBody, "", remote)
+	if third.Code != 200 || json.Unmarshal(third.Body.Bytes(), &pending) != nil || pending.Status != "totp_setup_required" {
+		t.Fatalf("new enrollment after reset: %d %s", third.Code, third.Body.String())
+	}
+	restored, err := store.RestoreAdministrator(t.Context(), snapshot)
+	if err != nil || !restored {
+		t.Fatal("administrator rollback failed", err)
+	}
+	fourth := call("POST", "/api/v1/auth/login", loginBody, "", remote)
+	if fourth.Code != 200 || json.Unmarshal(fourth.Body.Bytes(), &pending) != nil || pending.Status != "totp_required" {
+		t.Fatalf("administrator rollback did not restore prior 2FA: %d %s", fourth.Code, fourth.Body.String())
 	}
 }
 

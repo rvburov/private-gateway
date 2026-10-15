@@ -18,8 +18,8 @@ import (
 
 const iterations = 600_000
 
-// Credentials are installed through the root-only terminal setup script.
-// The password hash and TOTP seed are never returned by the HTTP API.
+// Credentials are read from PostgreSQL. The terminal script saves the password
+// hash, while the browser enrollment saves an encrypted TOTP seed after confirmation.
 type Credentials struct {
 	Username     string
 	PasswordHash string
@@ -32,6 +32,17 @@ func (c Credentials) Validate() error {
 	if c == (Credentials{}) {
 		return nil // Existing installations stay usable until the terminal setup is run.
 	}
+	if err := c.ValidatePassword(); err != nil {
+		return err
+	}
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(c.TOTPSecret)
+	if err != nil || len(secret) < 20 {
+		return errors.New("invalid administrator TOTP secret")
+	}
+	return nil
+}
+
+func (c Credentials) ValidatePassword() error {
 	if len(c.Username) < 3 || len(c.Username) > 64 || strings.TrimSpace(c.Username) != c.Username || strings.ContainsAny(c.Username, "\r\n") {
 		return errors.New("invalid administrator username")
 	}
@@ -44,35 +55,48 @@ func (c Credentials) Validate() error {
 	if e1 != nil || e2 != nil || len(salt) != 16 || len(digest) != 32 {
 		return errors.New("invalid administrator password hash")
 	}
-	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(c.TOTPSecret)
-	if err != nil || len(secret) < 20 {
-		return errors.New("invalid administrator TOTP secret")
-	}
 	return nil
 }
 
-func (c Credentials) Verify(username, password, code string, now time.Time) (int64, bool) {
-	if !c.Configured() || len(password) > 1024 || len(code) != 6 {
-		return 0, false
+func (c Credentials) VerifyPassword(username, password string) bool {
+	if !c.Configured() || len(password) > 1024 {
+		return false
 	}
 	parts := strings.Split(c.PasswordHash, ":")
+	if len(parts) != 4 {
+		return false
+	}
 	salt, _ := hex.DecodeString(parts[2])
 	expected, _ := hex.DecodeString(parts[3])
 	actual, err := pbkdf2.Key(sha256.New, password, salt, iterations, 32)
 	if err != nil {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(username), []byte(c.Username)) == 1 && subtle.ConstantTimeCompare(actual, expected) == 1
+}
+
+func VerifyCode(encoded, code string, now time.Time, lastStep int64) (int64, bool) {
+	if len(code) != 6 {
 		return 0, false
 	}
-	if subtle.ConstantTimeCompare([]byte(username), []byte(c.Username)) != 1 || subtle.ConstantTimeCompare(actual, expected) != 1 {
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(encoded)
+	if err != nil || len(secret) < 20 {
 		return 0, false
 	}
-	secret, _ := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(c.TOTPSecret)
 	current := now.Unix() / 30
 	for _, step := range []int64{current - 1, current, current + 1} {
-		if step >= 0 && subtle.ConstantTimeCompare([]byte(code), []byte(Code(secret, step))) == 1 {
+		if step > lastStep && subtle.ConstantTimeCompare([]byte(code), []byte(Code(secret, step))) == 1 {
 			return step, true
 		}
 	}
 	return 0, false
+}
+
+func (c Credentials) Verify(username, password, code string, now time.Time) (int64, bool) {
+	if !c.VerifyPassword(username, password) {
+		return 0, false
+	}
+	return VerifyCode(c.TOTPSecret, code, now, -1)
 }
 
 // Code implements RFC 6238 (HMAC-SHA1, 30 seconds, 6 digits).

@@ -6,7 +6,8 @@ info:
     One local Xray node. Device changes remain pending until config/apply.
     Profiles contain credentials and must not be cached, logged or shared.
     After terminal setup, public Bearer access requires a temporary session
-    from auth/login; the long-lived CLI token is accepted only from loopback.
+    from password verification and authenticator confirmation. The long-lived
+    CLI token is accepted only from loopback.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -16,7 +17,7 @@ paths:
     get:
       operationId: adminAuthConfig
       security: []
-      description: Whether terminal setup has enabled username, password and TOTP login.
+      description: Whether a terminal-created administrator exists in PostgreSQL.
       responses:
         '200':
           description: Login mode
@@ -31,21 +32,62 @@ paths:
     post:
       operationId: adminLogin
       security: []
-      description: Issue an eight-hour in-memory session after three-factor verification.
+      description: Verify username and password. Returns a five-minute pending token for authenticator setup or verification.
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [username, password, code]
+              required: [username, password]
               properties:
                 username: {type: string}
                 password: {type: string, format: password}
+      responses:
+        '200':
+          description: Pending login; never persist the token beyond the current tab.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, pending]
+                properties:
+                  status: {type: string, enum: [totp_required, totp_setup_required]}
+                  pending: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/2fa/setup:
+    post:
+      operationId: startAdministratorTOTPSetup
+      description: After password verification, return a temporary TOTP secret and URI for browser enrollment. The secret is stored in PostgreSQL only after code confirmation.
+      responses:
+        '200':
+          description: Authenticator enrollment data; never log or cache it.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [secret, otpauth_uri]
+                properties:
+                  secret: {type: string}
+                  otpauth_uri: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/2fa/setup/confirm:
+    post:
+      operationId: confirmAdministratorTOTPSetup
+      description: Confirm the first six-digit code, encrypt the seed in PostgreSQL, and issue an eight-hour session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
                 code: {type: string, pattern: '^[0-9]{6}$'}
       responses:
         '200':
-          description: Temporary bearer session; never persist it beyond the current tab.
+          description: Temporary bearer session.
           content:
             application/json:
               schema:
@@ -54,7 +96,30 @@ paths:
                 properties:
                   session: {type: string}
         '401': {$ref: '#/components/responses/Error'}
-        '429': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/2fa:
+    post:
+      operationId: verifyAdministratorTOTP
+      description: Complete a later login using a fresh authenticator code. Replayed codes are rejected across API restarts.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string, pattern: '^[0-9]{6}$'}
+      responses:
+        '200':
+          description: Temporary bearer session.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
   /api/v1/auth/logout:
     post:
       operationId: adminLogout

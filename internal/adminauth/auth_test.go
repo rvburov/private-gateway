@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/hex"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -43,21 +42,5 @@ func TestCredentialsAndTOTP(t *testing.T) {
 	c.PasswordHash = strings.Replace(c.PasswordHash, "600000", "100", 1)
 	if c.Validate() == nil {
 		t.Fatal("weak hash accepted")
-	}
-}
-
-func TestTOTPReplayStateSurvivesRestartAndSeedChange(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "admin-totp.step")
-	if step, err := ReadLastStep(path, "first-seed"); err != nil || step != -1 {
-		t.Fatalf("new state: %d %v", step, err)
-	}
-	if err := SaveLastStep(path, "first-seed", 123); err != nil {
-		t.Fatal(err)
-	}
-	if step, err := ReadLastStep(path, "first-seed"); err != nil || step != 123 {
-		t.Fatalf("stored state: %d %v", step, err)
-	}
-	if step, err := ReadLastStep(path, "new-seed"); err != nil || step != -1 {
-		t.Fatalf("new seed: %d %v", step, err)
 	}
 }

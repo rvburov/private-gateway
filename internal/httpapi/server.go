@@ -21,7 +21,6 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/rvburov/private-gateway/internal/adminauth"
 	"github.com/rvburov/private-gateway/internal/browser"
 	"github.com/rvburov/private-gateway/internal/storage"
 	"github.com/rvburov/private-gateway/internal/xray"
@@ -39,9 +38,6 @@ type Browser interface {
 }
 type Options struct {
 	Token          string
-	Admin          adminauth.Credentials
-	AdminTOTPState string
-	LastTOTPStep   int64
 	WebDir         string
 	XrayConfigured bool
 }
@@ -51,8 +47,8 @@ type Server struct {
 	browser       Browser
 	options       Options
 	loginMu       sync.Mutex
-	sessions      map[string]time.Time
-	lastTOTP      int64
+	sessions      map[string]adminSession
+	pending       map[string]*pendingLogin
 	loginAttempts map[string]loginAttempts
 }
 
@@ -62,7 +58,7 @@ type loginAttempts struct {
 }
 
 func New(store *storage.Store, xray Xray, browser Browser, options Options) http.Handler {
-	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]time.Time), lastTOTP: options.LastTOTPStep, loginAttempts: make(map[string]loginAttempts)}
+	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]adminSession), pending: make(map[string]*pendingLogin), loginAttempts: make(map[string]loginAttempts)}
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -83,6 +79,9 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Get("/auth/config", s.authConfig)
 		r.Post("/auth/login", s.login)
+		r.Post("/auth/2fa", s.secondFactor)
+		r.Post("/auth/2fa/setup", s.startTOTPSetup)
+		r.Post("/auth/2fa/setup/confirm", s.confirmTOTPSetup)
 		r.Group(func(r chi.Router) {
 			r.Use(s.auth)
 			r.Post("/auth/logout", s.logout)
@@ -142,13 +141,18 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			fail(w, 401, "unauthorized")
 			return
 		}
-		if s.options.Admin.Configured() && s.validSession(value) {
+		admin, err := s.administrator(r.Context())
+		if err != nil {
+			fail(w, 503, "authentication unavailable")
+			return
+		}
+		if admin.Credentials.Configured() && s.validSession(value, admin.Generation) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		a := sha256.Sum256([]byte(value))
 		b := sha256.Sum256([]byte(s.options.Token))
-		if s.options.Token == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 || (s.options.Admin.Configured() && !loopbackClient(r.RemoteAddr)) {
+		if s.options.Token == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 || (admin.Credentials.Configured() && !loopbackClient(r.RemoteAddr)) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			fail(w, 401, "unauthorized")
 			return
@@ -162,105 +166,6 @@ func loopbackClient(address string) bool {
 	return err == nil && net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
 }
 
-func (s *Server) authConfig(w http.ResponseWriter, r *http.Request) {
-	respond(w, 200, map[string]bool{"configured": s.options.Admin.Configured()})
-}
-
-func (s *Server) login(w http.ResponseWriter, r *http.Request) {
-	if !s.options.Admin.Configured() {
-		fail(w, 503, "administrator credentials have not been configured on the server")
-		return
-	}
-	var input struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-		Code     string `json:"code"`
-	}
-	if !decode(w, r, &input) {
-		return
-	}
-	now := time.Now()
-	client := loginClient(r)
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	if len(s.loginAttempts) >= 1024 {
-		for key, attempt := range s.loginAttempts {
-			if now.Sub(attempt.since) > 5*time.Minute {
-				delete(s.loginAttempts, key)
-			}
-		}
-	}
-	attempt := s.loginAttempts[client]
-	if now.Sub(attempt.since) > 5*time.Minute {
-		attempt = loginAttempts{since: now}
-	}
-	if attempt.count >= 10 || (len(s.loginAttempts) >= 1024 && attempt.count == 0) {
-		fail(w, 429, "too many attempts; retry in five minutes")
-		return
-	}
-	step, valid := s.options.Admin.Verify(input.Username, input.Password, input.Code, now)
-	if !valid || step <= s.lastTOTP {
-		attempt.count++
-		s.loginAttempts[client] = attempt
-		fail(w, 401, "invalid username, password or authentication code")
-		return
-	}
-	token, err := adminauth.NewSessionToken()
-	if err != nil {
-		fail(w, 503, "authentication unavailable")
-		return
-	}
-	if err := adminauth.SaveLastStep(s.options.AdminTOTPState, s.options.Admin.TOTPSecret, step); err != nil {
-		fail(w, 503, "authentication unavailable")
-		return
-	}
-	s.lastTOTP = step
-	delete(s.loginAttempts, client)
-	for id, expiry := range s.sessions {
-		if now.After(expiry) || len(s.sessions) >= 32 {
-			delete(s.sessions, id)
-		}
-	}
-	s.sessions[token] = now.Add(8 * time.Hour)
-	respond(w, 200, map[string]string{"session": token})
-}
-
-func loginClient(r *http.Request) string {
-	// Caddy's reverse_proxy overwrites untrusted incoming X-Forwarded-For.
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
-			return ip.String()
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-func (s *Server) validSession(token string) bool {
-	s.loginMu.Lock()
-	defer s.loginMu.Unlock()
-	expiry, found := s.sessions[token]
-	if !found {
-		return false
-	}
-	if time.Now().After(expiry) {
-		delete(s.sessions, token)
-		return false
-	}
-	return true
-}
-
-func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
-	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	s.loginMu.Lock()
-	delete(s.sessions, value)
-	s.loginMu.Unlock()
-	respond(w, 200, map[string]string{"status": "logged out"})
-}
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.Status(r.Context())
 	if err != nil {
