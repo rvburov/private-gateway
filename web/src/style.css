@@ -710,6 +710,8 @@ tbody tr:last-child td {
 }
 .modal {
   width: min(520px, calc(100vw - 40px));
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
   padding: 26px;
   border: 1px solid #e3e9ee;
   border-radius: 12px;
@@ -779,6 +781,31 @@ textarea:focus {
   line-height: 1.9;
   resize: vertical;
   overflow-wrap: anywhere;
+}
+.profile-qr-toggle {
+  margin-top: 14px;
+}
+.profile-qr {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  margin-top: 14px;
+  padding: 16px;
+  border: 1px solid #e3e9ee;
+  border-radius: 8px;
+  background: #fff;
+  text-align: center;
+}
+.profile-qr img {
+  display: block;
+  width: min(288px, 100%);
+  height: auto;
+  image-rendering: pixelated;
+}
+.profile-qr p {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #617084;
 }
 .modal .notice {
   align-items: flex-start;
@@ -864,6 +891,13 @@ textarea:focus {
   align-items: center;
   justify-content: center;
   padding: 50px 30px;
+}
+.token-format {
+  display: block;
+  margin: -6px 0 14px;
+  color: #617084;
+  font-size: 11px;
+  line-height: 1.5;
 }
 .login-form {
   width: 100%;

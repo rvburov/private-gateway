@@ -194,6 +194,46 @@ function Modal({
   );
 }
 
+function ProfileQRCode({ uri }: { uri: string }) {
+  const [image, setImage] = useState("");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void import("qrcode")
+      .then(({ toDataURL }) =>
+        toDataURL(uri, {
+          errorCorrectionLevel: "M",
+          margin: 3,
+          width: 288,
+          color: { dark: "#101d2b", light: "#ffffff" },
+        }),
+      )
+      .then((data) => {
+        if (active) setImage(data);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [uri]);
+
+  return (
+    <div className="profile-qr" id="profile-qr">
+      {image ? (
+        <img src={image} alt="QR-код профиля подключения" width="288" height="288" />
+      ) : failed ? (
+        <p>Не удалось создать QR-код. Скопируйте URI вручную.</p>
+      ) : (
+        <p>Создаём QR-код…</p>
+      )}
+      <p>Откройте Hiddify на телефоне и выберите сканирование QR-кода.</p>
+    </div>
+  );
+}
+
 export default function App() {
   const queryClient = useQueryClient();
   const [token, setToken] = useState("");
@@ -265,12 +305,22 @@ export default function App() {
             id="token"
             type="password"
             autoComplete="off"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
             value={input}
             onChange={(event) => setInput(event.target.value)}
             placeholder="GATEWAY_API_TOKEN"
             required
             autoFocus
           />
+          {input && (
+            <span className="token-format">
+              {/^[0-9a-f]{64}$/.test(input.trim())
+                ? "Введено 64 символа, формат токена верный."
+                : `Введено ${input.trim().length} символов. Токен содержит 64 латинских символа 0–9 и a–f.`}
+            </span>
+          )}
           <ErrorNotice error={error} />
           <button
             className="button primary full"
@@ -311,6 +361,7 @@ function Dashboard({
   const [profileError, setProfileError] = useState<unknown>(null);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<unknown>(null);
+  const [showQR, setShowQR] = useState(false);
   const [name, setName] = useState("");
   const [nodeID, setNodeID] = useState("");
   const [notice, setNotice] = useState("");
@@ -405,6 +456,7 @@ function Dashboard({
     setProfilePending(device.id);
     setCopyError(null);
     setCopied(false);
+    setShowQR(false);
     try {
       const result = await request<{ uri: string }>(
         token,
@@ -1063,6 +1115,7 @@ function Dashboard({
             setProfile(null);
             setCopyError(null);
             setCopied(false);
+            setShowQR(false);
           }}
         >
           <div className="notice warning-notice">
@@ -1084,11 +1137,23 @@ function Dashboard({
             spellCheck={false}
             onFocus={(event) => event.target.select()}
           />
+          <button
+            className="button secondary-button profile-qr-toggle"
+            onClick={() => setShowQR((visible) => !visible)}
+            aria-expanded={showQR}
+            aria-controls="profile-qr"
+          >
+            {showQR ? "Скрыть QR-код" : "Показать QR-код"}
+          </button>
+          {showQR && <ProfileQRCode uri={profile.uri} />}
           <ErrorNotice error={copyError} />
           <div className="modal-actions">
             <button
               className="button secondary-button"
-              onClick={() => setProfile(null)}
+              onClick={() => {
+                setProfile(null);
+                setShowQR(false);
+              }}
             >
               Скрыть профиль
             </button>

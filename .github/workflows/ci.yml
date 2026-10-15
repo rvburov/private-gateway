@@ -68,6 +68,7 @@ jobs:
           python3 -m py_compile scripts/verify-release.py deploy/docker/*.py
           python3 scripts/test-vpn-smoke.py
           python3 scripts/test-change-reality-target.py
+          python3 scripts/test-rotate-admin-token.py
           python3 scripts/test-release.py
       - name: Build production release
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

@@ -7,7 +7,12 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toDataURL } from "qrcode";
 import App from "./App";
+
+vi.mock("qrcode", () => ({
+  toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,cXJjb2Rl"),
+}));
 
 const profileURI =
   "vless://sensitive-device-credential@gateway.example:443?security=reality#Phone";
@@ -157,6 +162,11 @@ describe("administrator panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
     await screen.findByDisplayValue(profileURI);
     expect(profileRequests).toBe(1);
+    expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
+    const qr = await screen.findByRole("img", { name: "QR-код профиля подключения" });
+    expect(qr.getAttribute("src")).toBe("data:image/png;base64,cXJjb2Rl");
+    expect(toDataURL).toHaveBeenCalledWith(profileURI, expect.any(Object));
     fireEvent.click(screen.getByRole("button", { name: "Скопировать URI" }));
     await screen.findByRole("button", { name: "Скопировано" });
     expect(clipboard.writeText).toHaveBeenCalledWith(profileURI);
@@ -164,6 +174,7 @@ describe("administrator panel", () => {
     await waitFor(() =>
       expect(screen.queryByDisplayValue(profileURI)).toBeNull(),
     );
+    expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
     expect(
       JSON.stringify(
         queryClient
