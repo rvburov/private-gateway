@@ -219,7 +219,7 @@ describe("administrator panel", () => {
     await screen.findByDisplayValue(profileURI);
     expect(profileRequests).toBe(1);
     expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Показать QR-код" }));
     const qr = await screen.findByRole("img", { name: "QR-код профиля подключения" });
     expect(qr.getAttribute("src")).toBe("data:image/png;base64,cXJjb2Rl");
     expect(toDataURL).toHaveBeenCalledWith(profileURI, expect.any(Object));
@@ -254,7 +254,7 @@ describe("administrator panel", () => {
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
     await screen.findByDisplayValue(profileURI);
-    fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Показать QR-код" }));
     fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "sing_box_json" } });
     expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
     expect(screen.getByDisplayValue(profileJSON)).toBeTruthy();
