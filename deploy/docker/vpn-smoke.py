@@ -20,9 +20,11 @@ import uuid
 
 XRAY = Path("/opt/private-gateway-docker/current/bin/xray")
 EXPORT = """
+import hashlib
 import json
 import os
 import urllib.request
+from urllib.parse import parse_qs, urlsplit
 
 headers = {"Authorization": "Bearer " + os.environ["GATEWAY_API_TOKEN"]}
 base = "http://127.0.0.1:8080/api/v1"
@@ -35,7 +37,36 @@ devices = get("/devices")["devices"]
 active = [device for device in devices if device.get("revoked_at") is None]
 if not active:
     raise SystemExit(2)
-print(get("/devices/" + active[0]["id"] + "/profile")["uri"])
+device = active[0]
+profile = get("/devices/" + device["id"] + "/profile")["uri"]
+node = next(item for item in get("/nodes")["nodes"] if item["id"] == device["node_id"])
+uri = urlsplit(profile)
+query = parse_qs(uri.query)
+with open("/state/xray.json", "rb") as source:
+    content = source.read()
+    modified = os.fstat(source.fileno()).st_mtime_ns
+config = json.loads(content)
+with open("/state/xray.status.json") as source:
+    status = json.load(source)
+inbound = config["inbounds"][0]
+reality = inbound["streamSettings"]["realitySettings"]
+checks = {
+    "profile_client": any(client["id"].lower() == (uri.username or "").lower() and
+                          client.get("flow") == "xtls-rprx-vision"
+                          for client in inbound["settings"]["clients"]),
+    "profile_endpoint": uri.hostname == node["host"] and uri.port == node["port"] and
+                        uri.port == inbound["port"],
+    "profile_reality": query.get("pbk") == [node["public_key"]] and
+                       query.get("sid") == [node["short_id"].lower()] and
+                       query.get("sid", [None])[0] in reality["shortIds"] and
+                       query.get("sni") == [node["server_name"]] and
+                       query.get("sni", [None])[0] in reality["serverNames"],
+    "server_key": reality["privateKey"] == os.environ["GATEWAY_REALITY_PRIVATE_KEY"],
+    "config_loaded": status.get("running") is True and
+                     status.get("sha256") == hashlib.sha256(content).hexdigest() and
+                     status.get("mtime_ns") == modified,
+}
+print(json.dumps({"uri": profile, "checks": checks}))
 """
 
 
@@ -55,7 +86,14 @@ def get_profile():
         raise SmokeError("no active device; create one and apply the configuration")
     if result.returncode != 0:
         raise SmokeError("API container could not export an active profile")
-    return result.stdout.strip()
+    try:
+        exported = json.loads(result.stdout)
+        failed = [name for name, passed in exported["checks"].items() if passed is not True]
+        if failed:
+            raise SmokeError("profile and running Xray differ: " + ", ".join(failed))
+        return exported["uri"]
+    except (KeyError, TypeError, ValueError) as error:
+        raise SmokeError("API container returned an invalid profile check") from error
 
 
 def client_config(profile, local_port):
@@ -94,12 +132,12 @@ def client_config(profile, local_port):
     return config, values["sni"]
 
 
-def read_exact(connection, length):
+def read_exact(connection, length, stage):
     data = bytearray()
     while len(data) < length:
         part = connection.recv(length - len(data))
         if not part:
-            raise SmokeError("VLESS connection closed before a response")
+            raise SmokeError(stage + ": connection closed before a response")
         data.extend(part)
     return bytes(data)
 
@@ -109,26 +147,33 @@ def probe_socks(port, target, destination=None):
     hostname = destination_host.encode("ascii")
     if not hostname or len(hostname) > 253:
         raise SmokeError("profile server name is invalid")
-    with socket.create_connection(("127.0.0.1", port), timeout=8) as connection:
-        connection.settimeout(10)
-        connection.sendall(b"\x05\x01\x00")
-        if read_exact(connection, 2) != b"\x05\x00":
-            raise SmokeError("local SOCKS negotiation failed")
-        connection.sendall(b"\x05\x01\x00\x03" + bytes([len(hostname)]) + hostname + destination_port.to_bytes(2, "big"))
-        reply = read_exact(connection, 4)
-        if reply[:2] != b"\x05\x00":
-            raise SmokeError("VLESS could not connect to the target")
-        length = {1: 4, 4: 16}.get(reply[3])
-        if reply[3] == 3:
-            length = read_exact(connection, 1)[0]
-        if length is None:
-            raise SmokeError("unexpected SOCKS response")
-        read_exact(connection, length + 2)
-        with ssl.create_default_context().wrap_socket(connection, server_hostname=target) as tls:
-            tls.sendall(b"GET / HTTP/1.1\r\nHost: " + target.encode("ascii") + b"\r\nConnection: close\r\n\r\n")
-            if not tls.recv(128).startswith(b"HTTP/"):
-                raise SmokeError("target did not answer through VLESS")
-            return tls.version()
+    stage = "local SOCKS connection"
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=8) as connection:
+            connection.settimeout(10)
+            connection.sendall(b"\x05\x01\x00")
+            if read_exact(connection, 2, stage) != b"\x05\x00":
+                raise SmokeError("local SOCKS negotiation failed")
+            stage = "VLESS target connection"
+            connection.sendall(b"\x05\x01\x00\x03" + bytes([len(hostname)]) + hostname + destination_port.to_bytes(2, "big"))
+            reply = read_exact(connection, 4, stage)
+            if reply[:2] != b"\x05\x00":
+                raise SmokeError("VLESS could not connect to the target")
+            length = {1: 4, 4: 16}.get(reply[3])
+            if reply[3] == 3:
+                length = read_exact(connection, 1, stage)[0]
+            if length is None:
+                raise SmokeError("unexpected SOCKS response")
+            read_exact(connection, length + 2, stage)
+            stage = "HTTPS handshake through VLESS"
+            with ssl.create_default_context().wrap_socket(connection, server_hostname=target) as tls:
+                stage = "HTTPS response through VLESS"
+                tls.sendall(b"GET / HTTP/1.1\r\nHost: " + target.encode("ascii") + b"\r\nConnection: close\r\n\r\n")
+                if not tls.recv(128).startswith(b"HTTP/"):
+                    raise SmokeError("target did not answer through VLESS")
+                return tls.version()
+    except (OSError, ssl.SSLError) as error:
+        raise SmokeError(f"{stage} failed ({type(error).__name__})") from error
 
 
 def main():
@@ -162,8 +207,6 @@ def main():
             else:
                 raise SmokeError("local Xray client did not start")
             protocol = probe_socks(port, target)
-        except (OSError, ssl.SSLError) as error:
-            raise SmokeError(f"VLESS traffic failed ({type(error).__name__})") from error
         finally:
             process.terminate()
             try:

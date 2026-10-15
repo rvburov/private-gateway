@@ -10,6 +10,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+from unittest import mock
 import uuid
 
 
@@ -118,6 +119,17 @@ class VPNSmokeTest(unittest.TestCase):
         secret = "private-credential-marker"
         with self.assertRaises(smoke.SmokeError) as caught:
             smoke.client_config("vless://" + secret + "@example.com:443", 1080)
+        self.assertNotIn(secret, str(caught.exception))
+
+    def test_profile_mismatch_reports_field_without_echoing_uri(self):
+        secret = "vless://private-credential-marker@example.com:443"
+        response = subprocess.CompletedProcess([], 0, stdout=json.dumps({
+            "uri": secret, "checks": {"profile_client": False, "config_loaded": True},
+        }))
+        with mock.patch.object(smoke.subprocess, "run", return_value=response):
+            with self.assertRaises(smoke.SmokeError) as caught:
+                smoke.get_profile()
+        self.assertIn("profile_client", str(caught.exception))
         self.assertNotIn(secret, str(caught.exception))
 
 
