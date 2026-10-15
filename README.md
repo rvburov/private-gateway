@@ -6,14 +6,14 @@
 
 - Go API с `chi` и авторизацией Bearer; в production опубликован только через HTTPS Caddy.
 - PostgreSQL 18, `pgx/v5`, запросы `sqlc`, встроенные миграции `golang-migrate`.
-- Создание и отзыв устройств, отдельный UUID каждого устройства, экспорт VLESS URI.
+- Создание и отзыв устройств, отдельный UUID каждого устройства, экспорт VLESS URI и QR-кода профиля.
 - AES-256-GCM для учётных данных; главный ключ шифрования хранится вне базы.
 - Проверка конфигурации настоящим Xray, атомарная запись и откат при ошибке перезапуска.
 - CLI `gatewayctl` на Cobra и панель React / TypeScript / Vite / TanStack Query.
 - Управление временным браузером в отдельном Docker-контейнере; noVNC через HTTPS и Basic Auth.
 - Журнал действий, защищённые Prometheus metrics, HTTP instrumentation OpenTelemetry.
 - CI: тесты Go/PostgreSQL, проверка гонок, сборка панели и тесты интерфейса.
-- Docker Compose установщик Ubuntu 26.04 из проверенной сборки GitHub Actions.
+- Docker Compose установщик Ubuntu 26.04 из проверенной сборки GitHub Actions; после успешной проверки коммита в `master` релиз автоматически доставляется на VPS.
 
 Добавление или отзыв устройства **создаёт ожидающую применения ревизию**. Чтобы реально изменить доступ, выполните `config apply`. Панель показывает различие между желаемой и применённой ревизиями. Ключ отозванного устройства перестаёт работать после успешного применения.
 
@@ -27,7 +27,7 @@ bash scripts/dev.sh start
 bash scripts/dev.sh test
 ```
 
-`setup-cloud.sh` устанавливает проверенные Go, sqlc и Xray в `/workspace/.toolchains`, собирает приложения и панель, запускает PostgreSQL 18 и выполняет миграции. `prepare` создаёт `.env` с случайными локальными секретами, только если файла ещё нет. Существующий `.env` сохраняется. Данные PostgreSQL остаются в Docker volume.
+`setup-cloud.sh` устанавливает проверенные Go, sqlc и Xray в `/workspace/.toolchains`, собирает приложения и панель, запускает PostgreSQL 18 и выполняет миграции. `prepare` создаёт `.env` со случайными локальными секретами, только если файла ещё нет. Существующий `.env` сохраняется. Данные PostgreSQL остаются в Docker volume.
 
 На другом Linux-хосте с установленными Go и Xray можно выполнить `bash scripts/dev.sh prepare`. Если требуется установщик инструментов, задайте `GATEWAY_TOOLCHAIN_ROOT` в доступный каталог. Go cache по умолчанию рассчитан на `/workspace`; вне облака используйте обычный Go из `PATH`.
 
@@ -60,7 +60,7 @@ bash scripts/dev.sh stop
 
 ## Удалённый браузер
 
-На VPS он входит в Docker Compose по [docs/browser.md](docs/browser.md). Затем используйте панель или:
+На VPS он входит в Docker Compose по [docs/browser.md](docs/browser.md). Браузер работает, но удалённая графическая сессия noVNC сейчас реагирует на ввод и прокрутку с задержкой около 1–3 секунд. Для обычного просмотра сайтов удобнее локальный браузер с Hiddify. Управление через панель или:
 
 ```bash
 bin/gatewayctl browser start
@@ -88,6 +88,8 @@ npm run build
 - [OpenAPI 3.1](docs/openapi.yaml)
 - [Проверки IP, DNS, IPv6, WebRTC и kill switch](docs/privacy-checks.md)
 - [Изолированный браузер](docs/browser.md)
-- [Roadmap и журнал проблем](docs/roadmap.md)
+- [История ошибок и их устранение](docs/troubleshooting.md)
+- [Roadmap оставшихся задач](docs/roadmap.md)
+- [Правила работы с репозиторием](AGENTS.md)
 
-Версия 0.1 управляет одним Xray-узлом. Первую Docker-установку, публичный браузер и Hiddify необходимо проверить на целевом VPS; прохождение CI не заменяет эти проверки. Известные ошибки и следующие этапы описаны в roadmap.
+Версия 0.1 управляет одним Xray-узлом. На текущем VPS подтверждены Docker-развёртывание, вход в панель, серверный VLESS smoke test и подключение iPhone через Hiddify по LTE с исходящим IPv4 VPS. Это не заменяет проверки каждого нового устройства и режима маршрутизации; фактические результаты приведены в [проверках приватности](docs/privacy-checks.md). Текущие ограничения и планы описаны в [roadmap](docs/roadmap.md).
