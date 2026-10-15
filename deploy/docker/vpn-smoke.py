@@ -6,6 +6,7 @@ connects through the host's loopback publication of the Xray container.
 """
 
 import json
+import argparse
 import os
 from pathlib import Path
 import socket
@@ -19,6 +20,7 @@ import uuid
 
 
 XRAY = Path("/opt/private-gateway-docker/current/bin/xray")
+SERVER_CONFIG = Path("/var/lib/private-gateway-docker/xray/xray.json")
 EXPORT = """
 import hashlib
 import json
@@ -96,7 +98,7 @@ def get_profile():
         raise SmokeError("API container returned an invalid profile check") from error
 
 
-def client_config(profile, local_port):
+def client_config(profile, local_port, server_port=None):
     if len(profile) > 4096:
         raise SmokeError("profile is too long")
     try:
@@ -120,7 +122,7 @@ def client_config(profile, local_port):
         "inbounds": [{"listen": "127.0.0.1", "port": local_port, "protocol": "socks",
                       "settings": {"auth": "noauth", "udp": False}}],
         "outbounds": [{"protocol": "vless", "settings": {"vnext": [{
-            "address": "127.0.0.1", "port": uri.port,
+            "address": "127.0.0.1", "port": server_port or uri.port,
             "users": [{"id": credential, "encryption": values["encryption"], "flow": values["flow"]}],
         }]}, "streamSettings": {"network": values["type"], "security": values["security"],
                               "realitySettings": {"serverName": values["sni"],
@@ -176,44 +178,131 @@ def probe_socks(port, target, destination=None):
         raise SmokeError(f"{stage} failed ({type(error).__name__})") from error
 
 
-def main():
-    if not XRAY.is_file():
-        raise SmokeError("installed Xray binary is missing")
-    profile = get_profile()
+def free_port():
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
-        port = listener.getsockname()[1]
-    config, target = client_config(profile, port)
-    with tempfile.TemporaryDirectory(prefix="private-gateway-vpn-smoke-") as directory:
-        path = Path(directory) / "client.json"
+        return listener.getsockname()[1]
+
+
+def stop(process):
+    process.terminate()
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=3)
+
+
+def start_isolated_server(directory, port):
+    process = None
+    try:
+        config = json.loads(SERVER_CONFIG.read_text())
+        config["log"]["loglevel"] = "info"
+        config["inbounds"][0]["listen"] = "127.0.0.1"
+        config["inbounds"][0]["port"] = port
+        path = Path(directory) / "server.json"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as output:
             json.dump(config, output)
-        try:
+        log = Path(directory) / "server.log"
+        descriptor = os.open(log, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w") as output:
             process = subprocess.Popen([str(XRAY), "run", "-config", str(path)],
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except OSError as error:
-            raise SmokeError("local Xray client could not be launched") from error
-        try:
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline:
-                if process.poll() is not None:
-                    raise SmokeError("local Xray client exited during startup")
-                try:
-                    with socket.create_connection(("127.0.0.1", port), timeout=0.1):
-                        break
-                except OSError:
-                    time.sleep(0.1)
-            else:
-                raise SmokeError("local Xray client did not start")
-            protocol = probe_socks(port, target)
-        finally:
-            process.terminate()
+                                       stdout=output, stderr=subprocess.STDOUT)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise SmokeError("isolated Xray server exited during startup")
             try:
-                process.wait(timeout=3)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=3)
+                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    return process, log
+            except OSError:
+                time.sleep(0.1)
+        raise SmokeError("isolated Xray server did not start")
+    except (OSError, ValueError, KeyError, IndexError) as error:
+        if process is not None:
+            stop(process)
+        raise SmokeError("isolated Xray configuration could not be prepared") from error
+    except SmokeError:
+        if process is not None:
+            stop(process)
+        raise
+
+
+def isolated_result(log):
+    # Xray logs can contain client IDs and IPs. Report only a fixed category.
+    try:
+        content = log.read_text(errors="replace")
+    except OSError:
+        return "log unavailable"
+    if "invalid request user id" in content:
+        return "client UUID rejected"
+    if "invalid request" in content:
+        return "VLESS request rejected"
+    if any("REALITY: processed invalid connection" in line and
+           "failed to read client hello" not in line for line in content.splitlines()):
+        return "REALITY handshake rejected"
+    if "accepted tcp:" in content:
+        return "VLESS request accepted"
+    return "no classified handshake event"
+
+
+def run_client(directory, config, target, port):
+    path = Path(directory) / "client.json"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "w") as output:
+        json.dump(config, output)
+    try:
+        process = subprocess.Popen([str(XRAY), "run", "-config", str(path)],
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as error:
+        raise SmokeError("local Xray client could not be launched") from error
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise SmokeError("local Xray client exited during startup")
+            try:
+                with socket.create_connection(("127.0.0.1", port), timeout=0.1):
+                    break
+            except OSError:
+                time.sleep(0.1)
+        else:
+            raise SmokeError("local Xray client did not start")
+        return probe_socks(port, target)
+    finally:
+        stop(process)
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Check an active profile through the installed Xray gateway")
+    parser.add_argument("--isolated", action="store_true", help="check the same server config with a temporary loopback Xray")
+    args = parser.parse_args()
+    if not XRAY.is_file():
+        raise SmokeError("installed Xray binary is missing")
+    profile = get_profile()
+    port = free_port()
+    server_port = free_port() if args.isolated else None
+    while server_port == port:
+        server_port = free_port()
+    config, target = client_config(profile, port, server_port)
+    with tempfile.TemporaryDirectory(prefix="private-gateway-vpn-smoke-") as directory:
+        server = None
+        server_log = None
+        try:
+            if args.isolated:
+                server, server_log = start_isolated_server(directory, server_port)
+            try:
+                protocol = run_client(directory, config, target, port)
+            except SmokeError as error:
+                if server is not None:
+                    stop(server)
+                    server = None
+                    raise SmokeError(f"{error}; isolated Xray: {isolated_result(server_log)}") from None
+                raise
+        finally:
+            if server is not None:
+                stop(server)
     print("VLESS traffic OK:", protocol)
 
 

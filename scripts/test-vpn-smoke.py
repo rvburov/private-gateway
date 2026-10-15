@@ -111,6 +111,32 @@ class VPNSmokeTest(unittest.TestCase):
                         smoke.ssl.create_default_context = original
                 finally:
                     stop(client)
+                isolated_port, isolated_client_port = unused_port(), unused_port()
+                isolated_dir = root / "isolate"
+                isolated_dir.mkdir()
+                with mock.patch.object(smoke, "SERVER_CONFIG", root / "server.json"), \
+                     mock.patch.object(smoke, "XRAY", Path(binary)):
+                    isolated, log = smoke.start_isolated_server(isolated_dir, isolated_port)
+                    try:
+                        isolated_config, name = smoke.client_config(uri, isolated_client_port, isolated_port)
+                        (root / "isolated-client.json").write_text(json.dumps(isolated_config))
+                        isolated_client = subprocess.Popen(
+                            [binary, "run", "-config", str(root / "isolated-client.json")],
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        )
+                        try:
+                            wait_port(isolated_client, isolated_client_port)
+                            smoke.ssl.create_default_context = trusted_context
+                            try:
+                                self.assertEqual(smoke.probe_socks(isolated_client_port, name,
+                                                                   ("127.0.0.1", target_port)), "TLSv1.3")
+                            finally:
+                                smoke.ssl.create_default_context = original
+                        finally:
+                            stop(isolated_client)
+                    finally:
+                        stop(isolated)
+                    self.assertEqual(smoke.isolated_result(log), "VLESS request accepted")
             finally:
                 stop(server)
                 stop(target)
@@ -131,6 +157,15 @@ class VPNSmokeTest(unittest.TestCase):
                 smoke.get_profile()
         self.assertIn("profile_client", str(caught.exception))
         self.assertNotIn(secret, str(caught.exception))
+
+    def test_isolated_log_classification_does_not_echo_client_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "server.log"
+            secret = "eb0ff969-c4ef-458f-9a88-01cd827c85a8"
+            log.write_text("invalid request user id: " + secret)
+            result = smoke.isolated_result(log)
+        self.assertEqual(result, "client UUID rejected")
+        self.assertNotIn(secret, result)
 
 
 if __name__ == "__main__":
