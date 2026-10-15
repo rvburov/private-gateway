@@ -16,6 +16,8 @@ vi.mock("qrcode", () => ({
 
 const profileURI =
   "vless://sensitive-device-credential@gateway.example:443?security=reality#Phone";
+const profileJSON = '{"outbounds":[{"type":"vless","uuid":"sensitive-device-credential"}]}';
+const profileYAML = 'proxies:\n  - type: vless\n    uuid: sensitive-device-credential\n';
 let revoked = false;
 let revision = 1;
 let profileRequests = 0;
@@ -80,7 +82,7 @@ beforeEach(() => {
       return Response.json({ running: false, url: "" });
     if (path === "/api/v1/devices/d1/profile") {
       profileRequests++;
-      return Response.json({ uri: profileURI });
+      return Response.json({ uri: profileURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML });
     }
     if (path === "/api/v1/devices/d1/revoke" && options.method === "POST") {
       revoked = true;
@@ -167,7 +169,7 @@ describe("administrator panel", () => {
     const qr = await screen.findByRole("img", { name: "QR-код профиля подключения" });
     expect(qr.getAttribute("src")).toBe("data:image/png;base64,cXJjb2Rl");
     expect(toDataURL).toHaveBeenCalledWith(profileURI, expect.any(Object));
-    fireEvent.click(screen.getByRole("button", { name: "Скопировать URI" }));
+    fireEvent.click(screen.getByRole("button", { name: "Скопировать ссылку" }));
     await screen.findByRole("button", { name: "Скопировано" });
     expect(clipboard.writeText).toHaveBeenCalledWith(profileURI);
     fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
@@ -190,6 +192,25 @@ describe("administrator panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Выйти из панели" }));
     await screen.findByText("Вход в панель");
     expect(screen.queryByDisplayValue(profileURI)).toBeNull();
+  });
+
+  it("copies a VLESS link or client configuration without a new secret request", async () => {
+    const clipboard = { writeText: vi.fn().mockResolvedValue(undefined) };
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(profileURI);
+    fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
+    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "sing_box_json" } });
+    expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
+    expect(screen.getByDisplayValue(profileJSON)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Скопировать конфигурацию" }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith(profileJSON));
+    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "mihomo_yaml" } });
+    expect((screen.getByLabelText("Конфигурация клиента") as HTMLTextAreaElement).value).toBe(profileYAML);
+    fireEvent.click(screen.getByRole("button", { name: "Скопировать конфигурацию" }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith(profileYAML));
+    expect(profileRequests).toBe(1);
   });
 
   it("requires explicit revoke confirmation and shows the unapplied revision afterward", async () => {

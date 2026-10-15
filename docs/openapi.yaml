@@ -97,14 +97,16 @@ paths:
       operationId: exportDevice
       responses:
         '200':
-          description: Sensitive Hiddify import URI, Cache-Control no-store
+          description: Sensitive VLESS share URI and sing-box/Mihomo client configurations, Cache-Control no-store
           content:
             application/json:
               schema:
                 type: object
-                required: [uri]
+                required: [uri, sing_box_json, mihomo_yaml]
                 properties:
                   uri: {type: string, format: uri}
+                  sing_box_json: {type: string, description: Complete sing-box JSON configuration}
+                  mihomo_yaml: {type: string, description: Complete Mihomo YAML configuration}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}

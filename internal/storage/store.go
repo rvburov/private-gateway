@@ -186,7 +186,7 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 		if err != nil {
 			return err
 		}
-		result.URI, err = xray.Profile(nodeModel(node), credential, row.Name)
+		result, err = xray.ClientProfiles(nodeModel(node), credential, row.Name)
 		if err != nil {
 			return err
 		}

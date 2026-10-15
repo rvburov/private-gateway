@@ -189,6 +189,9 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if !strings.Contains(profile.SingBoxJSON, uri.User.Username()) || !strings.Contains(profile.MihomoYAML, uri.User.Username()) {
+		t.Fatal("client formats do not contain the exported device credential")
+	}
 	credential := uri.User.Username()
 	code, _ = request("GET", "/api/v1/devices/"+strings.ToUpper(device.ID)+"/profile", "", token)
 	if code != 200 {

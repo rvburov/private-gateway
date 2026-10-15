@@ -69,6 +69,60 @@ func TestProfileRoundTrip(t *testing.T) {
 	}
 }
 
+func TestClientProfilesAgreeOnConnection(t *testing.T) {
+	key, _ := PublicKey(testSettings().PrivateKey)
+	node := model.Node{Host: "gateway.example", Port: 443, ServerName: "www.cloudflare.com", PublicKey: key, ShortID: "AABB"}
+	formats, err := ClientProfiles(node, testID, "Phone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	link, err := url.Parse(formats.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if link.Scheme != "vless" || link.Hostname() != node.Host || link.Port() != "443" || link.Query().Get("security") != "reality" {
+		t.Fatal("VLESS share URI is not importable")
+	}
+	var singBox struct {
+		Outbounds []struct {
+			Type       string `json:"type"`
+			Server     string `json:"server"`
+			ServerPort int    `json:"server_port"`
+			UUID       string `json:"uuid"`
+			Flow       string `json:"flow"`
+			TLS        struct {
+				ServerName string `json:"server_name"`
+				Reality    struct {
+					PublicKey string `json:"public_key"`
+					ShortID   string `json:"short_id"`
+				} `json:"reality"`
+			} `json:"tls"`
+		} `json:"outbounds"`
+	}
+	if err := json.Unmarshal([]byte(formats.SingBoxJSON), &singBox); err != nil {
+		t.Fatal(err)
+	}
+	if len(singBox.Outbounds) != 1 {
+		t.Fatal("sing-box config needs one outbound")
+	}
+	out := singBox.Outbounds[0]
+	if out.Type != "vless" || out.Server != link.Hostname() || out.ServerPort != 443 ||
+		out.UUID != link.User.Username() || out.Flow != link.Query().Get("flow") ||
+		out.TLS.ServerName != link.Query().Get("sni") ||
+		out.TLS.Reality.PublicKey != link.Query().Get("pbk") ||
+		out.TLS.Reality.ShortID != link.Query().Get("sid") {
+		t.Fatal("sing-box config differs from VLESS share URI")
+	}
+	for _, value := range []string{node.Host, testID, node.ServerName, key, "aabb"} {
+		if !strings.Contains(formats.MihomoYAML, value) {
+			t.Fatal("Mihomo config is missing a connection parameter")
+		}
+	}
+	if _, err := ClientProfiles(model.Node{Host: "bad host", Port: 443}, testID, "Phone"); err == nil {
+		t.Fatal("invalid connection must not be exported in any format")
+	}
+}
+
 func TestRenderZeroClientsAndDuplicateCredentials(t *testing.T) {
 	config, err := Render(testSettings(), nil)
 	if err != nil {

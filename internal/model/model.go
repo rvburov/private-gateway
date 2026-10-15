@@ -22,7 +22,9 @@ type Device struct {
 }
 
 type Profile struct {
-	URI string `json:"uri"`
+	URI         string `json:"uri"`
+	SingBoxJSON string `json:"sing_box_json"`
+	MihomoYAML  string `json:"mihomo_yaml"`
 }
 
 type AuditEvent struct {

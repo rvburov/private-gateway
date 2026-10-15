@@ -16,6 +16,12 @@ export interface Device {
   revoked_at: string | null;
 }
 
+export interface ProfileExport {
+  uri: string;
+  sing_box_json: string;
+  mihomo_yaml: string;
+}
+
 export interface AuditEvent {
   id: number;
   action: string;

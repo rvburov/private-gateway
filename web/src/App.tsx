@@ -13,6 +13,7 @@ import {
   type BrowserStatus,
   type Device,
   type Node,
+  type ProfileExport,
   type Status,
 } from "./api";
 
@@ -229,7 +230,7 @@ function ProfileQRCode({ uri }: { uri: string }) {
       ) : (
         <p>Создаём QR-код…</p>
       )}
-      <p>Откройте Hiddify на телефоне и выберите сканирование QR-кода.</p>
+      <p>В совместимом клиенте VLESS + REALITY выберите импорт через QR-код.</p>
     </div>
   );
 }
@@ -353,10 +354,8 @@ function Dashboard({
   const [page, setPage] = useState<Page>("overview");
   const [adding, setAdding] = useState(false);
   const [revoking, setRevoking] = useState<Device | null>(null);
-  const [profile, setProfile] = useState<{
-    device: Device;
-    uri: string;
-  } | null>(null);
+  const [profile, setProfile] = useState<(ProfileExport & { device: Device }) | null>(null);
+  const [profileFormat, setProfileFormat] = useState<keyof ProfileExport>("uri");
   const [profilePending, setProfilePending] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<unknown>(null);
   const [copied, setCopied] = useState(false);
@@ -457,12 +456,13 @@ function Dashboard({
     setCopyError(null);
     setCopied(false);
     setShowQR(false);
+    setProfileFormat("uri");
     try {
-      const result = await request<{ uri: string }>(
+      const result = await request<ProfileExport>(
         token,
         `/devices/${encodeURIComponent(device.id)}/profile`,
       );
-      setProfile({ device, uri: result.uri });
+      setProfile({ device, ...result });
     } catch (err) {
       setProfileError(err);
     } finally {
@@ -472,7 +472,7 @@ function Dashboard({
   async function copyProfile() {
     if (!profile) return;
     try {
-      await navigator.clipboard.writeText(profile.uri);
+      await navigator.clipboard.writeText(profile[profileFormat]);
       setCopied(true);
       setCopyError(null);
     } catch {
@@ -481,6 +481,25 @@ function Dashboard({
           "Буфер обмена недоступен. Выделите и скопируйте профиль вручную.",
         ),
       );
+    }
+  }
+  function downloadProfile() {
+    if (!profile || profileFormat === "uri") return;
+    try {
+      const file = new Blob([profile[profileFormat]], {
+        type: profileFormat === "sing_box_json" ? "application/json" : "application/yaml",
+      });
+      const location = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = location;
+      link.download = `private-gateway-${profile.device.id}.${profileFormat === "sing_box_json" ? "json" : "yaml"}`;
+      document.body.append(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(location), 1000);
+      setCopyError(null);
+    } catch {
+      setCopyError(new Error("Не удалось скачать файл. Скопируйте конфигурацию вручную."));
     }
   }
   const list = devices.data?.devices ?? [];
@@ -1124,28 +1143,52 @@ function Dashboard({
             устройства.
           </div>
           <p className="modal-description">
-            Импортируйте URI в клиент с поддержкой VLESS + REALITY. Для нового
+            Для клиента с импортом ссылок выберите VLESS URI. sing-box и Mihomo
+            могут использовать собственный файл конфигурации. Для нового
             устройства сначала примените конфигурацию.
           </p>
-          <label htmlFor="profile-uri">URI подключения</label>
+          <label htmlFor="profile-format">Формат профиля</label>
+          <select
+            id="profile-format"
+            className="profile-format-picker"
+            value={profileFormat}
+            onChange={(event) => {
+              setProfileFormat(event.target.value as keyof ProfileExport);
+              setCopied(false);
+              setShowQR(false);
+            }}
+          >
+            <option value="uri">VLESS URI — вставить ссылку или сканировать QR</option>
+            <option value="sing_box_json">sing-box — JSON-файл</option>
+            <option value="mihomo_yaml">Mihomo — YAML-файл</option>
+          </select>
+          <label htmlFor="profile-content">
+            {profileFormat === "uri" ? "Ссылка подключения" : "Конфигурация клиента"}
+          </label>
           <textarea
-            id="profile-uri"
+            id="profile-content"
             className="profile-uri mono"
-            value={profile.uri}
+            value={profile[profileFormat]}
             readOnly
-            rows={5}
+            rows={profileFormat === "uri" ? 5 : 12}
             spellCheck={false}
             onFocus={(event) => event.target.select()}
           />
-          <button
-            className="button secondary-button profile-qr-toggle"
-            onClick={() => setShowQR((visible) => !visible)}
-            aria-expanded={showQR}
-            aria-controls="profile-qr"
-          >
-            {showQR ? "Скрыть QR-код" : "Показать QR-код"}
-          </button>
-          {showQR && <ProfileQRCode uri={profile.uri} />}
+          {profileFormat === "uri" ? (
+            <button
+              className="button secondary-button profile-qr-toggle"
+              onClick={() => setShowQR((visible) => !visible)}
+              aria-expanded={showQR}
+              aria-controls="profile-qr"
+            >
+              {showQR ? "Скрыть QR-код" : "Показать QR-код"}
+            </button>
+          ) : (
+            <p className="profile-format-help">
+              Файл содержит ключ устройства. После импорта удалите его из папки загрузок.
+            </p>
+          )}
+          {showQR && profileFormat === "uri" && <ProfileQRCode uri={profile.uri} />}
           <ErrorNotice error={copyError} />
           <div className="modal-actions">
             <button
@@ -1157,12 +1200,17 @@ function Dashboard({
             >
               Скрыть профиль
             </button>
+            {profileFormat !== "uri" && (
+              <button className="button secondary-button" onClick={downloadProfile}>
+                Скачать файл
+              </button>
+            )}
             <button
               className="button primary"
               onClick={() => void copyProfile()}
             >
               <Icon name={copied ? "check" : "copy"} size={17} />
-              {copied ? "Скопировано" : "Скопировать URI"}
+              {copied ? "Скопировано" : profileFormat === "uri" ? "Скопировать ссылку" : "Скопировать конфигурацию"}
             </button>
           </div>
         </Modal>

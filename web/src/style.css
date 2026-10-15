@@ -782,6 +782,16 @@ textarea:focus {
   resize: vertical;
   overflow-wrap: anywhere;
 }
+.profile-format-picker {
+  width: 100%;
+  margin: 0 0 16px;
+}
+.profile-format-help {
+  font-size: 12px;
+  line-height: 1.5;
+  color: #617084;
+  margin: 12px 0 0;
+}
 .profile-qr-toggle {
   margin-top: 14px;
 }

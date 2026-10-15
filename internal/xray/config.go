@@ -87,7 +87,7 @@ func validateShortID(id string) error {
 	return nil
 }
 
-// Profile emits a VLESS URL accepted by Hiddify, including IPv6 endpoint support.
+// Profile emits a standard VLESS share URI, including IPv6 endpoint support.
 func Profile(node model.Node, credentialID, name string) (string, error) {
 	if !uuidPattern.MatchString(credentialID) {
 		return "", errors.New("VLESS credential must be a UUID")
@@ -115,6 +115,73 @@ func Profile(node model.Node, credentialID, name string) (string, error) {
 		RawQuery: params.Encode(), Fragment: name,
 	}
 	return u.String(), nil
+}
+
+// ClientProfiles derives all client exports from the same validated credential.
+// Each format is returned only by the authenticated profile endpoint.
+func ClientProfiles(node model.Node, credentialID, name string) (model.Profile, error) {
+	uri, err := Profile(node, credentialID, name)
+	if err != nil {
+		return model.Profile{}, err
+	}
+	credentialID = strings.ToLower(credentialID)
+	shortID := strings.ToLower(node.ShortID)
+	singBox := map[string]any{
+		"log": map[string]any{"level": "warn"},
+		"inbounds": []any{map[string]any{
+			"type": "mixed", "tag": "local", "listen": "127.0.0.1", "listen_port": 2080,
+		}},
+		"outbounds": []any{map[string]any{
+			"type": "vless", "tag": "gateway", "server": node.Host,
+			"server_port": node.Port, "uuid": credentialID, "flow": "xtls-rprx-vision",
+			"tls": map[string]any{
+				"enabled": true, "server_name": node.ServerName,
+				"utls": map[string]any{"enabled": true, "fingerprint": "chrome"},
+				"reality": map[string]any{
+					"enabled": true, "public_key": node.PublicKey, "short_id": shortID,
+				},
+			},
+		}},
+		"route": map[string]any{"final": "gateway"},
+	}
+	singBoxJSON, err := json.MarshalIndent(singBox, "", "  ")
+	if err != nil {
+		return model.Profile{}, fmt.Errorf("encode sing-box profile: %w", err)
+	}
+	// JSON quoted strings are valid YAML scalars and protect the device name
+	// and IPv6 host from changing the meaning of the generated configuration.
+	quoted := func(value string) string {
+		encoded, _ := json.Marshal(value)
+		return string(encoded)
+	}
+	mihomoYAML := fmt.Sprintf(`mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: warning
+proxies:
+  - name: %s
+    type: vless
+    server: %s
+    port: %d
+    uuid: %s
+    network: tcp
+    tls: true
+    flow: xtls-rprx-vision
+    servername: %s
+    client-fingerprint: chrome
+    reality-opts:
+      public-key: %s
+      short-id: %s
+proxy-groups:
+  - name: GATEWAY
+    type: select
+    proxies:
+      - %s
+rules:
+  - MATCH,GATEWAY
+`, quoted(name), quoted(node.Host), node.Port, quoted(credentialID),
+		quoted(node.ServerName), quoted(node.PublicKey), quoted(shortID), quoted(name))
+	return model.Profile{URI: uri, SingBoxJSON: string(singBoxJSON) + "\n", MihomoYAML: mihomoYAML}, nil
 }
 
 // Render produces the server configuration for current Xray RAW/TCP + REALITY.
