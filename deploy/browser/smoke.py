@@ -83,7 +83,7 @@ def check(port):
         name_length = struct.unpack("!I", initial[20:24])[0]
         assert name_length <= 65536, "unexpected VNC desktop name"
         read(name_length)
-        assert (width, height) == (1440, 900), "unexpected framebuffer dimensions"
+        assert (width, height) == (1280, 720), "unexpected framebuffer dimensions"
     print(f"noVNC HTTP, WebSocket, VNC handshake: OK; framebuffer {width}x{height}")
 
 

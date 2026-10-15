@@ -15,7 +15,7 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' INT TERM
 
-Xvfb "$DISPLAY" -screen 0 1440x900x24 -nolisten tcp -ac &
+Xvfb "$DISPLAY" -screen 0 1280x720x24 -nolisten tcp -ac &
 xvfb_pid=$!
 pids="$xvfb_pid"
 attempt=0
@@ -40,7 +40,7 @@ pids="$pids $novnc_pid"
 # namespace/setuid sandbox requires privileges denied by this deployment.
 chromium --no-sandbox --disable-dev-shm-usage --no-first-run \
     --no-default-browser-check --user-data-dir=/tmp/chromium \
-    --window-size=1440,900 --start-maximized about:blank &
+    --window-size=1280,720 --start-maximized about:blank &
 chromium_pid=$!
 pids="$pids $chromium_pid"
 printf '%s\n' "$pids" > /tmp/browser.pids
