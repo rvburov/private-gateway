@@ -29,7 +29,7 @@ class CredentialsTest(unittest.TestCase):
         self.compose.write_text("services: {}\n")
         self.backups = self.root / "backups"
 
-    def invoke(self, check, execute):
+    def invoke(self, check, execute, username="admin"):
         original_lstat = Path.lstat
         def root_owned(path):
             if path == self.env:
@@ -37,7 +37,7 @@ class CredentialsTest(unittest.TestCase):
             return original_lstat(path)
         secret = b"12345678901234567890"
         with patch.object(Path, "lstat", root_owned), \
-             patch.object(admin, "input", side_effect=["admin", admin.code_at_step(secret, 1)], create=True), \
+             patch.object(admin, "input", side_effect=[username, admin.code_at_step(secret, 1)], create=True), \
              patch.object(admin.getpass, "getpass", side_effect=["very-long-password", "very-long-password"]), \
              patch.object(admin.secrets, "token_bytes", side_effect=[b"0123456789abcdef", secret]), \
              patch.object(admin.time, "time", return_value=59):
@@ -66,6 +66,12 @@ class CredentialsTest(unittest.TestCase):
             self.invoke(failed, lambda command: calls.append(command))
         self.assertEqual(self.env.read_bytes(), self.original)
         self.assertEqual(sum("--force-recreate" in command for command in calls), 2)
+
+    def test_email_login_is_accepted(self):
+        checked = []
+        self.invoke(lambda *args: checked.append(args), lambda command: None, "romanburov89@gmail.com")
+        self.assertIn(b"GATEWAY_ADMIN_USERNAME=romanburov89@gmail.com", self.env.read_bytes())
+        self.assertEqual(checked[0][1], "romanburov89@gmail.com")
 
     def test_invalid_authenticator_code_does_not_change_env(self):
         self.assertFalse(admin.valid_code(b"12345678901234567890", "000000"))

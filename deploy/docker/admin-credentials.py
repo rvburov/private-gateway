@@ -122,8 +122,10 @@ def setup(env=ENV, compose=COMPOSE, backups=BACKUPS, check=verify, execute=run):
         if line.startswith("GATEWAY_ADMIN_USERNAME="):
             current = line.split("=", 1)[1]
     username = input(f"Administrator login [{current or 'admin'}]: ").strip() or current or "admin"
-    if not re.fullmatch(r"[A-Za-z0-9._-]{3,64}", username):
-        raise SetupError("login must contain 3-64 Latin letters, digits, dots, dashes or underscores")
+    simple_login = re.fullmatch(r"[A-Za-z0-9._-]{3,64}", username)
+    email_login = len(username) <= 64 and re.fullmatch(r"[A-Za-z0-9._-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", username)
+    if not (simple_login or email_login):
+        raise SetupError("login must be 3-64 Latin letters, digits, dots, dashes or underscores, or an email address")
     password = getpass.getpass("New administrator password (at least 14 characters): ")
     if len(password) < 14 or len(password) > 128 or "\n" in password or "\r" in password:
         raise SetupError("password must contain 14-128 characters")
