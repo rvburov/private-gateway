@@ -5,9 +5,9 @@ info:
   description: >-
     One local Xray node. Device changes remain pending until config/apply.
     Profiles contain credentials and must not be cached, logged or shared.
-    After terminal setup, public Bearer access requires a temporary session
-    from password verification and authenticator confirmation. The long-lived
-    CLI token is accepted only from loopback.
+    Public Bearer access requires a temporary session from password verification
+    and authenticator confirmation. Before administrator setup, public access is
+    unavailable. The long-lived CLI token is accepted only from loopback.
 servers:
   - url: http://127.0.0.1:8080
 security:

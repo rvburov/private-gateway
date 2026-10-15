@@ -136,14 +136,21 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 	}
 }
 
-func TestLegacyTokenRemainsUntilSetup(t *testing.T) {
+func TestCLITokenOnlyWorksOnLoopbackBeforeSetup(t *testing.T) {
 	handler := New(nil, nil, nil, Options{Token: strings.Repeat("x", 64)})
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
 	req.RemoteAddr = "192.0.2.1:1234"
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
 	req.Header.Set("Authorization", "Bearer "+strings.Repeat("x", 64))
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
+	if w.Code != 401 {
+		t.Fatalf("public CLI token access: %d", w.Code)
+	}
+	req.RemoteAddr = "127.0.0.1:1234"
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
 	if w.Code != 200 {
-		t.Fatalf("legacy access: %d", w.Code)
+		t.Fatalf("local CLI token access: %d", w.Code)
 	}
 }

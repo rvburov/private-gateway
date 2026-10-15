@@ -238,7 +238,6 @@ function ProfileQRCode({ uri, alt = "QR-код профиля подключен
 export default function App() {
   const queryClient = useQueryClient();
   const [token, setToken] = useState("");
-  const [input, setInput] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -263,17 +262,16 @@ export default function App() {
     setError(null);
     setPending(true);
     try {
-      let credential: string;
-      if (configured) {
-        if (loginStep === "password") {
+      if (loginStep === "password") {
           const response = await fetch("/api/v1/auth/login", {
             method: "POST", credentials: "same-origin",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username: username.trim(), password }),
           });
-          if (!response.ok) throw new Error(response.status === 429
-            ? "Слишком много попыток. Повторите через пять минут."
-            : "Неверный логин или пароль.");
+          if (!response.ok) throw new Error(response.status === 503
+            ? "Учётная запись ещё не настроена на VPS. Выполните команду настройки через SSH и обновите страницу."
+            : response.status === 429 ? "Слишком много попыток. Повторите через пять минут."
+              : "Неверный логин или пароль.");
           const result = (await response.json()) as { status: string; pending: string };
           if (!result.pending || !["totp_required", "totp_setup_required"].includes(result.status)) throw new Error("Не удалось начать вход.");
           setPendingToken(result.pending);
@@ -292,23 +290,19 @@ export default function App() {
             setLoginStep("totp");
           }
           return;
-        }
-        const response = await fetch(loginStep === "setup" ? "/api/v1/auth/2fa/setup/confirm" : "/api/v1/auth/2fa", {
-          method: "POST", credentials: "same-origin",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${pendingToken}` },
-          body: JSON.stringify({ code: code.trim() }),
-        });
-        if (!response.ok) throw new Error(response.status === 401
-          ? "Неверный код или время входа истекло. Проверьте код; при истечении времени начните вход заново."
-          : "Не удалось проверить код. Повторите попытку.");
-        credential = ((await response.json()) as { session: string }).session;
-      } else {
-        credential = input.trim();
       }
+      const response = await fetch(loginStep === "setup" ? "/api/v1/auth/2fa/setup/confirm" : "/api/v1/auth/2fa", {
+        method: "POST", credentials: "same-origin",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${pendingToken}` },
+        body: JSON.stringify({ code: code.trim() }),
+      });
+      if (!response.ok) throw new Error(response.status === 401
+        ? "Неверный код или время входа истекло. Проверьте код; при истечении времени начните вход заново."
+        : "Не удалось проверить код. Повторите попытку.");
+      const credential = ((await response.json()) as { session: string }).session;
       await request<Status>(credential, "/status");
       queryClient.clear();
       setToken(credential);
-      setInput("");
       setPassword("");
       setCode("");
       setPendingToken("");
@@ -322,7 +316,7 @@ export default function App() {
     }
   }
   function logout() {
-    if (configured && token) {
+    if (token) {
       void fetch("/api/v1/auth/logout", {
         method: "POST",
         headers: { Authorization: `Bearer ${token}` },
@@ -379,17 +373,16 @@ export default function App() {
             <Icon name="lock" size={26} />
           </span>
           <h2>Вход в панель</h2>
-          <p>{configured
-            ? loginStep === "password" ? "Шаг 1 из 2: введите логин и пароль, заданные в терминале."
-              : loginStep === "setup" ? "Шаг 2 из 2: подключите приложение-аутентификатор и подтвердите код."
-                : "Шаг 2 из 2: введите код из приложения-аутентификатора."
-            : "Введите токен администратора вашего шлюза. После настройки логина и пароля через SSH здесь появится вход по паролю и коду."}</p>
-          {configured && loginStep === "password" ? <>
+          <p>{loginStep === "password" ? "Шаг 1 из 2: введите логин и пароль, заданные в терминале."
+            : loginStep === "setup" ? "Шаг 2 из 2: подключите приложение-аутентификатор и подтвердите код."
+              : "Шаг 2 из 2: введите код из приложения-аутентификатора."}</p>
+          {!configured && <p role="status">Учётная запись администратора ещё не настроена. На VPS через SSH выполните <code>sudo python3 /opt/private-gateway-docker/current/docker/admin-credentials.py</code>, затем обновите страницу.</p>}
+          {loginStep === "password" ? <>
           <label htmlFor="username">Логин</label>
           <input id="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus />
           <label htmlFor="password">Пароль</label>
           <input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-          </> : configured ? <>
+          </> : <>
           <div className="login-identity">Входите как <strong>{username}</strong></div>
           {loginStep === "setup" && setupURI && <>
             <ProfileQRCode uri={setupURI} alt="QR-код приложения-аутентификатора" caption="Сканируйте QR-код в приложении-аутентификаторе на телефоне." failure="Не удалось создать QR-код. Введите ключ ниже вручную." />
@@ -397,42 +390,20 @@ export default function App() {
           </>}
           <label htmlFor="code">Код аутентификации</label>
           <input id="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value)} required />
-          </> : <>
-          <label htmlFor="token">Токен доступа</label>
-          <input
-            id="token"
-            type="password"
-            autoComplete="off"
-            autoCapitalize="none"
-            autoCorrect="off"
-            spellCheck={false}
-            value={input}
-            onChange={(event) => setInput(event.target.value)}
-            placeholder="GATEWAY_API_TOKEN"
-            required
-            autoFocus
-          />
-          {input && (
-            <span className="token-format">
-              {/^[0-9a-f]{64}$/.test(input.trim())
-                ? "Введено 64 символа, формат токена верный."
-                : `Введено ${input.trim().length} символов. Токен содержит 64 латинских символа 0–9 и a–f.`}
-            </span>
-          )}
           </>}
           <ErrorNotice error={error} />
           <button
             className="button primary full"
-            disabled={pending || (configured ? loginStep === "password" ? !username.trim() || !password : !/^[0-9]{6}$/.test(code.trim()) : !input.trim())}
+            disabled={pending || !configured || (loginStep === "password" ? !username.trim() || !password : !/^[0-9]{6}$/.test(code.trim()))}
           >
-            {pending ? "Проверяем доступ…" : configured && loginStep === "password" ? "Продолжить" : configured && loginStep === "setup" ? "Подтвердить и войти" : "Открыть панель"}
+            {pending ? "Проверяем доступ…" : loginStep === "password" ? "Продолжить" : loginStep === "setup" ? "Подтвердить и войти" : "Открыть панель"}
             <Icon name="arrow" size={18} />
           </button>
-          {configured && loginStep !== "password" && <button type="button" className="login-back" onClick={backToPassword}>← Назад к логину</button>}
+          {loginStep !== "password" && <button type="button" className="login-back" onClick={backToPassword}>← Назад к логину</button>}
           <div className="privacy-note">
             <Icon name="lock" size={14} />
             <span>
-              {configured ? "Сеанс хранится только в памяти этой вкладки. После перезагрузки потребуется войти снова." : "Токен хранится только в памяти этой вкладки. После перезагрузки потребуется войти снова."}
+              Сеанс хранится только в памяти этой вкладки. После перезагрузки потребуется войти снова.
             </span>
           </div>
         </form>

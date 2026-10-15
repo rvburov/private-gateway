@@ -23,14 +23,14 @@ let revision = 1;
 let profileRequests = 0;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
-let adminConfigured = false;
+let adminConfigured = true;
 let adminSetup = true;
 
 beforeEach(() => {
   revoked = false;
   revision = 1;
   profileRequests = 0;
-  adminConfigured = false;
+  adminConfigured = true;
   adminSetup = true;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -129,15 +129,26 @@ async function login() {
       <App />
     </QueryClientProvider>,
   );
-  fireEvent.change(await screen.findByLabelText("Токен доступа"), {
-    target: { value: "admin-token" },
-  });
+  fireEvent.change(await screen.findByLabelText("Логин"), { target: { value: "admin" } });
+  fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "long-password" } });
+  fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
+  fireEvent.change(await screen.findByLabelText("Код аутентификации"), { target: { value: "123456" } });
   fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
   await screen.findByText("Ваш приватный шлюз");
   await screen.findByText("Phone");
 }
 
 describe("administrator panel", () => {
+  it("shows the login form and setup guidance before the administrator is configured", async () => {
+    adminConfigured = false;
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    expect(await screen.findByLabelText("Логин")).toBeTruthy();
+    expect(screen.getByLabelText("Пароль")).toBeTruthy();
+    expect(screen.queryByLabelText("Токен доступа")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("admin-credentials.py");
+    expect((screen.getByRole("button", { name: "Продолжить" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it("requires password before the authenticator code when configured", async () => {
     adminConfigured = true;
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
@@ -177,15 +188,12 @@ describe("administrator panel", () => {
         <App />
       </QueryClientProvider>,
     );
-    fireEvent.change(await screen.findByLabelText("Токен доступа"), {
-      target: { value: "wrong-token" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    fireEvent.change(await screen.findByLabelText("Логин"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "wrong-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
     await screen.findByRole("alert");
     expect(screen.queryByText("Ваш приватный шлюз")).toBeNull();
-    expect(screen.getByRole("alert").textContent).toContain(
-      "Доступ недействителен",
-    );
+    expect(screen.getByRole("alert").textContent).toContain("Неверный логин или пароль");
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
@@ -196,10 +204,9 @@ describe("administrator panel", () => {
     expect(store).not.toHaveBeenCalled();
     expect(queryClient.getQueryCache().getAll().length).toBeGreaterThan(0);
     fireEvent.click(screen.getByRole("button", { name: "Выйти из панели" }));
-    const tokenInput = (await screen.findByLabelText(
-      "Токен доступа",
-    )) as HTMLInputElement;
-    expect(tokenInput.value).toBe("");
+    expect(await screen.findByLabelText("Логин")).toBeTruthy();
+    expect((screen.getByLabelText("Пароль") as HTMLInputElement).value).toBe("");
+    expect(screen.queryByLabelText("Токен доступа")).toBeNull();
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
     expect(screen.queryByText("Phone")).toBeNull();
     expect(store).not.toHaveBeenCalled();

@@ -902,13 +902,6 @@ textarea:focus {
   justify-content: center;
   padding: 50px 30px;
 }
-.token-format {
-  display: block;
-  margin: -6px 0 14px;
-  color: #617084;
-  font-size: 11px;
-  line-height: 1.5;
-}
 .login-form {
   width: 100%;
   max-width: 350px;

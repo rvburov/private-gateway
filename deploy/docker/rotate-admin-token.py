@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Rotate the panel token and browser password without changing VPN devices."""
+"""Rotate the internal CLI token and browser password without changing VPN devices."""
 
 import base64
 import fcntl
 import hmac
-import json
 import os
 from pathlib import Path
 import re
@@ -100,13 +99,7 @@ def http_status(url, authorization):
         return error.code
 
 
-def login_configured(domain):
-    with build_opener(ProxyHandler({})).open(
-            "https://" + domain + ":8443/api/v1/auth/config", timeout=12) as response:
-        return json.load(response) == {"configured": True}
-
-
-def verify_access(new, old, domain, configured=False):
+def verify_access(new, old, domain):
     base = "https://" + domain + ":8443"
     basic_new = "Basic " + base64.b64encode(("browser:" + new).encode()).decode()
     basic_old = "Basic " + base64.b64encode(("browser:" + old).encode()).decode()
@@ -117,8 +110,7 @@ def verify_access(new, old, domain, configured=False):
     # When the disposable browser is stopped, Caddy accepts its password but
     # returns 502 because noVNC is not listening. The old password must still
     # receive 401; starting Chromium just to rotate credentials is unnecessary.
-    expected_api = (401, 401) if configured else (200, 401)
-    if (api_new, api_old) != expected_api or browser_new not in (200, 502) or browser_old != 401:
+    if (api_new, api_old) != (401, 401) or browser_new not in (200, 502) or browser_old != 401:
         raise RotationError(f"HTTPS checks failed: API {api_new}/{api_old}, "
                             f"browser {browser_new}/{browser_old}")
 
@@ -130,13 +122,12 @@ def require_private(path):
 
 
 def rotate(env=ENV, caddyfile=CADDYFILE, compose=COMPOSE, backups=BACKUPS,
-           execute=run, verify=verify_access, detect=login_configured):
+           execute=run, verify=verify_access):
     if not compose.is_file():
         raise RotationError("installed Docker release is incomplete")
     old_env, old_caddyfile = env.read_bytes(), caddyfile.read_bytes()
     old_token = env_value(old_env, "GATEWAY_API_TOKEN")
     domain = env_value(old_env, "PANEL_DOMAIN")
-    configured = detect(domain)
     if not re.fullmatch(r"[A-Za-z0-9.-]+", domain) or not re.fullmatch(r"[0-9a-f]{64}", old_token):
         raise RotationError("invalid installed token or panel domain")
     new_token = secrets.token_hex(32)
@@ -163,9 +154,8 @@ def rotate(env=ENV, caddyfile=CADDYFILE, compose=COMPOSE, backups=BACKUPS,
         atomic_private_file(caddyfile, new_caddyfile)
         execute(compose_command + ["config", "--quiet"], timeout=20)
         execute(restart, timeout=120)
-        if configured:
-            execute(compose_command + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "status"], timeout=20)
-        verify(new_token, old_token, domain, configured)
+        execute(compose_command + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "status"], timeout=20)
+        verify(new_token, old_token, domain)
     except BaseException as error:
         atomic_private_file(env, old_env)
         atomic_private_file(caddyfile, old_caddyfile)

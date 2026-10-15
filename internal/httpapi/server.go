@@ -152,7 +152,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 		}
 		a := sha256.Sum256([]byte(value))
 		b := sha256.Sum256([]byte(s.options.Token))
-		if s.options.Token == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 || (admin.Credentials.Configured() && !loopbackClient(r.RemoteAddr)) {
+		if s.options.Token == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 || !loopbackClient(r.RemoteAddr) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			fail(w, 401, "unauthorized")
 			return

@@ -42,14 +42,14 @@ class RotationTest(unittest.TestCase):
             return "$2a$12$" + "b" * 53
         return ""
 
-    def rotate(self, verify, configured=False):
+    def rotate(self, verify):
         return rotation.rotate(self.env, self.caddyfile, self.compose, self.backups,
-                               self.execute, verify, lambda domain: configured)
+                               self.execute, verify)
 
     def test_rotates_api_and_browser_together_and_keeps_secrets_private(self):
         observed = []
 
-        def verify(new, old, domain, configured):
+        def verify(new, old, domain):
             observed.append((new, old, domain))
 
         result = self.rotate(verify)
@@ -67,7 +67,7 @@ class RotationTest(unittest.TestCase):
         self.assertEqual(sum("--force-recreate" in command for command in self.calls), 1)
 
     def test_failed_https_verification_restores_both_files_and_containers(self):
-        def verify(new, old, domain, configured):
+        def verify(new, old, domain):
             raise rotation.RotationError("simulated HTTPS failure")
 
         with self.assertRaisesRegex(rotation.RotationError, "previous access was restored"):
@@ -82,7 +82,7 @@ class RotationTest(unittest.TestCase):
 
         def status(url, authorization):
             checked.append((url, authorization))
-            if authorization in ("Bearer " + self.old_token, old_basic):
+            if authorization.startswith("Bearer ") or authorization == old_basic:
                 return 401
             return 502 if url.endswith("/browser/vnc.html") else 200
 
@@ -93,13 +93,11 @@ class RotationTest(unittest.TestCase):
             with self.assertRaisesRegex(rotation.RotationError, "HTTPS checks"):
                 rotation.verify_access("2" * 64, self.old_token, "vpn.example.test")
 
-    def test_rotation_keeps_mfa_and_uses_internal_cli_when_configured(self):
-        observed = []
-        self.rotate(lambda new, old, domain, configured: observed.append(configured), configured=True)
-        self.assertEqual(observed, [True])
+    def test_rotation_uses_internal_cli_with_public_token_login_disabled(self):
+        self.rotate(lambda new, old, domain: None)
         self.assertTrue(any(any(item.endswith("/gatewayctl") for item in command) for command in self.calls))
         with patch.object(rotation, "http_status", side_effect=[401, 401, 502, 401]):
-            rotation.verify_access("2" * 64, self.old_token, "vpn.example.test", True)
+            rotation.verify_access("2" * 64, self.old_token, "vpn.example.test")
 
 
 if __name__ == "__main__":
