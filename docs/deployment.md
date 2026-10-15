@@ -94,6 +94,8 @@ sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --isolated
 
 Она сверяет публичный ключ профиля с закрытым ключом Xray через OpenSSL, затем временно запускает вторую копию Xray на локальном порту с той же конфигурацией и удаляет временные файлы. Работающий контейнер не меняется. Если изолированная проверка проходит, ищите причину в сетевом пути Docker или окружении контейнера. Если она падает, строка `isolated Xray` покажет тип отказа без вывода UUID и ключей.
 
+Если результат — `REALITY rejected: handshake did not complete successfully`, проверьте на временной копии другое имя сайта прикрытия: `sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --isolated --isolated-target www.cloudflare.com`. Это меняет SNI и target только во временном тесте; рабочий профиль остаётся прежним. При неудаче можно повторить с `www.wikipedia.org` или `www.apple.com`. Успех покажет, что исходный target не подходит для этой версии Xray и сетевого пути VPS; после этого нужно отдельно обновить серверную конфигурацию и перевыпустить URI устройств.
+
 С Windows проверьте DNS, TCP и настоящий HTTPS с проверкой сертификата:
 
 ```powershell

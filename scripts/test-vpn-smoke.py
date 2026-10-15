@@ -112,6 +112,12 @@ class VPNSmokeTest(unittest.TestCase):
                 finally:
                     stop(client)
                 isolated_port, isolated_client_port = unused_port(), unused_port()
+                alternate = smoke.isolated_server_config(json.loads(json.dumps(server_config)), isolated_port,
+                                                         "www.cloudflare.com")
+                self.assertEqual(alternate["inbounds"][0]["streamSettings"]["realitySettings"]["target"],
+                                 "www.cloudflare.com:443")
+                self.assertEqual(alternate["inbounds"][0]["streamSettings"]["realitySettings"]["serverNames"],
+                                 ["www.cloudflare.com"])
                 isolated_dir = root / "isolate"
                 isolated_dir.mkdir()
                 with mock.patch.object(smoke, "SERVER_CONFIG", root / "server.json"), \

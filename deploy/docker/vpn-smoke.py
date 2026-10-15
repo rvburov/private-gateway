@@ -146,7 +146,7 @@ def read_exact(connection, length, stage):
     return bytes(data)
 
 
-def probe_socks(port, target, destination=None):
+def probe_socks(port, target, destination=None, timeout=10):
     destination_host, destination_port = destination or (target, 443)
     hostname = destination_host.encode("ascii")
     if not hostname or len(hostname) > 253:
@@ -154,7 +154,7 @@ def probe_socks(port, target, destination=None):
     stage = "local SOCKS connection"
     try:
         with socket.create_connection(("127.0.0.1", port), timeout=8) as connection:
-            connection.settimeout(10)
+            connection.settimeout(timeout)
             connection.sendall(b"\x05\x01\x00")
             if read_exact(connection, 2, stage) != b"\x05\x00":
                 raise SmokeError("local SOCKS negotiation failed")
@@ -195,13 +195,22 @@ def stop(process):
         process.wait(timeout=3)
 
 
-def start_isolated_server(directory, port):
+def isolated_server_config(config, port, target=None):
+    config["log"]["loglevel"] = "info"
+    inbound = config["inbounds"][0]
+    inbound["listen"] = "127.0.0.1"
+    inbound["port"] = port
+    if target is not None:
+        reality = inbound["streamSettings"]["realitySettings"]
+        reality["target"] = target + ":443"
+        reality["serverNames"] = [target]
+    return config
+
+
+def start_isolated_server(directory, port, target=None):
     process = None
     try:
-        config = json.loads(SERVER_CONFIG.read_text())
-        config["log"]["loglevel"] = "info"
-        config["inbounds"][0]["listen"] = "127.0.0.1"
-        config["inbounds"][0]["port"] = port
+        config = isolated_server_config(json.loads(SERVER_CONFIG.read_text()), port, target)
         path = Path(directory) / "server.json"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as output:
@@ -283,7 +292,7 @@ def check_reality_public_key(profile):
         raise SmokeError("profile REALITY public key differs from server private key")
 
 
-def run_client(directory, config, target, port):
+def run_client(directory, config, target, port, timeout=10):
     path = Path(directory) / "client.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as output:
@@ -305,7 +314,7 @@ def run_client(directory, config, target, port):
                 time.sleep(0.1)
         else:
             raise SmokeError("local Xray client did not start")
-        return probe_socks(port, target)
+        return probe_socks(port, target, timeout=timeout)
     finally:
         stop(process)
 
@@ -313,7 +322,11 @@ def run_client(directory, config, target, port):
 def main():
     parser = argparse.ArgumentParser(description="Check an active profile through the installed Xray gateway")
     parser.add_argument("--isolated", action="store_true", help="check the same server config with a temporary loopback Xray")
+    parser.add_argument("--isolated-target", choices=("www.cloudflare.com", "www.wikipedia.org", "www.apple.com"),
+                        help="try an alternate REALITY camouflage target in isolated mode")
     args = parser.parse_args()
+    if args.isolated_target and not args.isolated:
+        parser.error("--isolated-target requires --isolated")
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
     profile = get_profile()
@@ -324,14 +337,17 @@ def main():
     while server_port == port:
         server_port = free_port()
     config, target = client_config(profile, port, server_port)
+    if args.isolated_target:
+        config["outbounds"][0]["streamSettings"]["realitySettings"]["serverName"] = args.isolated_target
+        target = args.isolated_target
     with tempfile.TemporaryDirectory(prefix="private-gateway-vpn-smoke-") as directory:
         server = None
         server_log = None
         try:
             if args.isolated:
-                server, server_log = start_isolated_server(directory, server_port)
+                server, server_log = start_isolated_server(directory, server_port, args.isolated_target)
             try:
-                protocol = run_client(directory, config, target, port)
+                protocol = run_client(directory, config, target, port, timeout=30 if args.isolated else 10)
             except SmokeError as error:
                 if server is not None:
                     stop(server)
