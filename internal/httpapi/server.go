@@ -77,7 +77,6 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_http_requests_total", Help: "HTTP requests by method and status class."}, []string{"method", "status_class"})
 	registry.MustRegister(requests)
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Get("/auth/config", s.authConfig)
 		r.Post("/auth/login", s.login)
 		r.Post("/auth/2fa", s.secondFactor)
 		r.Post("/auth/2fa/setup", s.startTOTPSetup)

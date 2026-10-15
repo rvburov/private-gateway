@@ -23,14 +23,12 @@ let revision = 1;
 let profileRequests = 0;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
-let adminConfigured = true;
 let adminSetup = true;
 
 beforeEach(() => {
   revoked = false;
   revision = 1;
   profileRequests = 0;
-  adminConfigured = true;
   adminSetup = true;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -43,8 +41,6 @@ beforeEach(() => {
     this.removeAttribute("open");
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
-    if (path === "/api/v1/auth/config")
-      return Response.json({ configured: adminConfigured });
     if (path === "/api/v1/auth/login") {
       const input = JSON.parse(options.body as string) as { username: string; password: string };
       return input.username === "admin" && input.password === "long-password"
@@ -139,18 +135,17 @@ async function login() {
 }
 
 describe("administrator panel", () => {
-  it("shows the login form and setup guidance before the administrator is configured", async () => {
-    adminConfigured = false;
+  it("shows only the login form before authentication", async () => {
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     expect(await screen.findByLabelText("Логин")).toBeTruthy();
     expect(screen.getByLabelText("Пароль")).toBeTruthy();
     expect(screen.queryByLabelText("Токен доступа")).toBeNull();
-    expect(screen.getByRole("status").textContent).toContain("admin-credentials.py");
-    expect((screen.getByRole("button", { name: "Продолжить" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByText(/admin-credentials\.py/)).toBeNull();
+    expect(screen.queryByText(/не настроена/)).toBeNull();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("requires password before the authenticator code when configured", async () => {
-    adminConfigured = true;
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     expect(await screen.findByLabelText("Логин")).toBeTruthy();
     expect(screen.queryByLabelText("Токен доступа")).toBeNull();
@@ -168,7 +163,6 @@ describe("administrator panel", () => {
   });
 
   it("enrolls the authenticator in the browser after password verification", async () => {
-    adminConfigured = true;
     adminSetup = false;
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     fireEvent.change(await screen.findByLabelText("Логин"), { target: { value: "admin" } });
@@ -194,7 +188,7 @@ describe("administrator panel", () => {
     await screen.findByRole("alert");
     expect(screen.queryByText("Ваш приватный шлюз")).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain("Неверный логин или пароль");
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 

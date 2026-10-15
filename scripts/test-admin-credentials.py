@@ -94,6 +94,29 @@ class CredentialsTest(unittest.TestCase):
         self.assertEqual(self.env.read_bytes(), self.original)
         self.assertFalse(any(command[-1] == "admin-restore" for command, _ in self.calls))
 
+    def test_verification_uses_login_without_public_setup_status(self):
+        requests = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return b'{"status":"totp_setup_required","pending":"temporary"}'
+
+        class Opener:
+            def open(self, request, timeout):
+                requests.append(request)
+                return Response()
+
+        with patch.object(admin, "build_opener", return_value=Opener()):
+            admin.verify("example.test", "admin", "new-password")
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0].full_url, "https://example.test:8443/api/v1/auth/login")
+
 
 if __name__ == "__main__":
     unittest.main()

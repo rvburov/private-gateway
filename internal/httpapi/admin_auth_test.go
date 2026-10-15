@@ -45,8 +45,8 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 		return w
 	}
 	const remote = "192.0.2.1:1234"
-	if got := call("GET", "/api/v1/auth/config", "", "", remote).Body.String(); !strings.Contains(got, `"configured":true`) {
-		t.Fatal(got)
+	if got := call("GET", "/api/v1/auth/config", "", "", remote).Code; got != 404 {
+		t.Fatalf("public administrator setup status: %d", got)
 	}
 	if got := call("GET", "/api/v1/metrics", "", cliToken, remote).Code; got != 401 {
 		t.Fatalf("external admin token: %d", got)
@@ -138,6 +138,13 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 
 func TestCLITokenOnlyWorksOnLoopbackBeforeSetup(t *testing.T) {
 	handler := New(nil, nil, nil, Options{Token: strings.Repeat("x", 64)})
+	login := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", strings.NewReader(`{"username":"admin","password":"test"}`))
+	login.Header.Set("Content-Type", "application/json")
+	loginResponse := httptest.NewRecorder()
+	handler.ServeHTTP(loginResponse, login)
+	if loginResponse.Code != 401 || strings.Contains(loginResponse.Body.String(), "configured") {
+		t.Fatalf("login disclosed administrator setup status: %d %s", loginResponse.Code, loginResponse.Body.String())
+	}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/metrics", nil)
 	req.RemoteAddr = "192.0.2.1:1234"
 	req.Header.Set("X-Forwarded-For", "127.0.0.1")

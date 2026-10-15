@@ -245,18 +245,8 @@ export default function App() {
   const [pendingToken, setPendingToken] = useState("");
   const [setupSecret, setSetupSecret] = useState("");
   const [setupURI, setSetupURI] = useState("");
-  const [configured, setConfigured] = useState<boolean | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  useEffect(() => {
-    fetch("/api/v1/auth/config", { credentials: "same-origin", cache: "no-store" })
-      .then(async (response) => {
-        if (!response.ok) throw new Error("Не удалось проверить настройку входа.");
-        return (await response.json()) as { configured: boolean };
-      })
-      .then((result) => setConfigured(result.configured))
-      .catch((reason: unknown) => setError(reason));
-  }, []);
   async function login(event: FormEvent) {
     event.preventDefault();
     setError(null);
@@ -268,10 +258,9 @@ export default function App() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ username: username.trim(), password }),
           });
-          if (!response.ok) throw new Error(response.status === 503
-            ? "Учётная запись ещё не настроена на VPS. Выполните команду настройки через SSH и обновите страницу."
-            : response.status === 429 ? "Слишком много попыток. Повторите через пять минут."
-              : "Неверный логин или пароль.");
+          if (!response.ok) throw new Error(response.status === 429
+            ? "Слишком много попыток. Повторите через пять минут."
+            : "Неверный логин или пароль.");
           const result = (await response.json()) as { status: string; pending: string };
           if (!result.pending || !["totp_required", "totp_setup_required"].includes(result.status)) throw new Error("Не удалось начать вход.");
           setPendingToken(result.pending);
@@ -335,7 +324,6 @@ export default function App() {
     setError(null);
   }
   if (token) return <Dashboard token={token} onLogout={logout} />;
-  if (configured === null) return <div className="login-page"><div className="login-form-wrap"><p>Проверяем настройку входа…</p><ErrorNotice error={error} /></div></div>;
   return (
     <div className="login-page">
       <div className="login-intro">
@@ -373,10 +361,9 @@ export default function App() {
             <Icon name="lock" size={26} />
           </span>
           <h2>Вход в панель</h2>
-          <p>{loginStep === "password" ? "Шаг 1 из 2: введите логин и пароль, заданные в терминале."
+          <p>{loginStep === "password" ? "Шаг 1 из 2: введите логин и пароль."
             : loginStep === "setup" ? "Шаг 2 из 2: подключите приложение-аутентификатор и подтвердите код."
               : "Шаг 2 из 2: введите код из приложения-аутентификатора."}</p>
-          {!configured && <p role="status">Учётная запись администратора ещё не настроена. На VPS через SSH выполните <code>sudo python3 /opt/private-gateway-docker/current/docker/admin-credentials.py</code>, затем обновите страницу.</p>}
           {loginStep === "password" ? <>
           <label htmlFor="username">Логин</label>
           <input id="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus />
@@ -394,7 +381,7 @@ export default function App() {
           <ErrorNotice error={error} />
           <button
             className="button primary full"
-            disabled={pending || !configured || (loginStep === "password" ? !username.trim() || !password : !/^[0-9]{6}$/.test(code.trim()))}
+            disabled={pending || (loginStep === "password" ? !username.trim() || !password : !/^[0-9]{6}$/.test(code.trim()))}
           >
             {pending ? "Проверяем доступ…" : loginStep === "password" ? "Продолжить" : loginStep === "setup" ? "Подтвердить и войти" : "Открыть панель"}
             <Icon name="arrow" size={18} />

@@ -13,21 +13,6 @@ servers:
 security:
   - bearerAuth: []
 paths:
-  /api/v1/auth/config:
-    get:
-      operationId: adminAuthConfig
-      security: []
-      description: Whether a terminal-created administrator exists in PostgreSQL.
-      responses:
-        '200':
-          description: Login mode
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [configured]
-                properties:
-                  configured: {type: boolean}
   /api/v1/auth/login:
     post:
       operationId: adminLogin

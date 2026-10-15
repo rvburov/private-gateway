@@ -36,15 +36,6 @@ func (s *Server) administrator(ctx context.Context) (storage.Administrator, erro
 	return s.store.Administrator(ctx)
 }
 
-func (s *Server) authConfig(w http.ResponseWriter, r *http.Request) {
-	admin, err := s.administrator(r.Context())
-	if err != nil {
-		fail(w, 503, "authentication unavailable")
-		return
-	}
-	respond(w, 200, map[string]bool{"configured": admin.Credentials.Configured()})
-}
-
 func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Username string `json:"username"`
@@ -59,7 +50,7 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !admin.Credentials.Configured() {
-		fail(w, 503, "administrator credentials have not been configured on the server")
+		fail(w, 401, "invalid username or password")
 		return
 	}
 	now := time.Now()
