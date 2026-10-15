@@ -103,14 +103,16 @@ def verify_access(new, old, domain):
     base = "https://" + domain + ":8443"
     basic_new = "Basic " + base64.b64encode(("browser:" + new).encode()).decode()
     basic_old = "Basic " + base64.b64encode(("browser:" + old).encode()).decode()
-    checks = (
-        http_status(base + "/api/v1/status", "Bearer " + new) == 200,
-        http_status(base + "/api/v1/status", "Bearer " + old) == 401,
-        http_status(base + "/browser/vnc.html", basic_new) == 200,
-        http_status(base + "/browser/vnc.html", basic_old) == 401,
-    )
-    if not all(checks):
-        raise RotationError("new access did not pass HTTPS checks")
+    api_new = http_status(base + "/api/v1/status", "Bearer " + new)
+    api_old = http_status(base + "/api/v1/status", "Bearer " + old)
+    browser_new = http_status(base + "/browser/vnc.html", basic_new)
+    browser_old = http_status(base + "/browser/vnc.html", basic_old)
+    # When the disposable browser is stopped, Caddy accepts its password but
+    # returns 502 because noVNC is not listening. The old password must still
+    # receive 401; starting Chromium just to rotate credentials is unnecessary.
+    if (api_new, api_old) != (200, 401) or browser_new not in (200, 502) or browser_old != 401:
+        raise RotationError(f"HTTPS checks failed: API {api_new}/{api_old}, "
+                            f"browser {browser_new}/{browser_old}")
 
 
 def require_private(path):
@@ -160,7 +162,9 @@ def rotate(env=ENV, caddyfile=CADDYFILE, compose=COMPOSE, backups=BACKUPS,
             execute(restart, timeout=120)
         except BaseException as rollback_error:
             raise RotationError(f"rotation and rollback failed; inspect backup {backup}") from rollback_error
-        raise RotationError(f"rotation failed; previous access was restored; backup {backup}") from error
+        reason = str(error) if isinstance(error, RotationError) else type(error).__name__
+        raise RotationError(f"rotation failed ({reason}); previous access was restored; "
+                            f"backup {backup}") from error
     return f"Admin token and browser password rotated. New token is in {env}; backup {backup}"
 
 

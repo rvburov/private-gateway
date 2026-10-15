@@ -82,7 +82,9 @@ class RotationTest(unittest.TestCase):
 
         def status(url, authorization):
             checked.append((url, authorization))
-            return 401 if authorization in ("Bearer " + self.old_token, old_basic) else 200
+            if authorization in ("Bearer " + self.old_token, old_basic):
+                return 401
+            return 502 if url.endswith("/browser/vnc.html") else 200
 
         with patch.object(rotation, "http_status", side_effect=status):
             rotation.verify_access("2" * 64, self.old_token, "vpn.example.test")
