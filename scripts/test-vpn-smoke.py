@@ -116,6 +116,10 @@ class VPNSmokeTest(unittest.TestCase):
                 isolated_dir.mkdir()
                 with mock.patch.object(smoke, "SERVER_CONFIG", root / "server.json"), \
                      mock.patch.object(smoke, "XRAY", Path(binary)):
+                    smoke.check_reality_public_key(uri)
+                    with self.assertRaisesRegex(smoke.SmokeError, "public key differs"):
+                        alternate = ("A" if public_key[0] != "A" else "B") + public_key[1:]
+                        smoke.check_reality_public_key(uri.replace(public_key, alternate))
                     isolated, log = smoke.start_isolated_server(isolated_dir, isolated_port)
                     try:
                         isolated_config, name = smoke.client_config(uri, isolated_client_port, isolated_port)

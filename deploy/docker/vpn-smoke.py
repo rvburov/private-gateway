@@ -5,8 +5,9 @@ The profile is fetched inside the API container and never printed. The client
 connects through the host's loopback publication of the Xray container.
 """
 
-import json
 import argparse
+import base64
+import json
 import os
 from pathlib import Path
 import socket
@@ -239,12 +240,38 @@ def isolated_result(log):
         return "client UUID rejected"
     if "invalid request" in content:
         return "VLESS request rejected"
+    if "server name mismatch" in content:
+        return "REALITY server name mismatch"
+    if "authentication failed or validation criteria not met" in content:
+        return "REALITY authentication failed"
     if any("REALITY: processed invalid connection" in line and
            "failed to read client hello" not in line for line in content.splitlines()):
         return "REALITY handshake rejected"
     if "accepted tcp:" in content:
         return "VLESS request accepted"
     return "no classified handshake event"
+
+
+def check_reality_public_key(profile):
+    # OpenSSL receives the private key on stdin, never in argv or terminal output.
+    try:
+        config = json.loads(SERVER_CONFIG.read_text())
+        private_key = config["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"]
+        raw = base64.urlsafe_b64decode(private_key + "=" * (-len(private_key) % 4))
+        if len(raw) != 32:
+            raise ValueError("invalid private key")
+        pkcs8 = bytes.fromhex("302e020100300506032b656e04220420") + raw
+        result = subprocess.run(["openssl", "pkey", "-inform", "DER", "-pubout", "-outform", "DER"],
+                                input=pkcs8, capture_output=True, timeout=5, check=False)
+        spki_prefix = bytes.fromhex("302a300506032b656e032100")
+        if result.returncode != 0 or not result.stdout.startswith(spki_prefix) or len(result.stdout) != len(spki_prefix) + 32:
+            raise ValueError("could not derive public key")
+        public_key = base64.urlsafe_b64encode(result.stdout[len(spki_prefix):]).rstrip(b"=").decode("ascii")
+        expected = parse_qs(urlsplit(profile).query)["pbk"][0]
+    except (OSError, ValueError, KeyError, IndexError, subprocess.TimeoutExpired) as error:
+        raise SmokeError("REALITY public key could not be checked") from error
+    if public_key != expected:
+        raise SmokeError("profile REALITY public key differs from server private key")
 
 
 def run_client(directory, config, target, port):
@@ -281,6 +308,8 @@ def main():
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
     profile = get_profile()
+    if args.isolated:
+        check_reality_public_key(profile)
     port = free_port()
     server_port = free_port() if args.isolated else None
     while server_port == port:
