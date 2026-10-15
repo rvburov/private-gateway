@@ -171,6 +171,15 @@ class VPNSmokeTest(unittest.TestCase):
         self.assertEqual(result, "client UUID rejected")
         self.assertNotIn(secret, result)
 
+    def test_isolated_reality_reason_redacts_unexpected_values(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "server.log"
+            prefix = "REALITY: processed invalid connection from 127.0.0.1:12345: "
+            log.write_text(prefix + "failed to read client hello\n" + prefix + "unsupported client hello")
+            self.assertEqual(smoke.isolated_result(log), "REALITY rejected: unsupported client hello")
+            log.write_text(prefix + "unexpected 0123456789abcdef0123456789abcdef")
+            self.assertEqual(smoke.isolated_result(log), "REALITY rejected: unclassified reason")
+
 
 if __name__ == "__main__":
     unittest.main()

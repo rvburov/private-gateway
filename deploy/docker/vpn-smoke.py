@@ -10,6 +10,7 @@ import base64
 import json
 import os
 from pathlib import Path
+import re
 import socket
 import ssl
 import subprocess
@@ -244,9 +245,17 @@ def isolated_result(log):
         return "REALITY server name mismatch"
     if "authentication failed or validation criteria not met" in content:
         return "REALITY authentication failed"
-    if any("REALITY: processed invalid connection" in line and
-           "failed to read client hello" not in line for line in content.splitlines()):
-        return "REALITY handshake rejected"
+    for line in content.splitlines():
+        marker = "REALITY: processed invalid connection from "
+        if marker not in line:
+            continue
+        cause = line.partition(marker)[2].partition(": ")[2].strip()
+        if cause == "failed to read client hello":
+            continue  # Readiness probe connects without sending any TLS bytes.
+        if (re.fullmatch(r"[A-Za-z][A-Za-z .,_'()-]{0,119}", cause)
+                and all(len(word) <= 20 for word in re.findall(r"[A-Za-z]+", cause))):
+            return "REALITY rejected: " + cause
+        return "REALITY rejected: unclassified reason"
     if "accepted tcp:" in content:
         return "VLESS request accepted"
     return "no classified handshake event"
