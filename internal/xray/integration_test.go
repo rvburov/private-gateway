@@ -75,11 +75,13 @@ func TestRealXrayTrafficAndRevocation(t *testing.T) {
 	newID := "372d849d-1985-48a6-bcf7-3a0828f10f40"
 	writeServer([]Client{{ID: newID}})
 	_ = startXrayProcess(t, binary, serverPath, serverPort)
+	newProxy := startRealXrayClient(t, binary, serverPort, key, settings, newID)
+	assertProxyResponse(t, newProxy, origin)
+	// Prove the restarted server carries traffic before attributing failure to
+	// revocation. A failed old request alone could only mean the server is down.
 	if body, err := fetchViaSOCKS(oldProxy, origin); err == nil {
 		t.Fatalf("revoked credential still carried HTTP traffic: %q", body)
 	}
-	newProxy := startRealXrayClient(t, binary, serverPort, key, settings, newID)
-	assertProxyResponse(t, newProxy, origin)
 }
 
 func startTLS13Target(t *testing.T) string {
@@ -253,6 +255,11 @@ func assertProxyResponse(t *testing.T, proxy, origin string) {
 	}
 }
 
+// The race-enabled CI runner can take several seconds to schedule the Xray
+// processes and complete their first REALITY connection after a TCP listener
+// appears. Keep the real HTTP assertion while allowing that startup latency.
+const realTrafficTimeout = 10 * time.Second
+
 func fetchViaSOCKS(proxy, origin string) (string, error) {
 	transport := &http.Transport{
 		DisableKeepAlives: true,
@@ -261,7 +268,7 @@ func fetchViaSOCKS(proxy, origin string) (string, error) {
 		},
 	}
 	defer transport.CloseIdleConnections()
-	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	client := &http.Client{Transport: transport, Timeout: realTrafficTimeout}
 	response, err := client.Get(origin)
 	if err != nil {
 		return "", err
@@ -281,7 +288,7 @@ func dialSOCKS(ctx context.Context, proxy, address string) (_ net.Conn, err erro
 			_ = connection.Close()
 		}
 	}()
-	_ = connection.SetDeadline(time.Now().Add(3 * time.Second))
+	_ = connection.SetDeadline(time.Now().Add(realTrafficTimeout))
 	if _, err = connection.Write([]byte{5, 1, 0}); err != nil {
 		return nil, err
 	}
