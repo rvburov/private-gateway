@@ -30,8 +30,8 @@ services:
       GATEWAY_SHORT_ID: ${GATEWAY_SHORT_ID:?Set GATEWAY_SHORT_ID}
       GATEWAY_HOST: ${GATEWAY_HOST:?Set GATEWAY_HOST}
       GATEWAY_PORT: "443"
-      GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-www.microsoft.com}
-      GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:-www.microsoft.com:443}
+      GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-www.cloudflare.com}
+      GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:-www.cloudflare.com:443}
       GATEWAY_XRAY_CONFIG: /state/xray.json
       GATEWAY_XRAY_BINARY: /usr/local/bin/xray
       GATEWAY_XRAY_RESTART: '["/usr/local/bin/wait-xray.py"]'

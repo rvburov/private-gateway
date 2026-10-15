@@ -194,8 +194,8 @@ values = {
     'BROWSER_WORKER_TOKEN': secrets.token_hex(32),
     'GATEWAY_HOST': host,
     'PANEL_DOMAIN': domain,
-    'GATEWAY_SERVER_NAME': 'www.microsoft.com',
-    'GATEWAY_REALITY_TARGET': 'www.microsoft.com:443',
+    'GATEWAY_SERVER_NAME': 'www.cloudflare.com',
+    'GATEWAY_REALITY_TARGET': 'www.cloudflare.com:443',
     'GATEWAY_STATE_DIR': '/var/lib/private-gateway-docker/xray',
     'GATEWAY_CADDYFILE': '/etc/private-gateway-docker/Caddyfile',
 }

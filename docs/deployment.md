@@ -94,7 +94,17 @@ sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --isolated
 
 Она сверяет публичный ключ профиля с закрытым ключом Xray через OpenSSL, затем временно запускает вторую копию Xray на локальном порту с той же конфигурацией и удаляет временные файлы. Работающий контейнер не меняется. Если изолированная проверка проходит, ищите причину в сетевом пути Docker или окружении контейнера. Если она падает, строка `isolated Xray` покажет тип отказа без вывода UUID и ключей.
 
-Если результат — `REALITY rejected: handshake did not complete successfully`, проверьте на временной копии другое имя сайта прикрытия: `sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --isolated --isolated-target www.cloudflare.com`. Это меняет SNI и target только во временном тесте; рабочий профиль остаётся прежним. При неудаче можно повторить с `www.wikipedia.org` или `www.apple.com`. Успех покажет, что исходный target не подходит для этой версии Xray и сетевого пути VPS; после этого нужно отдельно обновить серверную конфигурацию и перевыпустить URI устройств.
+Если результат — `REALITY rejected: handshake did not complete successfully`, проверьте на временной копии другое имя сайта прикрытия: `sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --isolated --isolated-target www.cloudflare.com`. Это меняет SNI и target только во временном тесте; рабочий профиль остаётся прежним. На VPS изолированная проверка с `www.cloudflare.com` вернула `VLESS traffic OK: TLSv1.3`, в отличие от `www.microsoft.com`.
+
+После зелёного CI/CD с новым релизом выполните **один раз на VPS**:
+
+```bash
+sudo python3 /opt/private-gateway-docker/current/docker/change-reality-target.py
+```
+
+Скрипт повторит изолированную проверку, сохранит закрытую копию `stack.env` и Xray-конфигурации в `/var/backups/private-gateway/`, заменит только target и SNI на `www.cloudflare.com`, пересоздаст API, применит конфигурацию Xray и проверит настоящий VLESS-трафик через рабочий порт. При ошибке он восстановит прежние настройки. Ожидаемый результат: `VLESS traffic OK: TLSv1.3; target www.cloudflare.com; backup ...`. Если написано `repair and rollback failed`, не запускайте команду повторно: сначала проверьте backup и состояние контейнеров. База данных, ключи и устройства не удаляются.
+
+После успеха откройте **Устройства → Профиль** для активного устройства, скопируйте **новый** URI и импортируйте его в Hiddify на iPhone или Windows. Старый URI содержит прежний `sni=www.microsoft.com` и не подходит. Подключите новый профиль и откройте `https://api.ipify.org`; ожидается IP VPS. Только после этого считайте внешний доступ проверенным. По умолчанию новые установки используют `www.cloudflare.com`, но существующая установка меняется только этой одноразовой командой.
 
 С Windows проверьте DNS, TCP и настоящий HTTPS с проверкой сертификата:
 

@@ -47,7 +47,7 @@ values={
  'GATEWAY_API_TOKEN':keys['api_token'],'GATEWAY_MASTER_KEY':keys['master_key'],
  'GATEWAY_REALITY_PRIVATE_KEY':keys['reality_private_key'],'GATEWAY_SHORT_ID':keys['short_id'],
  'GATEWAY_LISTEN':'127.0.0.1:8080','GATEWAY_HOST':'127.0.0.1','GATEWAY_PORT':'8443',
- 'GATEWAY_SERVER_NAME':'www.microsoft.com','GATEWAY_REALITY_TARGET':'www.microsoft.com:443',
+ 'GATEWAY_SERVER_NAME':'www.cloudflare.com','GATEWAY_REALITY_TARGET':'www.cloudflare.com:443',
  'GATEWAY_XRAY_LISTEN':'127.0.0.1','GATEWAY_XRAY_CONFIG':str(repo/'.local/xray.json'),
  'GATEWAY_XRAY_BINARY':sys.argv[2] or 'xray',
  'GATEWAY_XRAY_RESTART':json.dumps(['bash',str(repo/'scripts/xray-service.sh'),'restart']),
