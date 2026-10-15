@@ -23,11 +23,13 @@ let revision = 1;
 let profileRequests = 0;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
+let adminConfigured = false;
 
 beforeEach(() => {
   revoked = false;
   revision = 1;
   profileRequests = 0;
+  adminConfigured = false;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -39,6 +41,15 @@ beforeEach(() => {
     this.removeAttribute("open");
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
+    if (path === "/api/v1/auth/config")
+      return Response.json({ configured: adminConfigured });
+    if (path === "/api/v1/auth/login") {
+      const input = JSON.parse(options.body as string) as { username: string; password: string; code: string };
+      return input.username === "admin" && input.password === "long-password" && input.code === "123456"
+        ? Response.json({ session: "admin-token" })
+        : Response.json({ error: "unauthorized" }, { status: 401 });
+    }
+    if (path === "/api/v1/auth/logout") return Response.json({ status: "logged out" });
     const token = (options.headers as Record<string, string>)?.Authorization;
     if (token !== "Bearer admin-token")
       return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -109,7 +120,7 @@ async function login() {
       <App />
     </QueryClientProvider>,
   );
-  fireEvent.change(screen.getByLabelText("Токен доступа"), {
+  fireEvent.change(await screen.findByLabelText("Токен доступа"), {
     target: { value: "admin-token" },
   });
   fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
@@ -118,22 +129,39 @@ async function login() {
 }
 
 describe("administrator panel", () => {
+  it("requires username, password and authenticator code when configured", async () => {
+    adminConfigured = true;
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    expect(await screen.findByLabelText("Логин")).toBeTruthy();
+    expect(screen.queryByLabelText("Токен доступа")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Логин"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "wrong" } });
+    fireEvent.change(screen.getByLabelText("Код аутентификации"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Неверный логин");
+    expect(screen.queryByText("Ваш приватный шлюз")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "long-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    await screen.findByText("Ваш приватный шлюз");
+    expect(screen.queryByLabelText("Код аутентификации")).toBeNull();
+  });
+
   it("keeps the panel locked when authentication fails", async () => {
     render(
       <QueryClientProvider client={queryClient}>
         <App />
       </QueryClientProvider>,
     );
-    fireEvent.change(screen.getByLabelText("Токен доступа"), {
+    fireEvent.change(await screen.findByLabelText("Токен доступа"), {
       target: { value: "wrong-token" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
     await screen.findByRole("alert");
     expect(screen.queryByText("Ваш приватный шлюз")).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain(
-      "Токен недействителен",
+      "Доступ недействителен",
     );
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 

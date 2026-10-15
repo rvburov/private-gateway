@@ -239,18 +239,47 @@ export default function App() {
   const queryClient = useQueryClient();
   const [token, setToken] = useState("");
   const [input, setInput] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [code, setCode] = useState("");
+  const [configured, setConfigured] = useState<boolean | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  useEffect(() => {
+    fetch("/api/v1/auth/config", { credentials: "same-origin", cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Не удалось проверить настройку входа.");
+        return (await response.json()) as { configured: boolean };
+      })
+      .then((result) => setConfigured(result.configured))
+      .catch((reason: unknown) => setError(reason));
+  }, []);
   async function login(event: FormEvent) {
     event.preventDefault();
     setError(null);
     setPending(true);
     try {
-      const credential = input.trim();
+      let credential: string;
+      if (configured) {
+        const response = await fetch("/api/v1/auth/login", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ username: username.trim(), password, code: code.trim() }),
+        });
+        if (!response.ok) throw new Error(response.status === 429
+          ? "Слишком много попыток. Повторите через пять минут."
+          : "Неверный логин, пароль или код аутентификации.");
+        credential = ((await response.json()) as { session: string }).session;
+      } else {
+        credential = input.trim();
+      }
       await request<Status>(credential, "/status");
       queryClient.clear();
       setToken(credential);
       setInput("");
+      setPassword("");
+      setCode("");
     } catch (err) {
       setError(err);
     } finally {
@@ -258,11 +287,18 @@ export default function App() {
     }
   }
   function logout() {
+    if (configured && token) {
+      void fetch("/api/v1/auth/logout", {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}` },
+      }).catch(() => undefined);
+    }
     queryClient.clear();
     setToken("");
     setError(null);
   }
   if (token) return <Dashboard token={token} onLogout={logout} />;
+  if (configured === null) return <div className="login-page"><div className="login-form-wrap"><p>Проверяем настройку входа…</p><ErrorNotice error={error} /></div></div>;
   return (
     <div className="login-page">
       <div className="login-intro">
@@ -300,7 +336,15 @@ export default function App() {
             <Icon name="lock" size={26} />
           </span>
           <h2>Вход в панель</h2>
-          <p>Введите токен администратора вашего шлюза.</p>
+          <p>{configured ? "Введите логин, пароль и код из приложения-аутентификатора." : "Введите токен администратора вашего шлюза. После настройки учётных данных через SSH здесь появится вход по паролю и коду."}</p>
+          {configured ? <>
+          <label htmlFor="username">Логин</label>
+          <input id="username" type="text" autoComplete="username" autoCapitalize="none" spellCheck={false} value={username} onChange={(event) => setUsername(event.target.value)} required autoFocus />
+          <label htmlFor="password">Пароль</label>
+          <input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          <label htmlFor="code">Код аутентификации</label>
+          <input id="code" type="text" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} value={code} onChange={(event) => setCode(event.target.value)} required />
+          </> : <>
           <label htmlFor="token">Токен доступа</label>
           <input
             id="token"
@@ -322,10 +366,11 @@ export default function App() {
                 : `Введено ${input.trim().length} символов. Токен содержит 64 латинских символа 0–9 и a–f.`}
             </span>
           )}
+          </>}
           <ErrorNotice error={error} />
           <button
             className="button primary full"
-            disabled={pending || !input.trim()}
+            disabled={pending || (configured ? !username.trim() || !password || !/^[0-9]{6}$/.test(code.trim()) : !input.trim())}
           >
             {pending ? "Проверяем доступ…" : "Открыть панель"}
             <Icon name="arrow" size={18} />
@@ -333,8 +378,7 @@ export default function App() {
           <div className="privacy-note">
             <Icon name="lock" size={14} />
             <span>
-              Токен хранится только в памяти этой вкладки. После перезагрузки
-              потребуется войти снова.
+              {configured ? "Сеанс хранится только в памяти этой вкладки. После перезагрузки потребуется войти снова." : "Токен хранится только в памяти этой вкладки. После перезагрузки потребуется войти снова."}
             </span>
           </div>
         </form>

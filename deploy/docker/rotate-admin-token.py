@@ -99,7 +99,7 @@ def http_status(url, authorization):
         return error.code
 
 
-def verify_access(new, old, domain):
+def verify_access(new, old, domain, configured=False):
     base = "https://" + domain + ":8443"
     basic_new = "Basic " + base64.b64encode(("browser:" + new).encode()).decode()
     basic_old = "Basic " + base64.b64encode(("browser:" + old).encode()).decode()
@@ -110,7 +110,8 @@ def verify_access(new, old, domain):
     # When the disposable browser is stopped, Caddy accepts its password but
     # returns 502 because noVNC is not listening. The old password must still
     # receive 401; starting Chromium just to rotate credentials is unnecessary.
-    if (api_new, api_old) != (200, 401) or browser_new not in (200, 502) or browser_old != 401:
+    expected_api = (401, 401) if configured else (200, 401)
+    if (api_new, api_old) != expected_api or browser_new not in (200, 502) or browser_old != 401:
         raise RotationError(f"HTTPS checks failed: API {api_new}/{api_old}, "
                             f"browser {browser_new}/{browser_old}")
 
@@ -127,6 +128,8 @@ def rotate(env=ENV, caddyfile=CADDYFILE, compose=COMPOSE, backups=BACKUPS,
         raise RotationError("installed Docker release is incomplete")
     old_env, old_caddyfile = env.read_bytes(), caddyfile.read_bytes()
     old_token = env_value(old_env, "GATEWAY_API_TOKEN")
+    configured = any(line.startswith("GATEWAY_ADMIN_USERNAME=") and line.split("=", 1)[1]
+                     for line in old_env.decode().splitlines())
     domain = env_value(old_env, "PANEL_DOMAIN")
     if not re.fullmatch(r"[A-Za-z0-9.-]+", domain) or not re.fullmatch(r"[0-9a-f]{64}", old_token):
         raise RotationError("invalid installed token or panel domain")
@@ -154,7 +157,9 @@ def rotate(env=ENV, caddyfile=CADDYFILE, compose=COMPOSE, backups=BACKUPS,
         atomic_private_file(caddyfile, new_caddyfile)
         execute(compose_command + ["config", "--quiet"], timeout=20)
         execute(restart, timeout=120)
-        verify(new_token, old_token, domain)
+        if configured:
+            execute(compose_command + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "status"], timeout=20)
+        verify(new_token, old_token, domain, configured)
     except BaseException as error:
         atomic_private_file(env, old_env)
         atomic_private_file(caddyfile, old_caddyfile)

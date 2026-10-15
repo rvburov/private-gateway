@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 
+	"github.com/rvburov/private-gateway/internal/adminauth"
 	"github.com/rvburov/private-gateway/internal/model"
 	"github.com/rvburov/private-gateway/internal/secure"
 	"github.com/rvburov/private-gateway/internal/storage"
@@ -18,6 +19,7 @@ import (
 type Config struct {
 	DSN                string
 	Token              string
+	Admin              adminauth.Credentials
 	Listen             string
 	WebDir             string
 	Cipher             *secure.Cipher
@@ -30,6 +32,10 @@ type Config struct {
 
 func Load() (Config, error) {
 	c := Config{DSN: os.Getenv("GATEWAY_DATABASE_URL"), Token: os.Getenv("GATEWAY_API_TOKEN"), Listen: value("GATEWAY_LISTEN", "127.0.0.1:8080"), WebDir: value("GATEWAY_WEB_DIR", "web/dist")}
+	c.Admin = adminauth.Credentials{Username: os.Getenv("GATEWAY_ADMIN_USERNAME"), PasswordHash: os.Getenv("GATEWAY_ADMIN_PASSWORD_HASH"), TOTPSecret: os.Getenv("GATEWAY_ADMIN_TOTP_SECRET")}
+	if err := c.Admin.Validate(); err != nil {
+		return c, err
+	}
 	if c.DSN == "" {
 		return c, errors.New("GATEWAY_DATABASE_URL is required")
 	}

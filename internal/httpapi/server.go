@@ -8,10 +8,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/felixge/httpsnoop"
@@ -19,6 +21,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/rvburov/private-gateway/internal/adminauth"
 	"github.com/rvburov/private-gateway/internal/browser"
 	"github.com/rvburov/private-gateway/internal/storage"
 	"github.com/rvburov/private-gateway/internal/xray"
@@ -36,18 +39,30 @@ type Browser interface {
 }
 type Options struct {
 	Token          string
+	Admin          adminauth.Credentials
+	AdminTOTPState string
+	LastTOTPStep   int64
 	WebDir         string
 	XrayConfigured bool
 }
 type Server struct {
-	store   *storage.Store
-	xray    Xray
-	browser Browser
-	options Options
+	store         *storage.Store
+	xray          Xray
+	browser       Browser
+	options       Options
+	loginMu       sync.Mutex
+	sessions      map[string]time.Time
+	lastTOTP      int64
+	loginAttempts map[string]loginAttempts
+}
+
+type loginAttempts struct {
+	count int
+	since time.Time
 }
 
 func New(store *storage.Store, xray Xray, browser Browser, options Options) http.Handler {
-	s := &Server{store: store, xray: xray, browser: browser, options: options}
+	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]time.Time), lastTOTP: options.LastTOTPStep, loginAttempts: make(map[string]loginAttempts)}
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -66,20 +81,25 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_http_requests_total", Help: "HTTP requests by method and status class."}, []string{"method", "status_class"})
 	registry.MustRegister(requests)
 	r.Route("/api/v1", func(r chi.Router) {
-		r.Use(s.auth)
-		r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
-		r.Get("/status", s.status)
-		r.Get("/nodes", s.nodes)
-		r.Get("/devices", s.devices)
-		r.Post("/devices", s.create)
-		r.Get("/devices/{id}/profile", s.export)
-		r.Post("/devices/{id}/revoke", s.revoke)
-		r.Get("/audit", s.audit)
-		r.Post("/config/validate", s.validate)
-		r.Post("/config/apply", s.apply)
-		r.Get("/browser", s.browserStatus)
-		r.Post("/browser/start", s.browserStart)
-		r.Post("/browser/stop", s.browserStop)
+		r.Get("/auth/config", s.authConfig)
+		r.Post("/auth/login", s.login)
+		r.Group(func(r chi.Router) {
+			r.Use(s.auth)
+			r.Post("/auth/logout", s.logout)
+			r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
+			r.Get("/status", s.status)
+			r.Get("/nodes", s.nodes)
+			r.Get("/devices", s.devices)
+			r.Post("/devices", s.create)
+			r.Get("/devices/{id}/profile", s.export)
+			r.Post("/devices/{id}/revoke", s.revoke)
+			r.Get("/audit", s.audit)
+			r.Post("/config/validate", s.validate)
+			r.Post("/config/apply", s.apply)
+			r.Get("/browser", s.browserStatus)
+			r.Post("/browser/start", s.browserStart)
+			r.Post("/browser/stop", s.browserStop)
+		})
 		r.NotFound(func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "not found") })
 	})
 	r.Get("/*", s.web)
@@ -115,16 +135,131 @@ func securityHeaders(next http.Handler) http.Handler {
 }
 func (s *Server) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		header := r.Header.Get("Authorization")
+		value := strings.TrimPrefix(header, "Bearer ")
+		if !strings.HasPrefix(header, "Bearer ") || value == "" {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			fail(w, 401, "unauthorized")
+			return
+		}
+		if s.options.Admin.Configured() && s.validSession(value) {
+			next.ServeHTTP(w, r)
+			return
+		}
 		a := sha256.Sum256([]byte(value))
 		b := sha256.Sum256([]byte(s.options.Token))
-		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer ") || s.options.Token == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 {
+		if s.options.Token == "" || subtle.ConstantTimeCompare(a[:], b[:]) != 1 || (s.options.Admin.Configured() && !loopbackClient(r.RemoteAddr)) {
 			w.Header().Set("WWW-Authenticate", "Bearer")
 			fail(w, 401, "unauthorized")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func loopbackClient(address string) bool {
+	host, _, err := net.SplitHostPort(address)
+	return err == nil && net.ParseIP(host) != nil && net.ParseIP(host).IsLoopback()
+}
+
+func (s *Server) authConfig(w http.ResponseWriter, r *http.Request) {
+	respond(w, 200, map[string]bool{"configured": s.options.Admin.Configured()})
+}
+
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if !s.options.Admin.Configured() {
+		fail(w, 503, "administrator credentials have not been configured on the server")
+		return
+	}
+	var input struct {
+		Username string `json:"username"`
+		Password string `json:"password"`
+		Code     string `json:"code"`
+	}
+	if !decode(w, r, &input) {
+		return
+	}
+	now := time.Now()
+	client := loginClient(r)
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	if len(s.loginAttempts) >= 1024 {
+		for key, attempt := range s.loginAttempts {
+			if now.Sub(attempt.since) > 5*time.Minute {
+				delete(s.loginAttempts, key)
+			}
+		}
+	}
+	attempt := s.loginAttempts[client]
+	if now.Sub(attempt.since) > 5*time.Minute {
+		attempt = loginAttempts{since: now}
+	}
+	if attempt.count >= 10 || (len(s.loginAttempts) >= 1024 && attempt.count == 0) {
+		fail(w, 429, "too many attempts; retry in five minutes")
+		return
+	}
+	step, valid := s.options.Admin.Verify(input.Username, input.Password, input.Code, now)
+	if !valid || step <= s.lastTOTP {
+		attempt.count++
+		s.loginAttempts[client] = attempt
+		fail(w, 401, "invalid username, password or authentication code")
+		return
+	}
+	token, err := adminauth.NewSessionToken()
+	if err != nil {
+		fail(w, 503, "authentication unavailable")
+		return
+	}
+	if err := adminauth.SaveLastStep(s.options.AdminTOTPState, s.options.Admin.TOTPSecret, step); err != nil {
+		fail(w, 503, "authentication unavailable")
+		return
+	}
+	s.lastTOTP = step
+	delete(s.loginAttempts, client)
+	for id, expiry := range s.sessions {
+		if now.After(expiry) || len(s.sessions) >= 32 {
+			delete(s.sessions, id)
+		}
+	}
+	s.sessions[token] = now.Add(8 * time.Hour)
+	respond(w, 200, map[string]string{"session": token})
+}
+
+func loginClient(r *http.Request) string {
+	// Caddy's reverse_proxy overwrites untrusted incoming X-Forwarded-For.
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
+			return ip.String()
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return r.RemoteAddr
+	}
+	return host
+}
+
+func (s *Server) validSession(token string) bool {
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	expiry, found := s.sessions[token]
+	if !found {
+		return false
+	}
+	if time.Now().After(expiry) {
+		delete(s.sessions, token)
+		return false
+	}
+	return true
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.loginMu.Lock()
+	delete(s.sessions, value)
+	s.loginMu.Unlock()
+	respond(w, 200, map[string]string{"status": "logged out"})
 }
 func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.Status(r.Context())

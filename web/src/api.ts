@@ -70,7 +70,7 @@ export async function request<T>(
         : undefined;
     if (response.status === 401)
       throw new Error(
-        "Токен недействителен. Проверьте GATEWAY_API_TOKEN и войдите снова.",
+        "Доступ недействителен или сеанс истёк. Войдите снова.",
       );
     throw new Error(message || `Сервер вернул ошибку ${response.status}`);
   }

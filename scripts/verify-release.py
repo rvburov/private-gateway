@@ -17,7 +17,7 @@ REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
             "docker/compose.yml", "docker/Caddyfile.template", "docker/Dockerfile.api",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
-            "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/install.sh",
+            "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/install.sh",
             "docker/update.sh", "docker/verify-release.py"}
 
 

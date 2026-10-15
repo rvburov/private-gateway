@@ -69,6 +69,7 @@ jobs:
           python3 scripts/test-vpn-smoke.py
           python3 scripts/test-change-reality-target.py
           python3 scripts/test-rotate-admin-token.py
+          python3 scripts/test-admin-credentials.py
           python3 scripts/test-release.py
       - name: Build production release
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

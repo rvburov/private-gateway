@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
+	"github.com/rvburov/private-gateway/internal/adminauth"
 	"github.com/rvburov/private-gateway/internal/browser"
 	"github.com/rvburov/private-gateway/internal/config"
 	"github.com/rvburov/private-gateway/internal/httpapi"
@@ -91,7 +93,16 @@ func serve() error {
 			return err
 		}
 	}
-	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0})
+	stepPath := ""
+	lastStep := int64(-1)
+	if cfg.Admin.Configured() {
+		stepPath = filepath.Join(filepath.Dir(cfg.Xray.ConfigPath), "admin-totp.step")
+		lastStep, err = adminauth.ReadLastStep(stepPath, cfg.Admin.TOTPSecret)
+		if err != nil {
+			return fmt.Errorf("cannot read administrator TOTP replay state: %w", err)
+		}
+	}
+	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{Token: cfg.Token, Admin: cfg.Admin, AdminTOTPState: stepPath, LastTOTPStep: lastStep, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192}
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {

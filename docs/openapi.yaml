@@ -5,11 +5,61 @@ info:
   description: >-
     One local Xray node. Device changes remain pending until config/apply.
     Profiles contain credentials and must not be cached, logged or shared.
+    After terminal setup, public Bearer access requires a temporary session
+    from auth/login; the long-lived CLI token is accepted only from loopback.
 servers:
   - url: http://127.0.0.1:8080
 security:
   - bearerAuth: []
 paths:
+  /api/v1/auth/config:
+    get:
+      operationId: adminAuthConfig
+      security: []
+      description: Whether terminal setup has enabled username, password and TOTP login.
+      responses:
+        '200':
+          description: Login mode
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [configured]
+                properties:
+                  configured: {type: boolean}
+  /api/v1/auth/login:
+    post:
+      operationId: adminLogin
+      security: []
+      description: Issue an eight-hour in-memory session after three-factor verification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, password, code]
+              properties:
+                username: {type: string}
+                password: {type: string, format: password}
+                code: {type: string, pattern: '^[0-9]{6}$'}
+      responses:
+        '200':
+          description: Temporary bearer session; never persist it beyond the current tab.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session]
+                properties:
+                  session: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /api/v1/auth/logout:
+    post:
+      operationId: adminLogout
+      responses:
+        '200': {description: Current session revoked}
   /healthz:
     get:
       operationId: health
