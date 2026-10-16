@@ -46,6 +46,9 @@ install -d -m 0700 /var/backups/private-gateway
 backup=$(mktemp -d "/var/backups/private-gateway/docker-$(date -u +%Y%m%dT%H%M%SZ)-$version-XXXXXXXX")
 cp -p "$env_file" "$backup/stack.env"
 cp -p /etc/private-gateway-docker/Caddyfile "$backup/Caddyfile"
+if [[ -f /etc/private-gateway-docker/haproxy.cfg ]]; then
+  cp -p /etc/private-gateway-docker/haproxy.cfg "$backup/haproxy.cfg"
+fi
 if [[ -f /var/lib/private-gateway-docker/xray/xray.json ]]; then
   cp -p /var/lib/private-gateway-docker/xray/xray.json "$backup/xray.json"
 fi
@@ -57,13 +60,25 @@ compose_new() { PG_RELEASE_SHA="$version" docker compose --env-file "$env_file" 
 
 # Image builds happen before the brief API interruption.
 compose_new config --quiet
-compose_new pull postgres caddy
+edge_enabled=false
+panel_port=8443
+services=(postgres api browser xray caddy)
+if compose_new config --services | grep -qx edge; then
+  edge_enabled=true
+  panel_port=443
+  services+=(edge)
+  [[ -f $release/docker/haproxy.cfg.template ]] || fail 'HAProxy template is missing.'
+  compose_new pull postgres caddy edge
+else
+  compose_new pull postgres caddy
+fi
 compose_new build api xray browser
 compose_old stop api
 database_saved=false
 api_stopped=true
 env_changed=false
 caddy_changed=false
+haproxy_changed=false
 pointer_changed=false
 success=false
 rollback() {
@@ -71,6 +86,14 @@ rollback() {
   printf 'Deployment failed. Restoring the previous database and release. Backup: %s\n' "$backup" >&2
   if [[ $env_changed == true ]]; then cp -p "$backup/stack.env" "$env_file"; fi
   if [[ $caddy_changed == true ]]; then cp -p "$backup/Caddyfile" /etc/private-gateway-docker/Caddyfile; fi
+  if [[ $edge_enabled == true ]]; then compose_new stop edge || true; fi
+  if [[ $haproxy_changed == true ]]; then
+    if [[ -f $backup/haproxy.cfg ]]; then
+      cp -p "$backup/haproxy.cfg" /etc/private-gateway-docker/haproxy.cfg
+    else
+      rm -f /etc/private-gateway-docker/haproxy.cfg
+    fi
+  fi
   compose_new stop api || true
   if [[ $pointer_changed == true ]]; then
     ln -s "$old_release" "$current.rollback"
@@ -140,13 +163,32 @@ os.replace(staged, destination)
 PY
   caddy_changed=true
 fi
-compose_new up -d --wait postgres api browser xray caddy
+if [[ $edge_enabled == true ]]; then
+python3 - "$release/docker/haproxy.cfg.template" /etc/private-gateway-docker/haproxy.cfg "$domain" <<'PY'
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+source, destination = map(Path, sys.argv[1:3])
+content = source.read_text().replace('__PANEL_DOMAIN__', sys.argv[3])
+if '__' in content:
+    raise SystemExit('HAProxy template contains an unresolved placeholder.')
+with tempfile.NamedTemporaryFile(mode='w', dir=destination.parent, prefix='.haproxy.', delete=False) as output:
+    output.write(content)
+    staged = output.name
+os.chmod(staged, 0o644)
+os.replace(staged, destination)
+PY
+  haproxy_changed=true
+fi
+compose_new up -d --wait "${services[@]}"
 if [[ $caddy_changed == true ]]; then compose_new up -d --wait --force-recreate caddy; fi
 compose_new exec -T api /usr/local/bin/gatewayctl config apply
 ready=false
 for _ in $(seq 1 30); do
   if curl --noproxy '*' --fail --silent --show-error --max-time 4 \
-      --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" >/dev/null 2>&1; then
+      --resolve "$domain:$panel_port:127.0.0.1" "https://$domain:$panel_port/readyz" >/dev/null 2>&1; then
     ready=true
     break
   fi
@@ -156,20 +198,21 @@ if [[ $ready != true ]]; then
   printf 'HTTPS readiness failed; final TLS request and Caddy logs follow.\n' >&2
   curl --noproxy '*' --verbose --output /dev/null --max-time 10 \
     --write-out 'HTTP %{http_code}; TLS verification %{ssl_verify_result}\n' \
-    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" \
+    --resolve "$domain:$panel_port:127.0.0.1" "https://$domain:$panel_port/readyz" \
     2>&1 | tail -n 45 >&2 || true
   compose_new logs --no-color --tail=80 caddy >&2 || true
+  if [[ $edge_enabled == true ]]; then compose_new logs --no-color --tail=80 edge >&2 || true; fi
   fail 'Panel HTTPS readiness check failed.'
 fi
 panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
-  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/") \
+  --resolve "$domain:$panel_port:127.0.0.1" "https://$domain:$panel_port/") \
   || fail 'Panel HTML could not be loaded through HTTPS.'
 [[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
 unset panel
 if [[ $caddy_changed == true ]]; then
   browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
-    --write-out '%{http_code}' --max-time 10 --resolve "$domain:8443:127.0.0.1" \
-    "https://$domain:8443/browser/vnc.html") || fail 'Browser access check failed.'
+    --write-out '%{http_code}' --max-time 10 --resolve "$domain:$panel_port:127.0.0.1" \
+    "https://$domain:$panel_port/browser/vnc.html") || fail 'Browser access check failed.'
   [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
 fi
 compose_new exec -T api /usr/local/bin/gatewayctl status
