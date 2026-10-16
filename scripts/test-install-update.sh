@@ -41,15 +41,6 @@ collect_logs() {
       : > "$work/logs/$id"
       docker logs --follow --timestamps "$id" > "$work/logs/$service-$id.log" 2>&1 &
       printf '%s\n' "$!" >> "$work/logs/pids"
-      # Temporary probe: repeat the API's Xray check inside the API container with a throwaway key.
-      if [[ $service == api && ! -e $work/logs/api-probe.log ]]; then
-        docker exec -i "$id" python3 - < "$work/probe.py" > "$work/logs/api-probe.log" 2>&1 || true
-      fi
-      if [[ $service == xray && ! -e $work/logs/api-state-probe.log ]]; then
-        sleep 1
-        docker exec private-gateway-api-1 sh -c 'id; ls -lan /state; cat /state/xray.status.json' \
-          > "$work/logs/api-state-probe.log" 2>&1 || true
-      fi
     done
     sleep 1
   done
@@ -72,42 +63,6 @@ finish() {
 trap finish EXIT
 mkdir "$work/logs"
 touch "$work/logs/pids"
-cat > "$work/probe.py" <<'PY'
-import json
-import os
-import subprocess
-import tempfile
-
-print("user", os.getuid(), "state", oct(os.stat("/state").st_mode), os.stat("/state").st_uid)
-key = subprocess.run(["/usr/local/bin/xray", "x25519"], capture_output=True, text=True)
-print("x25519 exit", key.returncode, key.stderr[-500:])
-private = key.stdout.splitlines()[0].split(":", 1)[1].strip()
-config = {
-    "log": {"loglevel": "warning"},
-    "inbounds": [{
-        "tag": "vless-reality", "listen": "0.0.0.0", "port": 443, "protocol": "vless",
-        "settings": {"clients": [], "decryption": "none"},
-        "streamSettings": {"network": "raw", "security": "reality", "realitySettings": {
-            "show": False, "target": "www.cloudflare.com:443", "xver": 0,
-            "serverNames": ["www.cloudflare.com"], "privateKey": private, "shortIds": ["0123456789abcdef"]}},
-    }, {"tag": "stats-api", "listen": "0.0.0.0", "port": 10085, "protocol": "dokodemo-door",
-        "settings": {"address": "127.0.0.1"}}],
-    "outbounds": [{"tag": "direct", "protocol": "freedom", "settings": {}}],
-    "stats": {}, "api": {"tag": "stats-api", "services": ["StatsService"]},
-    "policy": {"levels": {"0": {"statsUserUplink": True, "statsUserDownlink": True}}},
-    "routing": {"rules": [{"type": "field", "inboundTag": ["stats-api"], "outboundTag": "stats-api"}]},
-}
-with tempfile.NamedTemporaryFile("w", dir="/state", prefix=".probe-", suffix=".json", delete=False) as output:
-    json.dump(config, output)
-    path = output.name
-try:
-    result = subprocess.run(["/usr/local/bin/xray", "run", "-test", "-config", path],
-                            capture_output=True, text=True, timeout=30)
-    print("xray -test exit", result.returncode)
-    print(result.stdout[-3000:], result.stderr[-3000:])
-finally:
-    os.remove(path)
-PY
 collect_logs &
 collector=$!
 watch_xray_status &

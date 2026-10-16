@@ -287,7 +287,8 @@ func (s *Server) configure(w http.ResponseWriter, r *http.Request, apply bool) {
 			fail(w, 409, err.Error())
 			return
 		}
-		slog.Error("Xray operation failed")
+		// The manager removes the REALITY key and client UUIDs from Xray's output.
+		slog.Error("Xray operation failed", "error", err)
 		fail(w, 503, "Xray operation failed; verify binary, configuration and restart service")
 		return
 	}
