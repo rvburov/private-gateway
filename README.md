@@ -20,12 +20,21 @@
 
 ## Локальная разработка
 
-Нужны Linux, Docker с Compose, Node.js 22.12+ или 24, Go 1.26.9, `curl`, `python3`, `sha256sum`. В подготовленной облачной среде:
+Правила для ИИ-агентов и параллельной работы в отдельных рабочих папках — в [AGENTS.md](AGENTS.md).
+
+**Проверки** запускаются одной командой и целиком идут в Docker. Нужен только Docker: Docker Desktop на Windows и macOS (на Windows команду вводят в Git Bash), Docker Engine в Linux.
+
+```bash
+bash scripts/dev.sh test
+```
+
+Образ [deploy/checks](deploy/checks/Dockerfile) содержит Go 1.26.9, Node.js 22, Python, настоящий Xray 26.3.27 и sqlc 1.30.0; загрузки сверяются по SHA-256. Рядом во временном контейнере без открытых портов работает PostgreSQL 18. Образ собирается из содержимого будущего коммита, поэтому `.env` и другие игнорируемые файлы в него не попадают, а переводы строк совпадают с репозиторием на любой ОС. Первый запуск скачивает около 2 ГБ образов, повторные идут быстрее. В конце выводятся числа тестов Go и каждый пропущенный тест с причиной. После изменения SQL-запросов или миграций код `internal/storage/db` обновляет `bash scripts/dev.sh sqlc`.
+
+**Локальный запуск API и панели** пока требует Linux, Docker с Compose, Node.js 22.12+ или 24, Go 1.26.9, `curl`, `python3`, `sha256sum`. В подготовленной облачной среде:
 
 ```bash
 bash scripts/setup-cloud.sh
 bash scripts/dev.sh start
-bash scripts/dev.sh test
 ```
 
 `setup-cloud.sh` устанавливает проверенные Go, sqlc и Xray в `/workspace/.toolchains`, собирает приложения и панель, запускает PostgreSQL 18 и выполняет миграции. `prepare` создаёт `.env` со случайными локальными секретами, только если файла ещё нет. Существующий `.env` сохраняется. Данные PostgreSQL остаются в Docker volume.
@@ -74,7 +83,9 @@ bin/gatewayctl browser stop
 
 ## Проверки и документация
 
-`scripts/dev.sh test` выполняет тесты с настоящим PostgreSQL и Xray. Тест Xray передаёт HTTP через локальный REALITY-туннель, отзывает старый ключ и проверяет новый. Без `TEST_DATABASE_URL` интеграционные тесты PostgreSQL пропускаются; без `PRIVATE_GATEWAY_REAL_XRAY_BINARY` реальные проверки Xray пропускаются. Такой запуск не заменяет интеграционные проверки.
+`bash scripts/dev.sh test` выполняет тесты с настоящим PostgreSQL и Xray. Тест Xray передаёт HTTP через локальный REALITY-туннель, отзывает старый ключ и проверяет новый. Вне Docker без `TEST_DATABASE_URL` интеграционные тесты PostgreSQL пропускаются, без `PRIVATE_GATEWAY_REAL_XRAY_BINARY` — реальные проверки Xray; такой запуск не заменяет интеграционные проверки. В Docker обе переменные заданы, и пропуск такого теста проваливает прогон. Сборку production-образов и проверки Caddy и HAProxy выполняет GitHub Actions.
+
+На Linux с установленными Go, Node.js и Xray основные проверки можно повторить и без Docker:
 
 ```bash
 go test -race ./...

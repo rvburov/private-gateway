@@ -1,0 +1,13 @@
+# Keep LF in the repository and in every checkout, including Windows with core.autocrlf=true:
+# bash and Python scripts run in Linux containers and on the VPS, where CRLF breaks them.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.pdf binary
+*.zip binary
+*.gz binary

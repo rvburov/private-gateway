@@ -1,0 +1,12 @@
+{
+  // Agent worktrees (git worktree, see AGENTS.md) are full copies of the project.
+  // The main folder's window does not show, search or watch them; open one with File -> Open Folder.
+  "files.exclude": {
+    "**/.claude/worktrees": true,
+    "**/.agents/worktrees": true
+  },
+  "files.watcherExclude": {
+    "**/.claude/worktrees/**": true,
+    "**/.agents/worktrees/**": true
+  }
+}

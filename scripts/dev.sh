@@ -30,6 +30,29 @@ stop_api() {
     rm -f .local/api.pid
   fi
 }
+# Build context for the checks image: tracked files with their current edits plus new files that
+# are not ignored, which is what the next commit would store, with the repository's LF line endings
+# whatever core.autocrlf says. A temporary index leaves the real one untouched, and ignored files
+# such as .env never reach Docker. The index lives in this checkout's git directory, a path that
+# Git for Windows understands, unlike the /tmp of Git Bash.
+checks_context() (
+  index="$(git rev-parse --absolute-git-dir)/checks-$BASHPID.index"
+  trap 'rm -f "$index" "$index.lock"' EXIT
+  GIT_INDEX_FILE="$index" git read-tree HEAD
+  GIT_INDEX_FILE="$index" git -c core.safecrlf=false add --all
+  tree=$(GIT_INDEX_FILE="$index" git write-tree)
+  git -c core.autocrlf=false archive --format=tar "$tree"
+)
+build_checks_image() {
+  if ! command -v docker >/dev/null; then
+    echo 'Docker is required: Docker Desktop on Windows or macOS, Docker Engine on Linux' >&2
+    exit 1
+  fi
+  # One image and compose project per checkout, so parallel agent worktrees do not collide.
+  checks_name=$(basename "$repo_dir" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-')
+  export CHECKS_IMAGE="private-gateway-checks:$checks_name"
+  checks_context | docker build --file deploy/checks/Dockerfile --tag "$CHECKS_IMAGE" -
+}
 case "${1:-}" in
   prepare)
     stop_api
@@ -88,11 +111,20 @@ PY
     exit 1
     ;;
   test)
-    load_env
-    export TEST_DATABASE_URL="$GATEWAY_DATABASE_URL" PRIVATE_GATEWAY_REAL_XRAY_BINARY="$GATEWAY_XRAY_BINARY"
-    go test -race ./...
-    go vet ./...
-    (cd web && npm test && npm run build)
+    # Every check in Docker, so a Windows PC, a Linux host and CI run the same toolchain.
+    build_checks_image
+    docker volume create private-gateway-checks-go-build >/dev/null
+    project="private-gateway-checks-$checks_name"
+    # The stack is throwaway: --volumes only drops its own tmpfs database, never the dev or production one.
+    trap "docker compose --project-name $project --file deploy/checks/compose.yml down --volumes --remove-orphans >/dev/null 2>&1" EXIT
+    docker compose --project-name "$project" --file deploy/checks/compose.yml run --rm checks
+    ;;
+  sqlc)
+    # sqlc 1.30.0 from the checks image regenerates internal/storage/db; the files come back as
+    # a tar stream, so no host folder is mounted into the container.
+    build_checks_image
+    docker run --rm --entrypoint bash "$CHECKS_IMAGE" -c 'sqlc generate >&2 && tar -c internal/storage/db' | tar -x
+    echo 'Regenerated internal/storage/db with sqlc 1.30.0.'
     ;;
   stop)
     load_env
@@ -100,5 +132,5 @@ PY
     bash scripts/xray-service.sh stop
     docker compose --env-file .env -f compose.dev.yml stop postgres
     ;;
-  *) echo 'usage: scripts/dev.sh prepare|start|test|stop' >&2; exit 1 ;;
+  *) echo 'usage: scripts/dev.sh prepare|start|test|sqlc|stop' >&2; exit 1 ;;
 esac

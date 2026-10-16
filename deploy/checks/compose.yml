@@ -1,0 +1,34 @@
+# Throwaway stack for `bash scripts/dev.sh test`: PostgreSQL 18 in tmpfs and the checks container.
+# Nothing is published on the host. scripts/dev.sh names the project after the checkout folder,
+# so parallel worktrees get separate databases, and removes the project after the run.
+services:
+  postgres:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: gateway_test
+      POSTGRES_USER: gateway_test
+      POSTGRES_PASSWORD: gateway-checks-only
+    tmpfs:
+      - /var/lib/postgresql
+    healthcheck:
+      # TCP rather than the socket: during initialization the image runs a socket-only server.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U gateway_test -d gateway_test"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  checks:
+    image: ${CHECKS_IMAGE:?Run bash scripts/dev.sh test}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TEST_DATABASE_URL: postgres://gateway_test:gateway-checks-only@postgres:5432/gateway_test?sslmode=disable
+    volumes:
+      - go-build-cache:/home/checks/.cache/go-build
+
+volumes:
+  # Shared by all checkouts and kept between runs; Go's build cache is safe for concurrent use.
+  go-build-cache:
+    external: true
+    name: private-gateway-checks-go-build
