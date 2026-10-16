@@ -15,6 +15,7 @@ import {
   type Node,
   type ProfileExport,
   type Status,
+  type TrafficUsage,
 } from "./api";
 
 type Page = "overview" | "devices" | "nodes" | "audit";
@@ -112,6 +113,14 @@ const date = (value: string) =>
     dateStyle: "short",
     timeStyle: "short",
   });
+const bytes = (value: number) => {
+  if (value < 1024) return `${value} Б`;
+  const units = ["КБ", "МБ", "ГБ", "ТБ"];
+  let number = value;
+  let unit = -1;
+  do { number /= 1024; unit++; } while (number >= 1024 && unit < units.length - 1);
+  return `${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 }).format(number)} ${units[unit]}`;
+};
 const nav: { page: Page; label: string; icon: IconName }[] = [
   { page: "overview", label: "Обзор", icon: "grid" },
   { page: "devices", label: "Устройства", icon: "devices" },
@@ -430,6 +439,12 @@ function Dashboard({
     queryFn: ({ signal }) =>
       request<{ devices: Device[] }>(token, "/devices", { signal }),
   });
+  const usage = useQuery({
+    queryKey: ["device-traffic"],
+    queryFn: ({ signal }) => request<TrafficUsage>(token, "/devices/traffic", { signal }),
+    enabled: page === "devices",
+    refetchInterval: page === "devices" ? 15_000 : false,
+  });
   const nodes = useQuery({
     queryKey: ["nodes"],
     queryFn: ({ signal }) =>
@@ -578,6 +593,7 @@ function Dashboard({
             <th>Узел</th>
             <th>Создано</th>
             <th>Доступ</th>
+            {page === "devices" && <th>Трафик ↑ / ↓</th>}
             <th>
               <span className="sr-only">Действия</span>
             </th>
@@ -612,6 +628,10 @@ function Dashboard({
                   {device.revoked_at ? "Отозван" : "Активен"}
                 </span>
               </td>
+              {page === "devices" && <td className="secondary small">
+                {device.revoked_at ? "—" : usage.data ?
+                  `${bytes(usage.data.devices[device.id]?.uplink_bytes ?? 0)} / ${bytes(usage.data.devices[device.id]?.downlink_bytes ?? 0)}` : "…"}
+              </td>}
               <td>
                 <div className="row-actions">
                   {!device.revoked_at && (
@@ -952,6 +972,7 @@ function Dashboard({
                     <span className="count-badge">{list.length}</span>
                   </h2>
                   <p>Профили выдаются отдельно и содержат секрет доступа.</p>
+                  <p>Трафик ↑ / ↓ считается с последнего запуска Xray; после применения конфигурации счётчики обнуляются.</p>
                 </div>
                 <span className="badge neutral">
                   {list.filter((device) => !device.revoked_at).length} активных
@@ -967,6 +988,7 @@ function Dashboard({
                   совместимый VLESS-клиент.
                 </Empty>
               )}
+              {page === "devices" && usage.isError && <div className="notice error" role="alert">Не удалось получить счётчики трафика Xray.</div>}
               <div className="card-footer">
                 <Icon name="lock" size={15} />
                 <span>

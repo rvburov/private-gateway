@@ -115,6 +115,24 @@ func (s *Store) Devices(ctx context.Context) ([]model.Device, error) {
 	}
 	return out, nil
 }
+
+// ActiveTrafficIDs maps Xray's private user IDs to public device IDs without
+// exposing credentials in API responses or logs.
+func (s *Store) ActiveTrafficIDs(ctx context.Context) (map[string]string, error) {
+	rows, err := s.queries.ActiveClients(ctx, uid(LocalNodeID))
+	if err != nil {
+		return nil, err
+	}
+	ids := make(map[string]string, len(rows))
+	for _, row := range rows {
+		credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
+		if err != nil {
+			return nil, err
+		}
+		ids[strings.ToLower(credential)] = id(row.ID)
+	}
+	return ids, nil
+}
 func (s *Store) Create(ctx context.Context, name, nodeID string) (model.Device, error) {
 	name = strings.TrimSpace(name)
 	if !validName.MatchString(name) || nodeID != LocalNodeID {

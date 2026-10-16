@@ -163,6 +163,11 @@ os.replace(staged, destination)
 PY
   caddy_changed=true
 fi
+if [[ $caddy_changed == true ]]; then
+  docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+    -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \
+    --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
+fi
 if [[ $edge_enabled == true ]]; then
 python3 - "$release/docker/haproxy.cfg.template" /etc/private-gateway-docker/haproxy.cfg "$domain" <<'PY'
 import os
@@ -181,6 +186,9 @@ os.chmod(staged, 0o644)
 os.replace(staged, destination)
 PY
   haproxy_changed=true
+  docker run --rm --network none --read-only --cap-drop=ALL \
+    -v /etc/private-gateway-docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro \
+    --entrypoint haproxy haproxy:3.2-alpine -c -f /usr/local/etc/haproxy/haproxy.cfg
 fi
 compose_new up -d --wait "${services[@]}"
 if [[ $caddy_changed == true ]]; then compose_new up -d --wait --force-recreate caddy; fi

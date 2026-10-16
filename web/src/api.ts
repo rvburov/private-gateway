@@ -16,6 +16,11 @@ export interface Device {
   revoked_at: string | null;
 }
 
+export interface TrafficUsage {
+  devices: Record<string, { uplink_bytes: number; downlink_bytes: number }>;
+  period: "since_xray_restart";
+}
+
 export interface ProfileExport {
   uri: string;
   sing_box_json: string;

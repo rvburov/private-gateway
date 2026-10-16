@@ -60,13 +60,17 @@ func Load() (Config, error) {
 	if err != nil {
 		return c, err
 	}
+	statsPort, err := integer("GATEWAY_XRAY_STATS_PORT", 0)
+	if err != nil {
+		return c, err
+	}
 	privateKey := os.Getenv("GATEWAY_REALITY_PRIVATE_KEY")
 	publicKey, err := xray.PublicKey(privateKey)
 	if err != nil {
 		return c, errors.New("GATEWAY_REALITY_PRIVATE_KEY must be an X25519 private key")
 	}
 	c.Node = model.Node{ID: storage.LocalNodeID, Name: "local", Host: value("GATEWAY_HOST", "vpn.example.com"), Port: vpnPort, ServerName: value("GATEWAY_SERVER_NAME", "www.cloudflare.com"), PublicKey: publicKey, ShortID: os.Getenv("GATEWAY_SHORT_ID")}
-	settings := xray.Settings{PrivateKey: privateKey, Listen: value("GATEWAY_XRAY_LISTEN", "0.0.0.0"), Port: vpnPort, ServerName: c.Node.ServerName, Target: value("GATEWAY_REALITY_TARGET", "www.cloudflare.com:443"), ShortID: c.Node.ShortID}
+	settings := xray.Settings{PrivateKey: privateKey, Listen: value("GATEWAY_XRAY_LISTEN", "0.0.0.0"), Port: vpnPort, StatsPort: statsPort, ServerName: c.Node.ServerName, Target: value("GATEWAY_REALITY_TARGET", "www.cloudflare.com:443"), ShortID: c.Node.ShortID}
 	rendered, err := xray.Render(settings, nil)
 	if err != nil {
 		return c, errors.New("invalid Xray settings; verify REALITY target, port, listen address and short ID")

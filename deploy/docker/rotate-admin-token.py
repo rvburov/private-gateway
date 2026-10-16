@@ -78,7 +78,7 @@ def http_status(url, authorization):
 
 
 def verify_access(new, old, domain):
-    base = "https://" + domain + ":8443"
+    base = "https://" + domain
     api_new = http_status(base + "/api/v1/status", "Bearer " + new)
     api_old = http_status(base + "/api/v1/status", "Bearer " + old)
     browser = http_status(base + "/browser/vnc.html", "")

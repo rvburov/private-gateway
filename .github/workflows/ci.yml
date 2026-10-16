@@ -65,7 +65,7 @@ jobs:
           bash -n scripts/build-release.sh deploy/docker/install.sh deploy/docker/update.sh \
             deploy/docker/bootstrap.sh deploy/docker/bootstrap-receiver.sh \
             scripts/test-first-deploy.sh
-          python3 -m py_compile scripts/verify-release.py deploy/docker/*.py
+          python3 -m py_compile scripts/verify-release.py scripts/provision-vps.py deploy/docker/*.py
           python3 scripts/test-vpn-smoke.py
           python3 scripts/test-change-reality-target.py
           python3 scripts/test-rotate-admin-token.py
@@ -99,6 +99,7 @@ jobs:
             -v "$RUNNER_TEMP/Caddyfile:/etc/caddy/Caddyfile:ro" \
             --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
           python3 scripts/test-browser-proxy.py
+          python3 scripts/test-edge-router.py
           bash scripts/test-first-deploy.sh "$RUNNER_TEMP/release/release.tar.gz" private-gateway/api:ci
       - name: Validate Docker Compose configuration
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

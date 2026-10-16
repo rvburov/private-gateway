@@ -214,7 +214,10 @@ func serve() error {
 			return err
 		}
 	}
-	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0})
+	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{
+		Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
+		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
+	})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192}
 	listener, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {

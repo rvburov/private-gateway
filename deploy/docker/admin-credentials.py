@@ -72,7 +72,7 @@ def without_legacy_admin(old):
 
 def verify(domain, username, password):
     opener = build_opener(ProxyHandler({}))
-    base = "https://" + domain + ":8443/api/v1"
+    base = "https://" + domain + "/api/v1"
     request = Request(base + "/auth/login", data=json.dumps({
         "username": username, "password": password,
     }).encode(), headers={"Content-Type": "application/json"}, method="POST")

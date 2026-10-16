@@ -66,7 +66,7 @@ for name in ("start.sh", "healthcheck.sh", "smoke.py"):
         raise SystemExit(f"Browser release file must be regular: {source}")
     (payload / "browser").mkdir(exist_ok=True)
     shutil.copyfile(source, payload / "browser" / name)
-for name in ("compose.yml", "Caddyfile.template", "Dockerfile.api", "Dockerfile.xray",
+for name in ("compose.yml", "Caddyfile.template", "haproxy.cfg.template", "Dockerfile.api", "Dockerfile.xray",
              "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py",
              "vpn-smoke.py", "change-reality-target.py", "rotate-admin-token.py", "admin-credentials.py",
              "install.sh", "update.sh"):
@@ -78,7 +78,7 @@ for name in ("compose.yml", "Caddyfile.template", "Dockerfile.api", "Dockerfile.
 shutil.copyfile(Path("scripts/verify-release.py"), payload / "docker/verify-release.py")
 required = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
-            "docker/compose.yml", "docker/Caddyfile.template", "docker/Dockerfile.api",
+            "docker/compose.yml", "docker/Caddyfile.template", "docker/haproxy.cfg.template", "docker/Dockerfile.api",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
             "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py",

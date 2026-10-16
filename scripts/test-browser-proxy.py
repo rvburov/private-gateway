@@ -66,7 +66,8 @@ def main():
         threading.Thread(target=server.serve_forever, daemon=True).start()
     port = free_port()
     source = (ROOT / "deploy/docker/Caddyfile.template").read_text()
-    config = (source.replace("https://__PANEL_DOMAIN__:8443", f"http://127.0.0.1:{port}")
+    config = (source.split("\nhttps://__PANEL_DOMAIN__:8443 {")[0]
+              .replace("https://__PANEL_DOMAIN__ {", f"http://127.0.0.1:{port} {{")
               .replace("api:8080", f"127.0.0.1:{auth.server_port}")
               .replace("browser:6080", f"127.0.0.1:{browser.server_port}"))
     assert "__" not in config

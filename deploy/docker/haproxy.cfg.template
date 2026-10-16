@@ -1,0 +1,28 @@
+global
+    log stdout format raw local0
+
+defaults
+    mode tcp
+    timeout connect 10s
+    timeout client 24h
+    timeout server 24h
+
+resolvers docker
+    nameserver embedded 127.0.0.11:53
+    resolve_retries 3
+    timeout resolve 1s
+    timeout retry 1s
+    hold valid 10s
+
+frontend tls_entry
+    bind *:443
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req.ssl_hello_type 1 }
+    use_backend panel_https if { req.ssl_sni -i __PANEL_DOMAIN__ }
+    default_backend vpn_reality
+
+backend panel_https
+    server panel caddy:443 check resolvers docker init-addr none
+
+backend vpn_reality
+    server vpn xray:443 check resolvers docker init-addr none

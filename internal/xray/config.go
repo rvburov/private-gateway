@@ -26,6 +26,7 @@ type Settings struct {
 	PrivateKey string
 	Listen     string
 	Port       int
+	StatsPort  int
 	ServerName string
 	Target     string
 	ShortID    string
@@ -242,6 +243,23 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			},
 		}},
 		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}}},
+	}
+	if settings.StatsPort != 0 {
+		if !validPort(settings.StatsPort) || settings.StatsPort == settings.Port {
+			return nil, errors.New("Xray stats port must be valid and distinct from VPN port")
+		}
+		config["stats"] = map[string]any{}
+		config["policy"] = map[string]any{"levels": map[string]any{"0": map[string]any{
+			"statsUserUplink": true, "statsUserDownlink": true,
+		}}}
+		config["api"] = map[string]any{"tag": "stats-api", "services": []string{"StatsService"}}
+		config["inbounds"] = append(config["inbounds"].([]any), map[string]any{
+			"tag": "stats-api", "listen": "0.0.0.0", "port": settings.StatsPort,
+			"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
+		})
+		config["routing"] = map[string]any{"rules": []any{map[string]any{
+			"type": "field", "inboundTag": []string{"stats-api"}, "outboundTag": "stats-api",
+		}}}
 	}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {

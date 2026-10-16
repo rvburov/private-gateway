@@ -96,6 +96,8 @@ beforeEach(() => {
           },
         ],
       });
+    if (path === "/api/v1/devices/traffic")
+      return Response.json({ devices: { d1: { uplink_bytes: 2048, downlink_bytes: 1048576 } }, period: "since_xray_restart" });
     if (path === "/api/v1/browser")
       return Response.json({ running: browserRunning, url: browserRunning ? "https://gateway.example/browser/vnc.html" : "" });
     if (path === "/api/v1/devices/d1/profile") {
@@ -137,6 +139,12 @@ async function login() {
 }
 
 describe("administrator panel", () => {
+  it("shows separate Xray traffic counters for the device", async () => {
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Все устройства" }));
+    expect(await screen.findByText("2 КБ / 1 МБ")).toBeTruthy();
+  });
+
   it("shows only the login form before authentication", async () => {
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     expect(await screen.findByLabelText("Логин")).toBeTruthy();

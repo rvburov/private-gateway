@@ -40,6 +40,8 @@ type Options struct {
 	Token          string
 	WebDir         string
 	XrayConfigured bool
+	StatsAddress   string
+	StatsBinary    string
 }
 type Server struct {
 	store          *storage.Store
@@ -90,6 +92,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Get("/status", s.status)
 			r.Get("/nodes", s.nodes)
 			r.Get("/devices", s.devices)
+			r.Get("/devices/traffic", s.deviceTraffic)
 			r.Post("/devices", s.create)
 			r.Get("/devices/{id}/profile", s.export)
 			r.Post("/devices/{id}/revoke", s.revoke)
@@ -191,6 +194,27 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, map[string]any{"devices": result})
+}
+func (s *Server) deviceTraffic(w http.ResponseWriter, r *http.Request) {
+	if s.options.StatsAddress == "" {
+		fail(w, 503, "traffic statistics are unavailable")
+		return
+	}
+	ids, err := s.store.ActiveTrafficIDs(r.Context())
+	if err != nil {
+		s.error(w, err)
+		return
+	}
+	traffic, err := xray.QueryTraffic(r.Context(), s.options.StatsBinary, s.options.StatsAddress)
+	if err != nil {
+		fail(w, 503, "traffic statistics are unavailable")
+		return
+	}
+	devices := make(map[string]xray.Traffic, len(ids))
+	for credential, id := range ids {
+		devices[id] = traffic[credential]
+	}
+	respond(w, 200, map[string]any{"devices": devices, "period": "since_xray_restart"})
 }
 func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 	var input struct {

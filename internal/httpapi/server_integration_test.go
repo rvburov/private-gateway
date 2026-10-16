@@ -309,6 +309,52 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	}
 }
 
+func TestDeviceTrafficMapsPrivateCredentialToDevice(t *testing.T) {
+	store, _, node, _ := integrationStore(t)
+	device, err := store.Create(context.Background(), "Other person", node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.Export(context.Background(), device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := url.Parse(profile.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := uri.User.Username()
+	path := t.TempDir() + "/xray-stats"
+	output := `{"stat":[{"name":"user>>>` + credential + `@private-gateway>>>traffic>>>uplink","value":"1024"},{"name":"user>>>` + credential + `@private-gateway>>>traffic>>>downlink","value":"2048"}]}`
+	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+output+"'\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	const token = "private-integration-token-at-least-32-characters"
+	server := httptest.NewServer(New(store, &testXray{}, &testBrowser{}, Options{
+		Token: token, StatsAddress: "xray:10085", StatsBinary: path,
+	}))
+	defer server.Close()
+	request, _ := http.NewRequest(http.MethodGet, server.URL+"/api/v1/devices/traffic", nil)
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Devices map[string]xray.Traffic `json:"devices"`
+	}
+	if response.StatusCode != 200 || json.Unmarshal(data, &result) != nil ||
+		result.Devices[device.ID].UplinkBytes != 1024 ||
+		result.Devices[device.ID].DownlinkBytes != 2048 || bytes.Contains(data, []byte(credential)) {
+		t.Fatalf("device traffic response is invalid or exposes a credential: status %d", response.StatusCode)
+	}
+}
+
 func TestConcurrentDeviceCreationPostgreSQL(t *testing.T) {
 	store, _, _, _ := integrationStore(t)
 	var group sync.WaitGroup

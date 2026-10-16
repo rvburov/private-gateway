@@ -147,7 +147,7 @@ rollback() {
   fi
   if [[ $cutover == true ]]; then
     printf 'Docker cutover failed. Restoring the previous services.\n' >&2
-    compose stop caddy xray || true
+    compose stop edge caddy xray || true
     if [[ $old_postgres == true ]]; then
       systemctl enable postgresql.service || true
       systemctl start postgresql.service || true
@@ -160,7 +160,7 @@ rollback() {
     if [[ $old_caddy == true ]]; then systemctl start caddy.service || true; fi
   fi
   if [[ -f $env_file && -f $compose_file ]]; then compose down --volumes --remove-orphans || true; fi
-  rm -f -- "$env_file" /etc/private-gateway-docker/Caddyfile
+  rm -f -- "$env_file" /etc/private-gateway-docker/Caddyfile /etc/private-gateway-docker/haproxy.cfg
   rm -f -- /opt/private-gateway-docker/current /etc/private-gateway-docker/installed.version
   rm -rf -- "$release" /var/lib/private-gateway-docker/xray
   printf 'Incomplete Docker installation removed; the legacy backup, if created, remains at %s\n' "$backup" >&2
@@ -207,7 +207,7 @@ os.chmod(path, 0o600)
 PY
 
 compose config --quiet
-compose pull postgres caddy
+compose pull postgres caddy edge
 compose build api
 compose build xray
 compose build browser
@@ -227,6 +227,24 @@ if '__' in text:
 destination.write_text(text)
 destination.chmod(0o600)
 PY
+docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+  -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \
+  --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
+
+python3 - "$release/docker/haproxy.cfg.template" /etc/private-gateway-docker/haproxy.cfg "$domain" <<'PY'
+from pathlib import Path
+import sys
+
+source, destination = map(Path, sys.argv[1:3])
+content = source.read_text().replace('__PANEL_DOMAIN__', sys.argv[3])
+if '__' in content:
+    raise SystemExit('HAProxy template contains an unresolved placeholder.')
+destination.write_text(content)
+destination.chmod(0o644)
+PY
+docker run --rm --network none --read-only --cap-drop=ALL \
+  -v /etc/private-gateway-docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro \
+  --entrypoint haproxy haproxy:3.2-alpine -c -f /usr/local/etc/haproxy/haproxy.cfg
 
 compose up --detach --wait postgres browser
 compose run --rm --no-deps api migrate
@@ -247,13 +265,13 @@ cutover=true
 if [[ $replace_legacy == true ]]; then
   systemctl stop gateway-api.service private-gateway-xray.service caddy.service
 fi
-compose up --detach --wait xray caddy
+compose up --detach --wait xray caddy edge
 compose exec -T api /usr/local/bin/gatewayctl config apply
 
 ready=false
 for _ in $(seq 1 60); do
   if curl --noproxy '*' --fail --silent --show-error --max-time 4 \
-      --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" >/dev/null 2>&1; then
+      --resolve "$domain:443:127.0.0.1" "https://$domain/readyz" >/dev/null 2>&1; then
     ready=true
     break
   fi
@@ -263,19 +281,19 @@ if [[ $ready != true ]]; then
   printf 'HTTPS readiness failed; final TLS request and Caddy logs follow.\n' >&2
   curl --noproxy '*' --verbose --output /dev/null --max-time 10 \
     --write-out 'HTTP %{http_code}; TLS verification %{ssl_verify_result}\n' \
-    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" \
+    --resolve "$domain:443:127.0.0.1" "https://$domain/readyz" \
     2>&1 | tail -n 45 >&2 || true
-  compose logs --no-color --tail=80 caddy >&2 || true
-  fail 'Public HTTPS did not become ready. Check DNS, TCP 80/8443 and Caddy logs.'
+  compose logs --no-color --tail=80 caddy edge >&2 || true
+  fail 'Public HTTPS did not become ready. Check DNS, TCP 80/443 and Caddy/edge logs.'
 fi
 panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
-  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/") \
+  --resolve "$domain:443:127.0.0.1" "https://$domain/") \
   || fail 'Panel HTML could not be loaded through HTTPS.'
 [[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
 unset panel
 browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
-  --write-out '%{http_code}' --max-time 10 --resolve "$domain:8443:127.0.0.1" \
-  "https://$domain:8443/browser/vnc.html") || fail 'Browser access check failed.'
+  --write-out '%{http_code}' --max-time 10 --resolve "$domain:443:127.0.0.1" \
+  "https://$domain/browser/vnc.html") || fail 'Browser access check failed.'
 [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
 compose exec -T api /usr/local/bin/gatewayctl browser start
 compose exec -T browser python3 /app/smoke.py --port 6080
@@ -322,8 +340,8 @@ ln -sfn "$release" /opt/private-gateway-docker/current
 printf '%s\n' "$version" > /etc/private-gateway-docker/installed.version
 success=true
 rm -rf -- "$access_backup"
-printf '\nDocker installation verified. Panel: https://%s:8443/\nGateway: %s:443\n' "$domain" "$host"
-printf 'The new admin token is in %s; read it locally and never send it to chat.\n' "$env_file"
+printf '\nDocker installation verified. Panel: https://%s/\nGateway: %s:443\n' "$domain" "$host"
+printf 'The internal CLI token is in %s; keep it on this server. Set administrator credentials with admin-credentials.py.\n' "$env_file"
 if [[ -n $backup ]]; then
   printf 'Legacy files and users remain for rollback until the client connection is tested. Backup: %s\n' "$backup"
 fi

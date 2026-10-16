@@ -115,7 +115,7 @@ class CredentialsTest(unittest.TestCase):
         with patch.object(admin, "build_opener", return_value=Opener()):
             admin.verify("example.test", "admin", "new-password")
         self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0].full_url, "https://example.test:8443/api/v1/auth/login")
+        self.assertEqual(requests[0].full_url, "https://example.test/api/v1/auth/login")
 
 
 if __name__ == "__main__":

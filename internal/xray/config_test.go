@@ -5,6 +5,9 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -143,6 +146,46 @@ func TestRenderZeroClientsAndDuplicateCredentials(t *testing.T) {
 	}
 	if _, err := Render(testSettings(), []Client{{ID: testID}, {ID: strings.ToUpper(testID)}}); err == nil {
 		t.Error("accepted duplicate UUID credentials")
+	}
+}
+
+func TestRenderPrivateTrafficStatistics(t *testing.T) {
+	settings := testSettings()
+	settings.StatsPort = 10085
+	data, err := Render(settings, []Client{{ID: testID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered struct {
+		Inbounds []struct {
+			Tag  string `json:"tag"`
+			Port int    `json:"port"`
+		} `json:"inbounds"`
+		API struct {
+			Services []string `json:"services"`
+		} `json:"api"`
+	}
+	if err := json.Unmarshal(data, &rendered); err != nil {
+		t.Fatal(err)
+	}
+	if len(rendered.Inbounds) != 2 || rendered.Inbounds[1].Tag != "stats-api" ||
+		rendered.Inbounds[1].Port != 10085 || len(rendered.API.Services) != 1 ||
+		rendered.API.Services[0] != "StatsService" {
+		t.Fatalf("statistics API is missing from Xray configuration: %s", data)
+	}
+	if _, err := Render(Settings{PrivateKey: settings.PrivateKey, Listen: settings.Listen,
+		Port: settings.Port, StatsPort: settings.Port, ServerName: settings.ServerName,
+		Target: settings.Target, ShortID: settings.ShortID}, nil); err == nil {
+		t.Fatal("accepted statistics on public VPN port")
+	}
+	if binary := os.Getenv("PRIVATE_GATEWAY_REAL_XRAY_BINARY"); binary != "" {
+		path := filepath.Join(t.TempDir(), "stats.json")
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if output, err := exec.Command(binary, "run", "-test", "-config", path).CombinedOutput(); err != nil {
+			t.Fatalf("Xray rejected statistics configuration: %v (%s)", err, output)
+		}
 	}
 }
 

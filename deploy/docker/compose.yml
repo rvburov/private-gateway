@@ -38,15 +38,17 @@ services:
       GATEWAY_XRAY_CONFIG: /state/xray.json
       GATEWAY_XRAY_BINARY: /usr/local/bin/xray
       GATEWAY_XRAY_RESTART: '["/usr/local/bin/wait-xray.py"]'
+      GATEWAY_XRAY_STATS_PORT: "10085"
       GATEWAY_LISTEN: 0.0.0.0:8080
       GATEWAY_ALLOW_CONTAINER_LISTEN: "1"
       GATEWAY_WEB_DIR: /app/web
       GATEWAY_BROWSER_WORKER_URL: http://browser:9000
       GATEWAY_BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN}
-      GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}:8443/browser/vnc.html?autoconnect=true&resize=remote
+      GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}/browser/vnc.html?autoconnect=true&resize=remote
+      GATEWAY_XRAY_STATS_ADDRESS: xray:10085
     volumes:
       - ${GATEWAY_STATE_DIR:?Set GATEWAY_STATE_DIR}:/state
-    networks: [database, control, web]
+    networks: [database, control, web, telemetry]
     depends_on:
       postgres:
         condition: service_healthy
@@ -69,9 +71,7 @@ services:
       dockerfile: docker/Dockerfile.xray
     volumes:
       - ${GATEWAY_STATE_DIR}:/state
-    ports:
-      - "0.0.0.0:443:443/tcp"
-    networks: [vpn]
+    networks: [vpn, edge, telemetry]
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
@@ -117,7 +117,7 @@ services:
       - ${GATEWAY_CADDYFILE:?Set GATEWAY_CADDYFILE}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
       - caddy-config:/config
-    networks: [web, view]
+    networks: [web, view, edge]
     depends_on:
       api:
         condition: service_healthy
@@ -128,14 +128,33 @@ services:
     security_opt: [no-new-privileges:true]
     restart: unless-stopped
 
+  edge:
+    image: haproxy:3.2-alpine
+    ports:
+      - "0.0.0.0:443:443/tcp"
+    volumes:
+      - /etc/private-gateway-docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [edge]
+    depends_on: [xray, caddy]
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    restart: unless-stopped
+
 networks:
   database:
     internal: true
   control:
     internal: true
+  telemetry:
+    internal: true
   web:
   view:
   vpn:
+  edge:
 
 volumes:
   postgres-data:

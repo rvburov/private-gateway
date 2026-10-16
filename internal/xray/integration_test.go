@@ -47,7 +47,7 @@ func TestRealXrayTrafficAndRevocation(t *testing.T) {
 		t.Fatal(err)
 	}
 	settings := Settings{
-		PrivateKey: base64.RawURLEncoding.EncodeToString(privateBytes), Listen: "127.0.0.1", Port: serverPort,
+		PrivateKey: base64.RawURLEncoding.EncodeToString(privateBytes), Listen: "127.0.0.1", Port: serverPort, StatsPort: unusedPort(t),
 		ServerName: "reality.example", Target: target, ShortID: "0123456789abcdef",
 	}
 	key, err := PublicKey(settings.PrivateKey)
@@ -68,6 +68,18 @@ func TestRealXrayTrafficAndRevocation(t *testing.T) {
 	server := startXrayProcess(t, binary, serverPath, serverPort)
 	oldProxy := startRealXrayClient(t, binary, serverPort, key, settings, testID)
 	assertProxyResponse(t, oldProxy, origin)
+	statsAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(settings.StatsPort))
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		traffic, queryErr := QueryTraffic(context.Background(), binary, statsAddress)
+		if queryErr == nil && traffic[testID].UplinkBytes > 0 && traffic[testID].DownlinkBytes > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("Xray did not report per-device traffic: %v (%#v)", queryErr, traffic)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	// Switching to a new account must immediately prevent the old device from
 	// establishing a new REALITY session after the server has restarted.
