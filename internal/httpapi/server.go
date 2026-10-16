@@ -96,6 +96,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Post("/devices", s.create)
 			r.Get("/devices/{id}/profile", s.export)
 			r.Post("/devices/{id}/revoke", s.revoke)
+			r.Delete("/devices/{id}", s.deleteDevice)
 			r.Get("/audit", s.audit)
 			r.Post("/config/validate", s.validate)
 			r.Post("/config/apply", s.apply)
@@ -242,6 +243,13 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 	}
 	respond(w, 200, result)
 }
+func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
+	if err := s.store.DeleteRevoked(r.Context(), chi.URLParam(r, "id")); err != nil {
+		s.error(w, err)
+		return
+	}
+	respond(w, 200, map[string]string{"status": "deleted"})
+}
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.Export(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
@@ -334,6 +342,8 @@ func (s *Server) error(w http.ResponseWriter, err error) {
 	case errors.Is(err, storage.ErrInvalid):
 		fail(w, 400, err.Error())
 	case errors.Is(err, storage.ErrConflict):
+		fail(w, 409, err.Error())
+	case errors.Is(err, storage.ErrNotRevoked), errors.Is(err, storage.ErrPendingConfig):
 		fail(w, 409, err.Error())
 	case errors.Is(err, storage.ErrRevoked):
 		fail(w, 410, err.Error())

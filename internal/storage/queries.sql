@@ -27,6 +27,9 @@ SELECT * FROM devices WHERE id=$1;
 -- name: RevokeDevice :one
 UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING *;
 
+-- name: DeleteRevokedDevice :execrows
+DELETE FROM devices WHERE id=$1 AND revoked_at IS NOT NULL;
+
 -- name: ActiveClients :many
 SELECT * FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id;
 

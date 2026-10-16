@@ -21,12 +21,14 @@ import (
 const LocalNodeID = "00000000-0000-4000-8000-000000000001"
 
 var (
-	ErrNotFound    = errors.New("not found")
-	ErrConflict    = errors.New("active device with this name already exists")
-	ErrRevoked     = errors.New("device is revoked")
-	ErrInvalid     = errors.New("invalid device name or node ID")
-	ErrStaleConfig = errors.New("node settings changed; restart this API process")
-	validName      = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
+	ErrNotFound      = errors.New("not found")
+	ErrConflict      = errors.New("active device with this name already exists")
+	ErrRevoked       = errors.New("device is revoked")
+	ErrNotRevoked    = errors.New("revoke the device before deleting it")
+	ErrPendingConfig = errors.New("apply the pending Xray configuration before deleting the device")
+	ErrInvalid       = errors.New("invalid device name or node ID")
+	ErrStaleConfig   = errors.New("node settings changed; restart this API process")
+	validName        = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
 )
 
 type Store struct {
@@ -182,6 +184,35 @@ func (s *Store) Revoke(ctx context.Context, deviceID string) (model.Device, erro
 		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.revoke", DeviceID: row.ID})
 	})
 	return result, err
+}
+func (s *Store) DeleteRevoked(ctx context.Context, deviceID string) error {
+	if _, err := uuid.Parse(deviceID); err != nil {
+		return ErrNotFound
+	}
+	return s.transaction(ctx, func(q *db.Queries) error {
+		row, err := q.GetDevice(ctx, uid(deviceID))
+		if err != nil {
+			return err
+		}
+		if !row.RevokedAt.Valid {
+			return ErrNotRevoked
+		}
+		node, err := q.GetNode(ctx, row.NodeID)
+		if err != nil {
+			return err
+		}
+		if node.AppliedRevision != node.Revision {
+			return ErrPendingConfig
+		}
+		deleted, err := q.DeleteRevokedDevice(ctx, row.ID)
+		if err != nil {
+			return err
+		}
+		if deleted != 1 {
+			return ErrNotFound
+		}
+		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.delete", DeviceID: row.ID})
+	})
 }
 func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, error) {
 	if _, err := uuid.Parse(deviceID); err != nil {

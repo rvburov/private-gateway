@@ -19,6 +19,7 @@ const profileURI =
 const profileJSON = '{"outbounds":[{"type":"vless","uuid":"sensitive-device-credential"}]}';
 const profileYAML = 'proxies:\n  - type: vless\n    uuid: sensitive-device-credential\n';
 let revoked = false;
+let deleted = false;
 let revision = 1;
 let appliedRevision = 1;
 let interruptApply = false;
@@ -30,6 +31,7 @@ let browserRunning = false;
 
 beforeEach(() => {
   revoked = false;
+  deleted = false;
   revision = 1;
   appliedRevision = 1;
   interruptApply = false;
@@ -68,7 +70,7 @@ beforeEach(() => {
       return Response.json({
         database: "ok",
         node_id: "n1",
-        devices: 1,
+        devices: deleted ? 0 : 1,
         active_devices: revoked ? 0 : 1,
         desired_revision: revision,
         applied_revision: appliedRevision,
@@ -90,7 +92,7 @@ beforeEach(() => {
       });
     if (path === "/api/v1/devices")
       return Response.json({
-        devices: [
+        devices: deleted ? [] : [
           {
             id: "d1",
             name: "Phone",
@@ -112,6 +114,12 @@ beforeEach(() => {
       revoked = true;
       revision = 2;
       return Response.json({ id: "d1", revoked_at: "2026-01-02T00:00:00Z" });
+    }
+    if (path === "/api/v1/devices/d1" && options.method === "DELETE") {
+      if (!revoked || appliedRevision !== revision)
+        return Response.json({ error: "configuration pending" }, { status: 409 });
+      deleted = true;
+      return Response.json({ status: "deleted" });
     }
     if (path === "/api/v1/config/apply" && options.method === "POST") {
       appliedRevision = revision;
@@ -328,5 +336,23 @@ describe("administrator panel", () => {
     await waitFor(() => expect(applyButton.disabled).toBe(true));
     expect(screen.queryByText(/Связь с сервером прервалась/)).toBeNull();
     expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v1/config/apply")).toHaveLength(1);
+  });
+
+  it("removes a revoked device only after Xray applied the revocation", async () => {
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Отозвать доступ" }));
+    const removeButton = await screen.findByRole("button", { name: "Удалить" }) as HTMLButtonElement;
+    expect(removeButton.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Применить конфигурацию" }));
+    await waitFor(() => expect(removeButton.disabled).toBe(false));
+    fireEvent.click(removeButton);
+    expect(await screen.findByRole("dialog", { name: "Удалить устройство?" })).toBeTruthy();
+    expect(deleted).toBe(false);
+    fireEvent.click(screen.getByRole("button", { name: "Удалить устройство" }));
+    await screen.findByText("Отозванное устройство удалено из списка. События остались в журнале.");
+    expect(deleted).toBe(true);
+    expect(screen.queryByText("Phone")).toBeNull();
+    expect(fetchMock.mock.calls.filter(([path, options]) => path === "/api/v1/devices/d1" && options.method === "DELETE")).toHaveLength(1);
   });
 });

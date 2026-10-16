@@ -167,6 +167,10 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 		if code != 401 {
 			t.Fatalf("unauthorized=%d", code)
 		}
+		code, _ = request("DELETE", "/api/v1/devices/00000000-0000-4000-8000-000000000002", "", auth)
+		if code != 401 {
+			t.Fatalf("unauthorized delete=%d", code)
+		}
 	}
 	for _, path := range []string{"/healthz", "/readyz"} {
 		code, _ := request("GET", path, "", "")
@@ -227,6 +231,10 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	if code != 200 || bytes.Contains(data, []byte(credential)) {
 		t.Fatal("device listing leaks credential")
 	}
+	code, _ = request("DELETE", "/api/v1/devices/"+device.ID, "", token)
+	if code != 409 {
+		t.Fatal("active device could be deleted")
+	}
 	engine.fail = true
 	code, _ = request("POST", "/api/v1/config/apply", "", token)
 	if code != 503 {
@@ -283,6 +291,10 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	if status.AppliedRevision >= status.DesiredRevision {
 		t.Fatal("revocation not marked pending")
 	}
+	code, _ = request("DELETE", "/api/v1/devices/"+device.ID, "", token)
+	if code != 409 {
+		t.Fatal("device could be deleted before revocation reached Xray")
+	}
 	before = status.DesiredRevision
 	code, _ = request("POST", "/api/v1/devices/"+device.ID+"/revoke", "", token)
 	if code != 200 {
@@ -296,8 +308,25 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	if code != 200 || len(engine.clients) != 0 {
 		t.Fatal("revoked client still in deployment")
 	}
+	status, _ = store.Status(context.Background())
+	code, _ = request("DELETE", "/api/v1/devices/"+device.ID, "", token)
+	if code != 200 {
+		t.Fatalf("delete revoked device=%d", code)
+	}
+	code, data = request("GET", "/api/v1/devices", "", token)
+	if code != 200 || bytes.Contains(data, []byte(device.ID)) {
+		t.Fatal("deleted device is still listed")
+	}
+	current, _ := store.Status(context.Background())
+	if current.Devices != 0 || current.DesiredRevision != status.DesiredRevision {
+		t.Fatal("deleting a revoked device changed active Xray configuration")
+	}
+	code, _ = request("DELETE", "/api/v1/devices/"+device.ID, "", token)
+	if code != 404 {
+		t.Fatal("deleted device could be removed twice")
+	}
 	code, data = request("GET", "/api/v1/audit", "", token)
-	if code != 200 || bytes.Contains(data, []byte(credential)) {
+	if code != 200 || bytes.Contains(data, []byte(credential)) || !bytes.Contains(data, []byte(`"action":"device.delete","device_id":"`+device.ID+`"`)) {
 		t.Fatal("audit leaks credential")
 	}
 	if _, err = pool.Exec(context.Background(), "DELETE FROM audit_events"); err == nil {

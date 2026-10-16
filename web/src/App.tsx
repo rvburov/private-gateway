@@ -419,6 +419,7 @@ function Dashboard({
   const [page, setPage] = useState<Page>("overview");
   const [adding, setAdding] = useState(false);
   const [revoking, setRevoking] = useState<Device | null>(null);
+  const [deleting, setDeleting] = useState<Device | null>(null);
   const [profile, setProfile] = useState<(ProfileExport & { device: Device }) | null>(null);
   const [profileFormat, setProfileFormat] = useState<keyof ProfileExport>("uri");
   const [profilePending, setProfilePending] = useState<string | null>(null);
@@ -494,6 +495,17 @@ function Dashboard({
     onSuccess: async () => {
       setRevoking(null);
       setNotice("Доступ отозван. Примените конфигурацию, чтобы обновить Xray.");
+      await refresh();
+    },
+  });
+  const removeDevice = useMutation({
+    mutationFn: (device: Device) =>
+      request<{ status: string }>(token, `/devices/${encodeURIComponent(device.id)}`, {
+        method: "DELETE",
+      }),
+    onSuccess: async () => {
+      setDeleting(null);
+      setNotice("Отозванное устройство удалено из списка. События остались в журнале.");
       await refresh();
     },
   });
@@ -659,6 +671,19 @@ function Dashboard({
                         Отозвать
                       </button>
                     </>
+                  )}
+                  {device.revoked_at && (
+                    <button
+                      className="text-button danger-text"
+                      onClick={() => {
+                        removeDevice.reset();
+                        setDeleting(device);
+                      }}
+                      disabled={!!pending || status.isError || !currentStatus}
+                      title={pending ? "Сначала примените конфигурацию Xray" : undefined}
+                    >
+                      Удалить
+                    </button>
                   )}
                 </div>
               </td>
@@ -1214,6 +1239,34 @@ function Dashboard({
           </div>
         </Modal>
       )}
+      {deleting && (
+        <Modal
+          title="Удалить устройство?"
+          onClose={() => !removeDevice.isPending && setDeleting(null)}
+        >
+          <p className="modal-description">
+            Отозванное устройство «{deleting.name}» будет удалено из списка.
+            Его профиль восстановить нельзя. В журнале останется запись с идентификатором устройства.
+          </p>
+          <ErrorNotice error={removeDevice.error} />
+          <div className="modal-actions">
+            <button
+              className="button secondary-button"
+              onClick={() => setDeleting(null)}
+              disabled={removeDevice.isPending}
+            >
+              Отмена
+            </button>
+            <button
+              className="button danger"
+              onClick={() => removeDevice.mutate(deleting)}
+              disabled={removeDevice.isPending}
+            >
+              {removeDevice.isPending ? "Удаляем…" : "Удалить устройство"}
+            </button>
+          </div>
+        </Modal>
+      )}
       {profile && (
         <Modal
           title={`Профиль: ${profile.device.name}`}
@@ -1311,6 +1364,7 @@ function actionLabel(action: string) {
     "device.create": "Устройство добавлено",
     "device.created": "Устройство добавлено",
     "device.revoke": "Доступ отозван",
+    "device.delete": "Устройство удалено",
     "device.revoked": "Доступ отозван",
     "device.profile": "Профиль выдан",
     "device.export": "Профиль выдан",

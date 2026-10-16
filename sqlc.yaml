@@ -4,6 +4,7 @@ sql:
     schema:
       - internal/storage/migrations/000001_initial.up.sql
       - internal/storage/migrations/000002_administrator.up.sql
+      - internal/storage/migrations/000003_delete_revoked_devices.up.sql
     queries: internal/storage/queries.sql
     gen:
       go:

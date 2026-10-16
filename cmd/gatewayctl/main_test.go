@@ -185,6 +185,7 @@ func TestLifecycleMethods(t *testing.T) {
 		{[]string{"browser", "start"}, http.MethodPost, "/api/v1/browser/start", `{"running":true,"url":"http://127.0.0.1:7900"}`},
 		{[]string{"browser", "stop"}, http.MethodPost, "/api/v1/browser/stop", `{"running":false,"url":"http://127.0.0.1:7900"}`},
 		{[]string{"device", "revoke", "d1"}, http.MethodPost, "/api/v1/devices/d1/revoke", `{"id":"d1","revoked_at":"2026-01-01T00:00:00Z"}`},
+		{[]string{"device", "delete", "d1"}, http.MethodDelete, "/api/v1/devices/d1", `{"status":"deleted"}`},
 	} {
 		t.Run(strings.Join(test.args, "-"), func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

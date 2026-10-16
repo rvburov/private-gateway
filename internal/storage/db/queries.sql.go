@@ -79,6 +79,18 @@ func (q *Queries) DeleteAdministrator(ctx context.Context, generation int64) (in
 	return result.RowsAffected(), nil
 }
 
+const deleteRevokedDevice = `-- name: DeleteRevokedDevice :execrows
+DELETE FROM devices WHERE id=$1 AND revoked_at IS NOT NULL
+`
+
+func (q *Queries) DeleteRevokedDevice(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, deleteRevokedDevice, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const enableAdministratorTOTP = `-- name: EnableAdministratorTOTP :execrows
 UPDATE administrator_credentials SET totp_secret_ciphertext=$1, totp_last_step=$2,
     updated_at=now() WHERE id=1 AND generation=$3 AND totp_secret_ciphertext IS NULL

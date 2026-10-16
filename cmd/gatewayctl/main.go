@@ -194,7 +194,23 @@ func deviceCommand(api *apiClient) *cobra.Command {
 			return nil
 		},
 	}
-	command.AddCommand(add, list, export, revoke)
+	remove := &cobra.Command{
+		Use: "delete ID", Short: "Delete a revoked device after its Xray configuration is applied", Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var result struct {
+				Status string `json:"status"`
+			}
+			if err := api.request(cmd.Context(), http.MethodDelete, "/devices/"+url.PathEscape(args[0]), nil, &result); err != nil {
+				return err
+			}
+			if result.Status != "deleted" {
+				return errors.New("server did not confirm device deletion")
+			}
+			_, err := fmt.Fprintln(cmd.OutOrStdout(), "Deleted", printable(args[0]))
+			return err
+		},
+	}
+	command.AddCommand(add, list, export, revoke, remove)
 	return command
 }
 
