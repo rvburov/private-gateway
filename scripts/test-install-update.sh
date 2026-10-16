@@ -12,21 +12,52 @@ archive=$(realpath -- "$archive")
 domain=panel.gateway.localhost
 env_file=/etc/private-gateway-docker/stack.env
 work=$(mktemp -d)
+collector=''
 
 compose() {
   sudo docker compose --env-file "$env_file" -f /opt/private-gateway-docker/current/docker/compose.yml "$@"
 }
-diagnose() {
-  local status=$?
-  ((status != 0)) || return 0
-  printf '\nContainers and recent logs follow.\n' >&2
-  sudo docker ps --all --filter label=com.docker.compose.project=private-gateway >&2 || true
-  for service in edge caddy api xray browser; do
-    printf -- '--- %s\n' "$service" >&2
-    sudo docker logs --tail 40 "private-gateway-$service-1" >&2 2>&1 || true
+# A failed installation removes its containers and an update replaces them: keep every
+# container's log as it runs, one file per container.
+collect_logs() {
+  local id service status last=''
+  while :; do
+    # The Xray worker's status (config hash, running, error) holds no secrets.
+    status=$(sudo cat /var/lib/private-gateway-docker/xray/xray.status.json 2>/dev/null) || status=''
+    if [[ -n $status && $status != "$last" ]]; then
+      printf '%s %s\n' "$(date -u +%T)" "$status" >> "$work/logs/xray-status.log"
+      last=$status
+    fi
+    for id in $(docker ps --all --quiet --filter label=com.docker.compose.project=private-gateway); do
+      [[ ! -e $work/logs/$id ]] || continue
+      service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id") || continue
+      : > "$work/logs/$id"
+      docker logs --follow --timestamps "$id" > "$work/logs/$service-$id.log" 2>&1 &
+      printf '%s\n' "$!" >> "$work/logs/pids"
+    done
+    sleep 1
   done
 }
-trap diagnose EXIT
+finish() {
+  local status=$? log
+  if [[ -n $collector ]]; then
+    kill "$collector" 2>/dev/null || true
+    xargs -r kill < "$work/logs/pids" 2>/dev/null || true
+  fi
+  ((status != 0)) || return 0
+  printf '\nContainers and their logs follow.\n' >&2
+  docker ps --all --filter label=com.docker.compose.project=private-gateway >&2 || true
+  for log in "$work"/logs/*.log; do
+    [[ -e $log ]] || continue
+    printf -- '--- %s\n' "${log##*/}" >&2
+    tail -n 60 "$log" >&2
+  done
+}
+trap finish EXIT
+mkdir "$work/logs"
+touch "$work/logs/pids"
+collect_logs &
+collector=$!
 # CI's deploy step sends the SHA and the archive over SSH to this forced command of gateway-deploy.
 deliver() {
   (cd / && { printf '%s\n' "$1"; cat "$2"; } \
