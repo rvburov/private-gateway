@@ -19,16 +19,23 @@ compose() {
 }
 # A failed installation removes its containers and an update replaces them: keep every
 # container's log as it runs, one file per container.
-collect_logs() {
-  local id service status last=''
+watch_xray_status() {
+  local status last=''
   while :; do
     # The Xray worker's status (config hash, running, error) holds no secrets.
     status=$(sudo cat /var/lib/private-gateway-docker/xray/xray.status.json 2>/dev/null) || status=''
     if [[ -n $status && $status != "$last" ]]; then
-      printf '%s %s\n' "$(date -u +%T)" "$status" >> "$work/logs/xray-status.log"
+      printf '%s %s\n' "$(date -u +%T.%3N)" "$status" >> "$work/logs/xray-status.log"
       last=$status
     fi
-    for id in $(docker ps --all --quiet --filter label=com.docker.compose.project=private-gateway); do
+    sleep 0.2
+  done
+}
+collect_logs() {
+  local id service
+  while :; do
+    # Running containers only: following a container that has not started yet ends at once.
+    for id in $(docker ps --quiet --filter label=com.docker.compose.project=private-gateway); do
       [[ ! -e $work/logs/$id ]] || continue
       service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id") || continue
       : > "$work/logs/$id"
@@ -41,7 +48,7 @@ collect_logs() {
 finish() {
   local status=$? log
   if [[ -n $collector ]]; then
-    kill "$collector" 2>/dev/null || true
+    kill $collector 2>/dev/null || true
     xargs -r kill < "$work/logs/pids" 2>/dev/null || true
   fi
   ((status != 0)) || return 0
@@ -58,6 +65,8 @@ mkdir "$work/logs"
 touch "$work/logs/pids"
 collect_logs &
 collector=$!
+watch_xray_status &
+collector+=" $!"
 # CI's deploy step sends the SHA and the archive over SSH to this forced command of gateway-deploy.
 deliver() {
   (cd / && { printf '%s\n' "$1"; cat "$2"; } \
