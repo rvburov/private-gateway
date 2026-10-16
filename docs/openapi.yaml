@@ -255,6 +255,7 @@ paths:
   /api/v1/browser:
     get:
       operationId: browserStatus
+      description: Returns browser status and sets a Secure, HttpOnly cookie scoped to /browser for the verified administrator session. Caddy checks this cookie before proxying noVNC.
       responses:
         '200': {$ref: '#/components/responses/Browser'}
         '503': {$ref: '#/components/responses/Error'}
@@ -326,7 +327,7 @@ components:
             required: [running]
             properties:
               running: {type: boolean}
-              url: {type: string, format: uri, description: HTTPS address behind Caddy Basic Auth}
+              url: {type: string, format: uri, description: HTTPS noVNC address protected by the verified administrator browser cookie}
   schemas:
     Node:
       type: object

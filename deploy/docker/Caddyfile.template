@@ -1,9 +1,12 @@
 https://__PANEL_DOMAIN__:8443 {
     handle_path /browser/* {
-        basic_auth {
-            browser __BROWSER_AUTH_HASH__
+        forward_auth api:8080 {
+            uri /browser-authorization
         }
-        reverse_proxy browser:6080
+        reverse_proxy browser:6080 {
+            header_up -Cookie
+            header_up -Authorization
+        }
     }
 
     handle {

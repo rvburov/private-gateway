@@ -42,14 +42,15 @@ type Options struct {
 	XrayConfigured bool
 }
 type Server struct {
-	store         *storage.Store
-	xray          Xray
-	browser       Browser
-	options       Options
-	loginMu       sync.Mutex
-	sessions      map[string]adminSession
-	pending       map[string]*pendingLogin
-	loginAttempts map[string]loginAttempts
+	store          *storage.Store
+	xray           Xray
+	browser        Browser
+	options        Options
+	loginMu        sync.Mutex
+	sessions       map[string]adminSession
+	browserTickets map[string]string
+	pending        map[string]*pendingLogin
+	loginAttempts  map[string]loginAttempts
 }
 
 type loginAttempts struct {
@@ -58,7 +59,7 @@ type loginAttempts struct {
 }
 
 func New(store *storage.Store, xray Xray, browser Browser, options Options) http.Handler {
-	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]adminSession), pending: make(map[string]*pendingLogin), loginAttempts: make(map[string]loginAttempts)}
+	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]adminSession), browserTickets: make(map[string]string), pending: make(map[string]*pendingLogin), loginAttempts: make(map[string]loginAttempts)}
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -72,6 +73,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 		}
 		respond(w, 200, map[string]string{"status": "ready"})
 	})
+	r.Get("/browser-authorization", s.browserAuthorization)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_http_requests_total", Help: "HTTP requests by method and status class."}, []string{"method", "status_class"})
@@ -271,6 +273,10 @@ func (s *Server) browserOperation(w http.ResponseWriter, r *http.Request, fn fun
 	result, err := fn(ctx)
 	if err != nil {
 		fail(w, 503, "browser worker unavailable; check the Docker browser service")
+		return
+	}
+	if err := s.issueBrowserCookie(w, r); err != nil {
+		fail(w, 503, "browser access unavailable")
 		return
 	}
 	respond(w, 200, result)

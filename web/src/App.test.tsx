@@ -24,12 +24,14 @@ let profileRequests = 0;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
+let browserRunning = false;
 
 beforeEach(() => {
   revoked = false;
   revision = 1;
   profileRequests = 0;
   adminSetup = true;
+  browserRunning = false;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -95,7 +97,7 @@ beforeEach(() => {
         ],
       });
     if (path === "/api/v1/browser")
-      return Response.json({ running: false, url: "" });
+      return Response.json({ running: browserRunning, url: browserRunning ? "https://gateway.example/browser/vnc.html" : "" });
     if (path === "/api/v1/devices/d1/profile") {
       profileRequests++;
       return Response.json({ uri: profileURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML });
@@ -160,6 +162,14 @@ describe("administrator panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
     await screen.findByText("Ваш приватный шлюз");
     expect(screen.queryByLabelText("Код аутентификации")).toBeNull();
+  });
+
+  it("opens noVNC through the existing administrator session", async () => {
+    browserRunning = true;
+    await login();
+    const link = await screen.findByRole("link", { name: "Открыть" });
+    expect(link.getAttribute("href")).toBe("https://gateway.example/browser/vnc.html");
+    expect(screen.getByText(/отдельный пароль не нужен/)).toBeTruthy();
   });
 
   it("enrolls the authenticator in the browser after password verification", async () => {

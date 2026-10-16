@@ -85,20 +85,20 @@ jobs:
           done
           docker run --rm --entrypoint python3 private-gateway/api:ci -c \
             'from pathlib import Path; root = Path("/app/web"); assert b"<div id=\"root\"></div>" in (root / "index.html").read_bytes(); assets = list((root / "assets").iterdir()); assert assets; [asset.read_bytes() for asset in assets]'
-          hash=$(docker run --rm --entrypoint caddy caddy:2.10.2-alpine \
-            hash-password --plaintext ci-only-test-token)
           python3 - "$RUNNER_TEMP/docker-payload/docker/Caddyfile.template" \
-            "$RUNNER_TEMP/Caddyfile" "$hash" <<'PY'
+            "$RUNNER_TEMP/Caddyfile" <<'PY'
           from pathlib import Path
           import sys
           text = Path(sys.argv[1]).read_text()
-          Path(sys.argv[2]).write_text(text.replace('__PANEL_DOMAIN__', 'example.com')
-                                           .replace('__BROWSER_AUTH_HASH__', sys.argv[3]))
+          text = text.replace('__PANEL_DOMAIN__', 'example.com')
+          assert '__' not in text
+          Path(sys.argv[2]).write_text(text)
           PY
           docker run --rm --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
             --security-opt=no-new-privileges \
             -v "$RUNNER_TEMP/Caddyfile:/etc/caddy/Caddyfile:ro" \
             --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
+          python3 scripts/test-browser-proxy.py
           bash scripts/test-first-deploy.sh "$RUNNER_TEMP/release/release.tar.gz" private-gateway/api:ci
       - name: Validate Docker Compose configuration
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'

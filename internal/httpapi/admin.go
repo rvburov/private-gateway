@@ -19,6 +19,8 @@ type adminSession struct {
 	generation int64
 }
 
+const browserCookieName = "__Secure-private-gateway-browser"
+
 type pendingLogin struct {
 	username   string
 	client     string
@@ -282,6 +284,82 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	s.loginMu.Lock()
 	delete(s.sessions, value)
+	for ticket, session := range s.browserTickets {
+		if session == value {
+			delete(s.browserTickets, ticket)
+		}
+	}
 	s.loginMu.Unlock()
+	http.SetCookie(w, &http.Cookie{Name: browserCookieName, Path: "/browser", MaxAge: -1,
+		Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
 	respond(w, 200, map[string]string{"status": "logged out"})
+}
+
+// The browser cookie is a separate opaque ticket tied to the already verified
+// administrator session. It cannot authorize any other API operation.
+func (s *Server) issueBrowserCookie(w http.ResponseWriter, r *http.Request) error {
+	admin, err := s.administrator(r.Context())
+	if err != nil {
+		return err
+	}
+	sessionID := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.loginMu.Lock()
+	defer s.loginMu.Unlock()
+	session, found := s.sessions[sessionID]
+	if !found || !admin.Credentials.Configured() || session.generation != admin.Generation ||
+		time.Now().After(session.expires) {
+		return nil // Internal CLI requests never receive a browser ticket.
+	}
+	var ticket string
+	for candidate, parent := range s.browserTickets {
+		current, active := s.sessions[parent]
+		if !active || time.Now().After(current.expires) {
+			delete(s.browserTickets, candidate)
+		} else if parent == sessionID {
+			ticket = candidate
+		}
+	}
+	if ticket == "" {
+		if len(s.browserTickets) >= 64 {
+			for oldest := range s.browserTickets {
+				delete(s.browserTickets, oldest)
+				break
+			}
+		}
+		ticket, err = adminauth.NewSessionToken()
+		if err != nil {
+			return err
+		}
+		s.browserTickets[ticket] = sessionID
+	}
+	http.SetCookie(w, &http.Cookie{Name: browserCookieName, Value: ticket, Path: "/browser",
+		Expires: session.expires, Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	return nil
+}
+
+func (s *Server) browserAuthorization(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(browserCookieName)
+	if err != nil || cookie.Value == "" {
+		fail(w, 403, "browser access denied")
+		return
+	}
+	admin, err := s.administrator(r.Context())
+	if err != nil {
+		fail(w, 503, "browser access unavailable")
+		return
+	}
+	s.loginMu.Lock()
+	parent := s.browserTickets[cookie.Value]
+	session, found := s.sessions[parent]
+	valid := parent != "" && found && admin.Credentials.Configured() &&
+		session.generation == admin.Generation && time.Now().Before(session.expires)
+	if !valid {
+		delete(s.browserTickets, cookie.Value)
+	}
+	s.loginMu.Unlock()
+	if !valid {
+		fail(w, 403, "browser access denied")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -29,7 +29,7 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	const cliToken = "internal-cli-token-at-least-thirty-two-characters"
-	handler := New(store, nil, nil, Options{Token: cliToken})
+	handler := New(store, nil, &testBrowser{}, Options{Token: cliToken})
 	call := func(method, path, body, bearer, remote string) *httptest.ResponseRecorder {
 		t.Helper()
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -97,8 +97,46 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 	if got := call("GET", "/api/v1/metrics", "", session.Session, remote).Code; got != 200 {
 		t.Fatalf("administrator session: %d", got)
 	}
+	browserStatus := call("GET", "/api/v1/browser", "", session.Session, remote)
+	if browserStatus.Code != 200 {
+		t.Fatalf("browser status: %d", browserStatus.Code)
+	}
+	var browserCookie *http.Cookie
+	for _, cookie := range browserStatus.Result().Cookies() {
+		if cookie.Name == browserCookieName {
+			browserCookie = cookie
+		}
+	}
+	if browserCookie == nil || browserCookie.Value == session.Session || !browserCookie.Secure ||
+		!browserCookie.HttpOnly || browserCookie.Path != "/browser" || browserCookie.SameSite != http.SameSiteStrictMode {
+		t.Fatal("browser ticket was not scoped and protected")
+	}
+	browserAccess := func() int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "/browser-authorization", nil)
+		req.AddCookie(browserCookie)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w.Code
+	}
+	if got := call("GET", "/browser-authorization", "", "", remote).Code; got != 403 {
+		t.Fatalf("anonymous browser access: %d", got)
+	}
+	if got := browserAccess(); got != 204 {
+		t.Fatalf("administrator browser access: %d", got)
+	}
+	if cli := call("GET", "/api/v1/browser", "", cliToken, "127.0.0.1:1234"); cli.Code != 200 ||
+		len(cli.Result().Cookies()) != 0 {
+		t.Fatal("internal CLI token received browser access")
+	}
+	if got := call("POST", "/api/v1/auth/logout", "", session.Session, remote).Code; got != 200 {
+		t.Fatalf("logout: %d", got)
+	}
+	if got := browserAccess(); got != 403 {
+		t.Fatalf("browser access survived logout: %d", got)
+	}
 	// A new API process must read the encrypted seed and replay step from PostgreSQL.
-	handler = New(store, nil, nil, Options{Token: cliToken})
+	handler = New(store, nil, &testBrowser{}, Options{Token: cliToken})
 	second := call("POST", "/api/v1/auth/login", loginBody, "", remote)
 	if second.Code != 200 || json.Unmarshal(second.Body.Bytes(), &pending) != nil || pending.Status != "totp_required" {
 		t.Fatalf("second login: %d %s", second.Code, second.Body.String())
@@ -112,6 +150,14 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 	if verified.Code != 200 || json.Unmarshal(verified.Body.Bytes(), &nextSession) != nil {
 		t.Fatalf("new TOTP after restart: %d", verified.Code)
 	}
+	for _, cookie := range call("GET", "/api/v1/browser", "", nextSession.Session, remote).Result().Cookies() {
+		if cookie.Name == browserCookieName {
+			browserCookie = cookie
+		}
+	}
+	if got := browserAccess(); got != 204 {
+		t.Fatalf("browser access after second login: %d", got)
+	}
 	snapshot, err := store.SnapshotAdministrator(t.Context())
 	if err != nil || !snapshot.Exists || len(snapshot.TOTPSecretCiphertext) == 0 {
 		t.Fatal("administrator backup is incomplete", err)
@@ -121,6 +167,9 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 	}
 	if got := call("GET", "/api/v1/metrics", "", nextSession.Session, remote).Code; got != 401 {
 		t.Fatalf("old session survived password reset: %d", got)
+	}
+	if got := browserAccess(); got != 403 {
+		t.Fatalf("browser access survived password reset: %d", got)
 	}
 	third := call("POST", "/api/v1/auth/login", loginBody, "", remote)
 	if third.Code != 200 || json.Unmarshal(third.Body.Bytes(), &pending) != nil || pending.Status != "totp_setup_required" {

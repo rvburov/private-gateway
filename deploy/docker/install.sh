@@ -212,25 +212,21 @@ compose build api
 compose build xray
 compose build browser
 
-api_token=$(sed -n 's/^GATEWAY_API_TOKEN=//p' "$env_file")
-export CADDY_PASSWORD="$api_token"
-browser_hash=$(docker run --rm --env CADDY_PASSWORD --entrypoint /bin/sh \
-  caddy:2.10.2-alpine -c 'exec caddy hash-password --plaintext "$CADDY_PASSWORD"')
-unset CADDY_PASSWORD
-python3 - "$release/docker/Caddyfile.template" /etc/private-gateway-docker/Caddyfile "$domain" "$browser_hash" <<'PY'
+python3 - "$release/docker/Caddyfile.template" /etc/private-gateway-docker/Caddyfile "$domain" <<'PY'
 from pathlib import Path
 import re
 import sys
 
 source, destination = map(Path, sys.argv[1:3])
-domain, hashed = sys.argv[3:5]
-if not re.fullmatch(r'\$2[aby]\$\d\d\$[./A-Za-z0-9]{53}', hashed):
-    raise SystemExit('Caddy did not return a valid bcrypt hash.')
-text = source.read_text().replace('__PANEL_DOMAIN__', domain).replace('__BROWSER_AUTH_HASH__', hashed)
+domain = sys.argv[3]
+if not re.fullmatch(r'[A-Za-z0-9.-]+', domain):
+    raise SystemExit('Panel domain is invalid.')
+text = source.read_text().replace('__PANEL_DOMAIN__', domain)
+if '__' in text:
+    raise SystemExit('Caddyfile template contains an unresolved placeholder.')
 destination.write_text(text)
 destination.chmod(0o600)
 PY
-unset api_token browser_hash
 
 compose up --detach --wait postgres browser
 compose run --rm --no-deps api migrate
@@ -277,6 +273,10 @@ panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
   || fail 'Panel HTML could not be loaded through HTTPS.'
 [[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
 unset panel
+browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
+  --write-out '%{http_code}' --max-time 10 --resolve "$domain:8443:127.0.0.1" \
+  "https://$domain:8443/browser/vnc.html") || fail 'Browser access check failed.'
+[[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
 compose exec -T api /usr/local/bin/gatewayctl browser start
 compose exec -T browser python3 /app/smoke.py --port 6080
 compose exec -T api /usr/local/bin/gatewayctl browser stop
