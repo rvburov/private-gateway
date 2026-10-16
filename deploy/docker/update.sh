@@ -45,6 +45,7 @@ new_compose=$release/docker/compose.yml
 install -d -m 0700 /var/backups/private-gateway
 backup=$(mktemp -d "/var/backups/private-gateway/docker-$(date -u +%Y%m%dT%H%M%SZ)-$version-XXXXXXXX")
 cp -p "$env_file" "$backup/stack.env"
+cp -p /etc/private-gateway-docker/Caddyfile "$backup/Caddyfile"
 if [[ -f /var/lib/private-gateway-docker/xray/xray.json ]]; then
   cp -p /var/lib/private-gateway-docker/xray/xray.json "$backup/xray.json"
 fi
@@ -62,12 +63,14 @@ compose_old stop api
 database_saved=false
 api_stopped=true
 env_changed=false
+caddy_changed=false
 pointer_changed=false
 success=false
 rollback() {
   if [[ $success == true || $api_stopped != true ]]; then return; fi
   printf 'Deployment failed. Restoring the previous database and release. Backup: %s\n' "$backup" >&2
   if [[ $env_changed == true ]]; then cp -p "$backup/stack.env" "$env_file"; fi
+  if [[ $caddy_changed == true ]]; then cp -p "$backup/Caddyfile" /etc/private-gateway-docker/Caddyfile; fi
   compose_new stop api || true
   if [[ $pointer_changed == true ]]; then
     ln -s "$old_release" "$current.rollback"
@@ -86,6 +89,7 @@ rollback() {
     compose_old exec -T postgres pg_restore -e -U gateway -d gateway < "$backup/gateway.dump" || true
   fi
   compose_old up -d --wait api browser xray caddy || true
+  if [[ $caddy_changed == true ]]; then compose_old up -d --wait --force-recreate caddy || true; fi
   printf 'Check Docker health and the backup before another deployment.\n' >&2
 }
 trap 'rollback; cleanup' EXIT
@@ -114,10 +118,31 @@ os.chmod(staged, 0o600)
 os.replace(staged, path)
 PY
 env_changed=true
-compose_new up -d --wait postgres api browser xray caddy
-compose_new exec -T api /usr/local/bin/gatewayctl config apply
 domain=$(sed -n 's/^PANEL_DOMAIN=//p' "$env_file")
 [[ $domain =~ ^[A-Za-z0-9.-]+$ ]] || fail 'Panel domain is invalid.'
+if ! grep -q '__BROWSER_AUTH_HASH__' "$release/docker/Caddyfile.template"; then
+python3 - "$release/docker/Caddyfile.template" /etc/private-gateway-docker/Caddyfile "$domain" <<'PY'
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+source, destination = map(Path, sys.argv[1:3])
+domain = sys.argv[3]
+content = source.read_text().replace('__PANEL_DOMAIN__', domain)
+if '__' in content:
+    raise SystemExit('Caddyfile template contains an unresolved placeholder.')
+with tempfile.NamedTemporaryFile(mode='w', dir=destination.parent, prefix='.caddy.', delete=False) as output:
+    output.write(content)
+    staged = output.name
+os.chmod(staged, 0o600)
+os.replace(staged, destination)
+PY
+  caddy_changed=true
+fi
+compose_new up -d --wait postgres api browser xray caddy
+if [[ $caddy_changed == true ]]; then compose_new up -d --wait --force-recreate caddy; fi
+compose_new exec -T api /usr/local/bin/gatewayctl config apply
 ready=false
 for _ in $(seq 1 30); do
   if curl --noproxy '*' --fail --silent --show-error --max-time 4 \
@@ -141,6 +166,12 @@ panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
   || fail 'Panel HTML could not be loaded through HTTPS.'
 [[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
 unset panel
+if [[ $caddy_changed == true ]]; then
+  browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
+    --write-out '%{http_code}' --max-time 10 --resolve "$domain:8443:127.0.0.1" \
+    "https://$domain:8443/browser/vnc.html") || fail 'Browser access check failed.'
+  [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
+fi
 compose_new exec -T api /usr/local/bin/gatewayctl status
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"
