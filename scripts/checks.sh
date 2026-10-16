@@ -26,7 +26,7 @@ step 'Web panel: tests and production build'
 (cd web && npm test && npm run build)
 
 step 'GitHub Actions workflows (actionlint 1.7.12)'
-actionlint .github/workflows/*.yml
+actionlint -config-file .github/actionlint.yaml .github/workflows/*.yml
 
 step 'Release, deployment and server list scripts'
 for script in scripts/*.sh deploy/docker/*.sh deploy/browser/*.sh; do
@@ -40,4 +40,5 @@ done
 
 printf '\nAll checks passed.\n'
 printf 'Not run here: production image builds, Caddy and HAProxy routing (test-browser-proxy.py,\n'
-printf 'test-edge-router.py, test-first-deploy.sh); GitHub Actions runs them for master.\n'
+printf 'test-edge-router.py, test-first-deploy.sh) and installation, update and rollback\n'
+printf '(test-install-update.sh); GitHub Actions runs them for every pushed branch.\n'

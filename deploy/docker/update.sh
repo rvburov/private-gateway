@@ -9,6 +9,8 @@ fail() { printf 'Docker deployment stopped: %s\n' "$*" >&2; exit 1; }
 IFS= read -r expected || fail 'Expected a commit SHA before the release archive.'
 [[ $expected =~ ^[0-9a-f]{40}$ ]] || fail 'Expected a full commit SHA before the release archive.'
 env_file=/etc/private-gateway-docker/stack.env
+caddyfile=/etc/private-gateway-docker/Caddyfile
+haproxy_cfg=/etc/private-gateway-docker/haproxy.cfg
 current=/opt/private-gateway-docker/current
 [[ -f $env_file && -L $current ]] || fail 'Install the Docker stack before enabling automatic deployment.'
 [[ -f /usr/local/lib/private-gateway-docker/verify-release.py ]] || fail 'The installed release verifier is missing.'
@@ -22,6 +24,7 @@ cleanup() {
         && $(readlink -f "$current" 2>/dev/null || true) != "$release" ]]; then
     rm -rf -- "$release"
   fi
+  rm -f -- "$caddyfile.next" "$haproxy_cfg.next"
   rm -rf -- "$temporary"
 }
 trap cleanup EXIT
@@ -45,9 +48,9 @@ new_compose=$release/docker/compose.yml
 install -d -m 0700 /var/backups/private-gateway
 backup=$(mktemp -d "/var/backups/private-gateway/docker-$(date -u +%Y%m%dT%H%M%SZ)-$version-XXXXXXXX")
 cp -p "$env_file" "$backup/stack.env"
-cp -p /etc/private-gateway-docker/Caddyfile "$backup/Caddyfile"
-if [[ -f /etc/private-gateway-docker/haproxy.cfg ]]; then
-  cp -p /etc/private-gateway-docker/haproxy.cfg "$backup/haproxy.cfg"
+cp -p "$caddyfile" "$backup/Caddyfile"
+if [[ -f $haproxy_cfg ]]; then
+  cp -p "$haproxy_cfg" "$backup/haproxy.cfg"
 fi
 if [[ -f /var/lib/private-gateway-docker/xray/xray.json ]]; then
   cp -p /var/lib/private-gateway-docker/xray/xray.json "$backup/xray.json"
@@ -57,12 +60,40 @@ tar -xzf "$archive" -C "$release" --no-same-owner --no-same-permissions
 chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
 compose_old() { docker compose --env-file "$env_file" -f "$old_compose" "$@"; }
 compose_new() { PG_RELEASE_SHA="$version" docker compose --env-file "$env_file" -f "$new_compose" "$@"; }
+# Configuration checks run in the same pinned images as the stack.
+image_of() {
+  compose_new config --format json \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
+}
+# Render a template for the panel domain next to its live file; the live file stays untouched.
+stage_config() {
+python3 - "$1" "$2" "$3" "$domain" <<'PY'
+import os
+from pathlib import Path
+import sys
 
-# Image builds happen before the brief API interruption.
+source, staged = map(Path, sys.argv[1:3])
+content = source.read_text().replace('__PANEL_DOMAIN__', sys.argv[4])
+if '__' in content:
+    raise SystemExit(f'{source.name} contains an unresolved placeholder.')
+staged.unlink(missing_ok=True)
+with os.fdopen(os.open(staged, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
+    output.write(content)
+os.chmod(staged, int(sys.argv[3], 8))
+PY
+}
+
+# Image builds and configuration checks happen before the brief API interruption.
 compose_new config --quiet
 edge_enabled=false
+old_edge=false
 panel_port=8443
 services=(postgres api browser xray caddy)
+old_services=(api browser xray caddy)
+if compose_old config --services | grep -qx edge; then
+  old_edge=true
+  old_services+=(edge)
+fi
 if compose_new config --services | grep -qx edge; then
   edge_enabled=true
   panel_port=443
@@ -73,25 +104,48 @@ else
   compose_new pull postgres caddy
 fi
 compose_new build api xray browser
+domain=$(sed -n 's/^PANEL_DOMAIN=//p' "$env_file")
+[[ $domain =~ ^[A-Za-z0-9.-]+$ ]] || fail 'Panel domain is invalid.'
+# An unchanged configuration file stays as it is, and so does the container that reads it.
+stage_config "$release/docker/Caddyfile.template" "$caddyfile.next" 600
+if cmp -s "$caddyfile.next" "$caddyfile"; then
+  rm -f -- "$caddyfile.next"
+else
+  docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+    -v "$caddyfile.next:/etc/caddy/Caddyfile:ro" \
+    --entrypoint caddy "$(image_of caddy)" validate --config /etc/caddy/Caddyfile
+fi
+if [[ $edge_enabled == true ]]; then
+  stage_config "$release/docker/haproxy.cfg.template" "$haproxy_cfg.next" 644
+  if cmp -s "$haproxy_cfg.next" "$haproxy_cfg"; then
+    rm -f -- "$haproxy_cfg.next"
+  else
+    docker run --rm --network none --read-only --cap-drop=ALL \
+      -v "$haproxy_cfg.next:/usr/local/etc/haproxy/haproxy.cfg:ro" \
+      --entrypoint haproxy "$(image_of edge)" -c -f /usr/local/etc/haproxy/haproxy.cfg
+  fi
+fi
 compose_old stop api
 database_saved=false
 api_stopped=true
 env_changed=false
 caddy_changed=false
 haproxy_changed=false
+stack_started=false
 pointer_changed=false
 success=false
 rollback() {
   if [[ $success == true || $api_stopped != true ]]; then return; fi
   printf 'Deployment failed. Restoring the previous database and release. Backup: %s\n' "$backup" >&2
   if [[ $env_changed == true ]]; then cp -p "$backup/stack.env" "$env_file"; fi
-  if [[ $caddy_changed == true ]]; then cp -p "$backup/Caddyfile" /etc/private-gateway-docker/Caddyfile; fi
-  if [[ $edge_enabled == true ]]; then compose_new stop edge || true; fi
+  if [[ $caddy_changed == true ]]; then cp -p "$backup/Caddyfile" "$caddyfile"; fi
+  # Before HAProxy, the previous release published its own services on TCP 443.
+  if [[ $edge_enabled == true && $old_edge != true ]]; then compose_new stop edge || true; fi
   if [[ $haproxy_changed == true ]]; then
     if [[ -f $backup/haproxy.cfg ]]; then
-      cp -p "$backup/haproxy.cfg" /etc/private-gateway-docker/haproxy.cfg
+      cp -p "$backup/haproxy.cfg" "$haproxy_cfg"
     else
-      rm -f /etc/private-gateway-docker/haproxy.cfg
+      rm -f "$haproxy_cfg"
     fi
   fi
   compose_new stop api || true
@@ -111,8 +165,14 @@ rollback() {
       -c 'CREATE DATABASE gateway OWNER gateway' || true
     compose_old exec -T postgres pg_restore -e -U gateway -d gateway < "$backup/gateway.dump" || true
   fi
-  compose_old up -d --wait api browser xray caddy || true
-  if [[ $caddy_changed == true ]]; then compose_old up -d --wait --force-recreate caddy || true; fi
+  compose_old up -d --wait "${old_services[@]}" || true
+  # Containers this deployment started read the replaced files; new ones read the restored files.
+  if [[ $stack_started == true && $caddy_changed == true ]]; then
+    compose_old up -d --wait --no-deps --force-recreate caddy || true
+  fi
+  if [[ $stack_started == true && $haproxy_changed == true && $old_edge == true ]]; then
+    compose_old up -d --wait --no-deps --force-recreate edge || true
+  fi
   printf 'Check Docker health and the backup before another deployment.\n' >&2
 }
 trap 'rollback; cleanup' EXIT
@@ -141,57 +201,20 @@ os.chmod(staged, 0o600)
 os.replace(staged, path)
 PY
 env_changed=true
-domain=$(sed -n 's/^PANEL_DOMAIN=//p' "$env_file")
-[[ $domain =~ ^[A-Za-z0-9.-]+$ ]] || fail 'Panel domain is invalid.'
-if ! grep -q '__BROWSER_AUTH_HASH__' "$release/docker/Caddyfile.template"; then
-python3 - "$release/docker/Caddyfile.template" /etc/private-gateway-docker/Caddyfile "$domain" <<'PY'
-import os
-from pathlib import Path
-import sys
-import tempfile
-
-source, destination = map(Path, sys.argv[1:3])
-domain = sys.argv[3]
-content = source.read_text().replace('__PANEL_DOMAIN__', domain)
-if '__' in content:
-    raise SystemExit('Caddyfile template contains an unresolved placeholder.')
-with tempfile.NamedTemporaryFile(mode='w', dir=destination.parent, prefix='.caddy.', delete=False) as output:
-    output.write(content)
-    staged = output.name
-os.chmod(staged, 0o600)
-os.replace(staged, destination)
-PY
+# A bind-mounted file keeps the content its container started with, so a replaced file needs a
+# new container. Recreating edge drops every VPN connection: only a changed HAProxy file does it.
+if [[ -f $caddyfile.next ]]; then
+  mv -f -- "$caddyfile.next" "$caddyfile"
   caddy_changed=true
 fi
-if [[ $caddy_changed == true ]]; then
-  docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
-    -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \
-    --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
-fi
-if [[ $edge_enabled == true ]]; then
-python3 - "$release/docker/haproxy.cfg.template" /etc/private-gateway-docker/haproxy.cfg "$domain" <<'PY'
-import os
-from pathlib import Path
-import sys
-import tempfile
-
-source, destination = map(Path, sys.argv[1:3])
-content = source.read_text().replace('__PANEL_DOMAIN__', sys.argv[3])
-if '__' in content:
-    raise SystemExit('HAProxy template contains an unresolved placeholder.')
-with tempfile.NamedTemporaryFile(mode='w', dir=destination.parent, prefix='.haproxy.', delete=False) as output:
-    output.write(content)
-    staged = output.name
-os.chmod(staged, 0o644)
-os.replace(staged, destination)
-PY
+if [[ -f $haproxy_cfg.next ]]; then
+  mv -f -- "$haproxy_cfg.next" "$haproxy_cfg"
   haproxy_changed=true
-  docker run --rm --network none --read-only --cap-drop=ALL \
-    -v /etc/private-gateway-docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro \
-    --entrypoint haproxy haproxy:3.2-alpine -c -f /usr/local/etc/haproxy/haproxy.cfg
 fi
+stack_started=true
 compose_new up -d --wait "${services[@]}"
-if [[ $caddy_changed == true ]]; then compose_new up -d --wait --force-recreate caddy; fi
+if [[ $caddy_changed == true ]]; then compose_new up -d --wait --no-deps --force-recreate caddy; fi
+if [[ $haproxy_changed == true ]]; then compose_new up -d --wait --no-deps --force-recreate edge; fi
 compose_new exec -T api /usr/local/bin/gatewayctl config apply
 ready=false
 for _ in $(seq 1 30); do
@@ -217,12 +240,10 @@ panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
   || fail 'Panel HTML could not be loaded through HTTPS.'
 [[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
 unset panel
-if [[ $caddy_changed == true ]]; then
-  browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
-    --write-out '%{http_code}' --max-time 10 --resolve "$domain:$panel_port:127.0.0.1" \
-    "https://$domain:$panel_port/browser/vnc.html") || fail 'Browser access check failed.'
-  [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
-fi
+browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
+  --write-out '%{http_code}' --max-time 10 --resolve "$domain:$panel_port:127.0.0.1" \
+  "https://$domain:$panel_port/browser/vnc.html") || fail 'Browser access check failed.'
+[[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
 compose_new exec -T api /usr/local/bin/gatewayctl status
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"

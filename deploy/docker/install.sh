@@ -121,6 +121,11 @@ release="/opt/private-gateway-docker/releases/$version"
 env_file=/etc/private-gateway-docker/stack.env
 compose_file="$release/docker/compose.yml"
 compose() { docker compose --env-file "$env_file" --file "$compose_file" "$@"; }
+# Configuration checks run in the same pinned images as the stack.
+image_of() {
+  compose config --format json \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
+}
 backup=''
 access_backup=''
 old_api=false old_xray=false old_caddy=false old_postgres=false cutover=false success=false initialized=false
@@ -229,7 +234,7 @@ destination.chmod(0o600)
 PY
 docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
   -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \
-  --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
+  --entrypoint caddy "$(image_of caddy)" validate --config /etc/caddy/Caddyfile
 
 python3 - "$release/docker/haproxy.cfg.template" /etc/private-gateway-docker/haproxy.cfg "$domain" <<'PY'
 from pathlib import Path
@@ -244,7 +249,7 @@ destination.chmod(0o644)
 PY
 docker run --rm --network none --read-only --cap-drop=ALL \
   -v /etc/private-gateway-docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro \
-  --entrypoint haproxy haproxy:3.2-alpine -c -f /usr/local/etc/haproxy/haproxy.cfg
+  --entrypoint haproxy "$(image_of edge)" -c -f /usr/local/etc/haproxy/haproxy.cfg
 
 compose up --detach --wait postgres browser
 compose run --rm --no-deps api migrate

@@ -7,20 +7,23 @@ on:
 permissions:
   contents: read
 
+# Every job runs on Ubuntu 26.04, the release the servers run.
 jobs:
   verify:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The same command as on a developer PC: every check in the deploy/checks Docker image,
       # with PostgreSQL 18 and real Xray; a skipped integration test fails it.
       - name: Run all checks in Docker
         run: bash scripts/dev.sh test
+      # Release, image and installation checks run on every pushed branch, so a branch can be
+      # proven on GitHub before it reaches master. Only master uploads the release and deploys.
       - name: Build production release
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.event_name == 'push'
         run: bash scripts/dev.sh release "$RUNNER_TEMP/release"
       - name: Build and validate Docker images
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.event_name == 'push'
         run: |
           mkdir -p "$RUNNER_TEMP/docker-payload"
           tar -xzf "$RUNNER_TEMP/release/release.tar.gz" -C "$RUNNER_TEMP/docker-payload"
@@ -39,15 +42,16 @@ jobs:
           assert '__' not in text
           Path(sys.argv[2]).write_text(text)
           PY
+          caddy_image=$(sed -n 's/^ *image: \(caddy:[^ ]*\)$/\1/p' deploy/docker/compose.yml)
           docker run --rm --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
             --security-opt=no-new-privileges \
             -v "$RUNNER_TEMP/Caddyfile:/etc/caddy/Caddyfile:ro" \
-            --entrypoint caddy caddy:2.10.2-alpine validate --config /etc/caddy/Caddyfile
+            --entrypoint caddy "$caddy_image" validate --config /etc/caddy/Caddyfile
           python3 scripts/test-browser-proxy.py
           python3 scripts/test-edge-router.py
           bash scripts/test-first-deploy.sh "$RUNNER_TEMP/release/release.tar.gz" private-gateway/api:ci
       - name: Validate Docker Compose configuration
-        if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+        if: github.event_name == 'push'
         run: |
           cat > "$RUNNER_TEMP/docker-test.env" <<'EOF'
           PG_RELEASE_SHA=0000000000000000000000000000000000000000
@@ -65,6 +69,12 @@ jobs:
           docker compose --env-file "$RUNNER_TEMP/docker-test.env" \
             -f deploy/docker/compose.yml config --quiet
           python3 scripts/verify-release.py --tar "$RUNNER_TEMP/release/release.tar.gz"
+      # The real bootstrap, installer and updater on this runner, as on a new VPS: the first
+      # deployment, an update that must leave postgres, Caddy and HAProxy running, and an update
+      # that breaks the panel and must roll back. Ports 80, 443 and 8443 belong to it afterwards.
+      - name: Test installation, update and rollback
+        if: github.event_name == 'push'
+        run: bash scripts/test-install-update.sh "$RUNNER_TEMP/release/release.tar.gz"
       - name: Upload production release and installer
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -77,7 +87,7 @@ jobs:
   servers:
     name: Server list
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     outputs:
       names: ${{ steps.list.outputs.names }}
     steps:
@@ -92,7 +102,7 @@ jobs:
     name: Deploy Docker to VPS (${{ matrix.server }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.servers.outputs.names != '[]'
     needs: [verify, servers]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     strategy:
       fail-fast: false
       matrix:

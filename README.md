@@ -12,7 +12,7 @@
 - CLI `gatewayctl` на Cobra и панель React / TypeScript / Vite / TanStack Query.
 - Управление временным браузером в отдельном Docker-контейнере; noVNC через HTTPS и подтверждённый сеанс администратора после 2FA.
 - Журнал действий, защищённые Prometheus metrics, HTTP instrumentation OpenTelemetry.
-- CI: те же проверки в Docker, что `bash scripts/dev.sh test` на ПК, — Go с PostgreSQL 18 и настоящим Xray под `-race`, панель, скрипты выпуска и workflow; релиз собирается в том же образе.
+- CI: те же проверки в Docker, что `bash scripts/dev.sh test` на ПК, — Go с PostgreSQL 18 и настоящим Xray под `-race`, панель, скрипты выпуска и workflow; релиз собирается в том же образе. Установку, обновление и откат CI проверяет на чистом Ubuntu 26.04 настоящими скриптами сервера.
 - Docker Compose установщик Ubuntu 26.04 из проверенной сборки GitHub Actions; после успешной проверки коммита в `master` релиз автоматически доставляется на все серверы из `deploy/servers`, а панель каждого проверяется снаружи. Новый сервер добавляет одна команда `bash scripts/add-server.sh` ([инструкция](docs/deployment.md#новый-сервер)).
 - Обычный адрес production-панели — `https://rb-gateway-3708079.duckdns.org/`: HAProxy разделяет HTTPS панели и VLESS + REALITY на TCP 443. В панели видны байты трафика отдельно по активным профилям с последнего запуска Xray.
 

@@ -2,6 +2,7 @@
 """Check that the production TCP router sends panel SNI to Caddy and VPN SNI to Xray."""
 
 from pathlib import Path
+import re
 import socket
 import ssl
 import subprocess
@@ -11,6 +12,8 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The same pinned image as the production stack.
+HAPROXY = re.search(r"^ +image: (haproxy:\S+)$", (ROOT / "deploy/docker/compose.yml").read_text(), re.M).group(1)
 
 
 def listener(label):
@@ -76,7 +79,7 @@ def main():
                 "docker", "run", "--rm", "--network", "host", "--read-only", "--cap-drop=ALL",
                 "--cap-add=NET_BIND_SERVICE", "--security-opt=no-new-privileges",
                 "-v", f"{path}:/usr/local/etc/haproxy/haproxy.cfg:ro",
-                "haproxy:3.2-alpine", "haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg"],
+                HAPROXY, "haproxy", "-f", "/usr/local/etc/haproxy/haproxy.cfg"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             for _ in range(50):
                 try:

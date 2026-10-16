@@ -1,8 +1,11 @@
 name: private-gateway
 
+# Public images are pinned by digest: a deployment recreates postgres, caddy or edge only when
+# a commit changes the digest, not whenever Docker Hub publishes an update. Recreating edge
+# drops every VPN connection.
 services:
   postgres:
-    image: postgres:18
+    image: postgres:18@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
     environment:
       POSTGRES_DB: gateway
       POSTGRES_USER: gateway
@@ -109,7 +112,7 @@ services:
     restart: unless-stopped
 
   caddy:
-    image: caddy:2.10.2-alpine
+    image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     ports:
       - "0.0.0.0:80:80/tcp"
       - "0.0.0.0:8443:8443/tcp"
@@ -129,7 +132,7 @@ services:
     restart: unless-stopped
 
   edge:
-    image: haproxy:3.2-alpine
+    image: haproxy:3.2-alpine@sha256:254e6370f01cd654e0744edf607c67f33777c1b6a9dc0d4b28bcba7171460122
     ports:
       - "0.0.0.0:443:443/tcp"
     volumes:

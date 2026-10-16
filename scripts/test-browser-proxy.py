@@ -3,6 +3,7 @@
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+import re
 import socket
 import subprocess
 import tempfile
@@ -13,6 +14,8 @@ from urllib.request import Request, build_opener, ProxyHandler
 
 
 ROOT = Path(__file__).resolve().parents[1]
+# The same pinned image as the production stack.
+CADDY = re.search(r"^ +image: (caddy:\S+)$", (ROOT / "deploy/docker/compose.yml").read_text(), re.M).group(1)
 opener = build_opener(ProxyHandler({}))
 seen = []
 
@@ -78,7 +81,7 @@ def main():
             path.chmod(0o644)
             process = subprocess.Popen([
                 "docker", "run", "--rm", "--network", "host", "--cap-drop=ALL", "--cap-add=NET_BIND_SERVICE",
-                "-v", f"{path}:/etc/caddy/Caddyfile:ro", "caddy:2.10.2-alpine",
+                "-v", f"{path}:/etc/caddy/Caddyfile:ro", CADDY,
                 "caddy", "run", "--config", "/etc/caddy/Caddyfile"],
                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
             try:
