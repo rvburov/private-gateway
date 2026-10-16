@@ -510,6 +510,12 @@ function Dashboard({
       );
       await refresh();
     },
+    onError: async (_, action) => {
+      if (action === "apply") {
+        // The administrator's own VPN may drop the response while Xray restarts.
+        await queryClient.invalidateQueries({ queryKey: ["status"] });
+      }
+    },
   });
   const browserAction = useMutation({
     mutationFn: (action: "start" | "stop") =>
@@ -850,7 +856,11 @@ function Dashboard({
                       Проверка вызывает валидатор Xray. Применение обновляет
                       конфигурацию и перезапускает сервис.
                     </p>
-                    <ErrorNotice error={config.error} />
+                    <ErrorNotice
+                      error={config.variables === "apply" && !pending && currentStatus
+                        ? null
+                        : config.error}
+                    />
                     <div className="button-group">
                       <button
                         className="button secondary-button"
@@ -862,7 +872,7 @@ function Dashboard({
                       <button
                         className="button primary"
                         onClick={() => config.mutate("apply")}
-                        disabled={config.isPending}
+                        disabled={config.isPending || !pending || status.isError}
                       >
                         {config.isPending
                           ? "Выполняется…"

@@ -31,10 +31,12 @@ import (
 type testXray struct {
 	clients []xray.Client
 	fail    bool
+	applies int
 }
 
 func (x *testXray) Validate(_ context.Context, c []xray.Client) error { x.clients = c; return nil }
 func (x *testXray) Apply(_ context.Context, c []xray.Client) error {
+	x.applies++
 	if x.fail {
 		return errors.New("restart failed")
 	}
@@ -246,6 +248,11 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	status, _ = store.Status(context.Background())
 	if status.AppliedRevision != status.DesiredRevision {
 		t.Fatal("successful deployment revision not saved")
+	}
+	beforeApplies := engine.applies
+	code, _ = request("POST", "/api/v1/config/apply", "", token)
+	if code != 200 || engine.applies != beforeApplies {
+		t.Fatal("reapplying the current revision restarted Xray")
 	}
 	before := status.DesiredRevision
 	if err = store.EnsureNode(context.Background(), node); err != nil {

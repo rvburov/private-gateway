@@ -20,6 +20,8 @@ const profileJSON = '{"outbounds":[{"type":"vless","uuid":"sensitive-device-cred
 const profileYAML = 'proxies:\n  - type: vless\n    uuid: sensitive-device-credential\n';
 let revoked = false;
 let revision = 1;
+let appliedRevision = 1;
+let interruptApply = false;
 let profileRequests = 0;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
@@ -29,6 +31,8 @@ let browserRunning = false;
 beforeEach(() => {
   revoked = false;
   revision = 1;
+  appliedRevision = 1;
+  interruptApply = false;
   profileRequests = 0;
   adminSetup = true;
   browserRunning = false;
@@ -67,7 +71,7 @@ beforeEach(() => {
         devices: 1,
         active_devices: revoked ? 0 : 1,
         desired_revision: revision,
-        applied_revision: 1,
+        applied_revision: appliedRevision,
         xray_configured: true,
       });
     if (path === "/api/v1/nodes")
@@ -108,6 +112,11 @@ beforeEach(() => {
       revoked = true;
       revision = 2;
       return Response.json({ id: "d1", revoked_at: "2026-01-02T00:00:00Z" });
+    }
+    if (path === "/api/v1/config/apply" && options.method === "POST") {
+      appliedRevision = revision;
+      if (interruptApply) throw new TypeError("VPN disconnected");
+      return Response.json({ status: "applied" });
     }
     throw new Error(
       `Unexpected API request: ${options.method || "GET"} ${path}`,
@@ -304,5 +313,20 @@ describe("administrator panel", () => {
           path === "/api/v1/devices/d1/revoke" && options.method === "POST",
       ),
     ).toBe(true);
+  });
+
+  it("does not reapply an unchanged revision after a lost VPN response", async () => {
+    interruptApply = true;
+    await login();
+    const applyButton = screen.getByRole("button", { name: "Применить конфигурацию" }) as HTMLButtonElement;
+    expect(applyButton.disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Отозвать" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Отозвать доступ" }));
+    await waitFor(() => expect(applyButton.disabled).toBe(false));
+    fireEvent.click(applyButton);
+    await screen.findByText("2 / 2");
+    await waitFor(() => expect(applyButton.disabled).toBe(true));
+    expect(screen.queryByText(/Связь с сервером прервалась/)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([path]) => path === "/api/v1/config/apply")).toHaveLength(1);
   });
 });

@@ -260,6 +260,10 @@ func (s *Store) Configure(ctx context.Context, apply bool, operation func(contex
 		if !initialized || node.ConfigHash != expected {
 			return ErrStaleConfig
 		}
+		// A repeated apply must not restart Xray and disconnect active clients.
+		if apply && node.AppliedRevision == node.Revision {
+			return nil
+		}
 		rows, err := q.ActiveClients(ctx, uid(LocalNodeID))
 		if err != nil {
 			return err
