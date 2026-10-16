@@ -15,7 +15,8 @@ if [[ "${GOARCH:-$architecture}" != "$architecture" || "${GOOS:-linux}" != linux
   printf 'Cross-compilation is not supported: Xray must match the native architecture.\n' >&2
   exit 1
 fi
-version=$(git rev-parse HEAD)
+# scripts/dev.sh release passes the commit SHA: the checks image it builds in has no .git.
+version=${GATEWAY_RELEASE_VERSION:-$(git rev-parse HEAD)}
 [[ "$version" =~ ^[0-9a-f]{40}$ ]] || { printf 'A full Git SHA is required.\n' >&2; exit 1; }
 temporary=$(mktemp -d)
 trap 'rm -rf "$temporary"' EXIT

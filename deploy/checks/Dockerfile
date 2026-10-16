@@ -15,20 +15,25 @@ COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
   && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# Pinned Xray and sqlc releases, verified by SHA-256 like scripts/setup-cloud.sh.
+# Pinned Xray, sqlc and actionlint releases, verified by SHA-256 like scripts/setup-cloud.sh.
 COPY scripts/install-xray.sh /usr/local/share/private-gateway/install-xray.sh
 RUN bash /usr/local/share/private-gateway/install-xray.sh /opt/xray
 ARG TARGETARCH
 RUN case "$TARGETARCH" in \
-      amd64) digest=468aecee071bfe55e97fcbcac52ea0208eeca444f67736f3b8f0f3d6a106132e ;; \
-      arm64) digest=dd9ab43b022ba3b3402054f99d7ae6e5efea33c949e869c3c66b214415e0c82d ;; \
+      amd64) sqlc=468aecee071bfe55e97fcbcac52ea0208eeca444f67736f3b8f0f3d6a106132e \
+             actionlint=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8 ;; \
+      arm64) sqlc=dd9ab43b022ba3b3402054f99d7ae6e5efea33c949e869c3c66b214415e0c82d \
+             actionlint=325e971b6ba9bfa504672e29be93c24981eeb1c07576d730e9f7c8805afff0c6 ;; \
       *) echo "Unsupported architecture: $TARGETARCH" >&2; exit 1 ;; \
     esac \
   && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/sqlc.tar.gz \
     "https://github.com/sqlc-dev/sqlc/releases/download/v1.30.0/sqlc_1.30.0_linux_${TARGETARCH}.tar.gz" \
-  && printf '%s  %s\n' "$digest" /tmp/sqlc.tar.gz | sha256sum -c - \
+  && curl -fsSL --proto '=https' --tlsv1.2 -o /tmp/actionlint.tar.gz \
+    "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_${TARGETARCH}.tar.gz" \
+  && printf '%s  %s\n' "$sqlc" /tmp/sqlc.tar.gz "$actionlint" /tmp/actionlint.tar.gz | sha256sum -c - \
   && tar -xzf /tmp/sqlc.tar.gz -C /usr/local/bin sqlc \
-  && rm /tmp/sqlc.tar.gz
+  && tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint \
+  && rm /tmp/sqlc.tar.gz /tmp/actionlint.tar.gz
 
 # CI runs the checks as an unprivileged user, and so does this image.
 RUN useradd --create-home --uid 10001 checks

@@ -126,11 +126,30 @@ PY
     docker run --rm --entrypoint bash "$CHECKS_IMAGE" -c 'sqlc generate >&2 && tar -c internal/storage/db' | tar -x
     echo 'Regenerated internal/storage/db with sqlc 1.30.0.'
     ;;
+  release)
+    # The Linux amd64 release of the current commit, built with the same toolchain as the checks;
+    # release.tar.gz, its checksum and the installer come back as a tar stream into OUTPUT_DIR.
+    output=${2:?usage: scripts/dev.sh release OUTPUT_DIR}
+    if [[ -n $(git status --porcelain) ]]; then
+      echo 'Commit first: a release carries the commit SHA, so it is built from committed files only' >&2
+      exit 1
+    fi
+    version=$(git rev-parse HEAD)
+    build_checks_image
+    docker volume create private-gateway-checks-go-build >/dev/null
+    mkdir -p "$output"
+    # MSYS_NO_PATHCONV keeps Git Bash on Windows from rewriting the container path in --mount.
+    MSYS_NO_PATHCONV=1 docker run --rm --env GATEWAY_RELEASE_VERSION="$version" \
+      --mount type=volume,src=private-gateway-checks-go-build,dst=/home/checks/.cache/go-build \
+      --entrypoint bash "$CHECKS_IMAGE" \
+      -c 'bash scripts/build-release.sh /tmp/release >&2 && tar -C /tmp/release -c .' | tar -x -C "$output"
+    echo "Release $version is in $output."
+    ;;
   stop)
     load_env
     stop_api
     bash scripts/xray-service.sh stop
     docker compose --env-file .env -f compose.dev.yml stop postgres
     ;;
-  *) echo 'usage: scripts/dev.sh prepare|start|test|sqlc|stop' >&2; exit 1 ;;
+  *) echo 'usage: scripts/dev.sh prepare|start|test|sqlc|release|stop' >&2; exit 1 ;;
 esac

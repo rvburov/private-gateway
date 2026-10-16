@@ -26,7 +26,7 @@ flowchart LR
 | VPN-трафик и счётчики | Xray, VLESS + REALITY, StatsService | Принимает подключения совместимых клиентов через TCP 443, передаёт трафик и предоставляет только внутреннему API байты по профилю с последнего запуска Xray. Go API создаёт конфигурацию, а [Xray worker](../deploy/docker/xray-worker.py) запускает её в отдельном контейнере. |
 | Удалённый браузер | Chromium, Python, noVNC, VNC | Chromium открывает сайты на VPS, noVNC показывает его экран в панели, а [Python worker](../deploy/docker/browser-worker.py) запускает и останавливает временный сеанс. |
 | HTTPS и контейнеры | HAProxy, Caddy, Docker Compose | [HAProxy](../deploy/docker/haproxy.cfg.template) разделяет HTTPS панели и VPN-трафик на TCP 443 по SNI. Caddy обслуживает панель и noVNC; [Compose](../deploy/docker/compose.yml) запускает шесть сервисов и их внутренние сети. |
-| Установка, обновление и проверки | Bash, Python, GitHub Actions YAML | [Скрипты установки](../deploy/docker/install.sh) собирают и обновляют стек; [CI/CD](../.github/workflows/ci.yml) проверяет код и доставляет успешный релиз на VPS. |
+| Установка, обновление и проверки | Bash, Python, GitHub Actions YAML | [Скрипты установки](../deploy/docker/install.sh) собирают и обновляют стек; [CI/CD](../.github/workflows/ci.yml) проверяет код теми же проверками в Docker, что и [`scripts/dev.sh test`](../scripts/dev.sh), и доставляет успешный релиз на все серверы из [`deploy/servers`](../deploy/servers). |
 
 На iPhone, Android и ПК используются сторонние VLESS + REALITY клиенты: проект выдаёт им URI, QR-код или конфигурационный файл, но не содержит собственного мобильного приложения. Node.js нужен для сборки панели, на VPS он не запускается.
 

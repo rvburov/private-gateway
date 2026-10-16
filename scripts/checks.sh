@@ -25,13 +25,16 @@ go build -o "$(mktemp -d)" ./cmd/...
 step 'Web panel: tests and production build'
 (cd web && npm test && npm run build)
 
-step 'Release and deployment scripts'
+step 'GitHub Actions workflows (actionlint 1.7.12)'
+actionlint .github/workflows/*.yml
+
+step 'Release, deployment and server list scripts'
 for script in scripts/*.sh deploy/docker/*.sh deploy/browser/*.sh; do
   bash -n "$script"
 done
 python3 -m py_compile scripts/*.py deploy/docker/*.py deploy/browser/*.py
 for test in scripts/test-release.py scripts/test-vpn-smoke.py scripts/test-change-reality-target.py \
-  scripts/test-rotate-admin-token.py scripts/test-admin-credentials.py; do
+  scripts/test-rotate-admin-token.py scripts/test-admin-credentials.py scripts/test-servers.py; do
   python3 "$test"
 done
 
