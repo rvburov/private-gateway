@@ -232,7 +232,8 @@ if '__' in text:
 destination.write_text(text)
 destination.chmod(0o600)
 PY
-docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+# For a name under Caddy's own CA (.localhost, .internal) validation creates that CA in /data.
+docker run --rm --network none --read-only --tmpfs /data --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
   -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \
   --entrypoint caddy "$(image_of caddy)" validate --config /etc/caddy/Caddyfile
 

@@ -111,7 +111,8 @@ stage_config "$release/docker/Caddyfile.template" "$caddyfile.next" 600
 if cmp -s "$caddyfile.next" "$caddyfile"; then
   rm -f -- "$caddyfile.next"
 else
-  docker run --rm --network none --read-only --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
+  # For a name under Caddy's own CA (.localhost, .internal) validation creates that CA in /data.
+  docker run --rm --network none --read-only --tmpfs /data --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
     -v "$caddyfile.next:/etc/caddy/Caddyfile:ro" \
     --entrypoint caddy "$(image_of caddy)" validate --config /etc/caddy/Caddyfile
 fi
