@@ -89,6 +89,6 @@ export function errorMessage(error: unknown): string {
   if (error.name === "TimeoutError")
     return "Сервер не ответил вовремя. Обновите статус операции.";
   if (error.name === "TypeError")
-    return "Не удалось подключиться к API. Проверьте сервер и SSH-туннель.";
+    return "Связь с сервером прервалась. Обновите страницу и проверьте версию конфигурации.";
   return error.message;
 }

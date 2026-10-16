@@ -270,7 +270,7 @@ func configCommand(api *apiClient) *cobra.Command {
 }
 
 func browserCommand(api *apiClient) *cobra.Command {
-	command := &cobra.Command{Use: "browser", Short: "Manage the remote browser (access its UI through an SSH tunnel)"}
+	command := &cobra.Command{Use: "browser", Short: "Manage the remote browser (open its UI through the HTTPS panel)"}
 	for _, action := range []string{"status", "start", "stop"} {
 		command.AddCommand(&cobra.Command{
 			Use: action, Short: strings.ToUpper(action[:1]) + action[1:] + " remote browser", Args: cobra.NoArgs,

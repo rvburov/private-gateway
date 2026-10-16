@@ -261,7 +261,14 @@ func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 func (s *Server) validate(w http.ResponseWriter, r *http.Request) { s.configure(w, r, false) }
 func (s *Server) apply(w http.ResponseWriter, r *http.Request)    { s.configure(w, r, true) }
 func (s *Server) configure(w http.ResponseWriter, r *http.Request, apply bool) {
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	operationContext := r.Context()
+	if apply {
+		// Applying a profile restarts Xray. When the administrator uses this
+		// same VPN, that restart can disconnect the HTTP caller. Finish the
+		// authenticated operation and commit its revision independently.
+		operationContext = context.WithoutCancel(operationContext)
+	}
+	ctx, cancel := context.WithTimeout(operationContext, 60*time.Second)
 	defer cancel()
 	operation := s.xray.Validate
 	if apply {

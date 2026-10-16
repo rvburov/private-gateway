@@ -42,6 +42,20 @@ func (x *testXray) Apply(_ context.Context, c []xray.Client) error {
 	return nil
 }
 
+type disconnectXray struct {
+	started  chan struct{}
+	release  chan struct{}
+	finished chan struct{}
+}
+
+func (x *disconnectXray) Validate(context.Context, []xray.Client) error { return nil }
+func (x *disconnectXray) Apply(ctx context.Context, _ []xray.Client) error {
+	close(x.started)
+	<-x.release
+	defer close(x.finished)
+	return ctx.Err()
+}
+
 type testBrowser struct{ running bool }
 
 func (b *testBrowser) Status(context.Context) (browser.Status, error) {
@@ -307,6 +321,58 @@ func TestDeviceLifecyclePostgreSQL(t *testing.T) {
 	if !errors.Is(err, storage.ErrStaleConfig) || invoked {
 		t.Fatal("stale process can apply current revision", err)
 	}
+}
+
+func TestApplyCommitsAfterVPNCallerDisconnects(t *testing.T) {
+	store, _, node, _ := integrationStore(t)
+	if _, err := store.Create(context.Background(), "Phone", node.ID); err != nil {
+		t.Fatal(err)
+	}
+	engine := &disconnectXray{started: make(chan struct{}), release: make(chan struct{}), finished: make(chan struct{})}
+	const token = "integration-token-at-least-thirty-two-characters"
+	server := httptest.NewServer(New(store, engine, &testBrowser{}, Options{Token: token, XrayConfigured: true}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+"/api/v1/config/apply", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer "+token)
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+		response, err := server.Client().Do(request)
+		if err == nil {
+			response.Body.Close()
+		}
+	}()
+	select {
+	case <-engine.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Xray apply did not start")
+	}
+	cancel() // Xray restarting may disconnect the administrator's own VPN.
+	close(engine.release)
+	select {
+	case <-engine.finished:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Xray apply did not finish after caller disconnected")
+	}
+	select {
+	case <-clientDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("disconnected client did not exit")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		status, err := store.Status(context.Background())
+		if err == nil && status.AppliedRevision == status.DesiredRevision {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("Xray apply completed but the desired revision was not committed")
 }
 
 func TestDeviceTrafficMapsPrivateCredentialToDevice(t *testing.T) {
