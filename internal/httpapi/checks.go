@@ -35,9 +35,9 @@ type ServerChecks struct {
 	RootCAs           *x509.CertPool // nil means the system roots
 }
 
-// checkServices are the outside services the browser part of "Проверка" asks: the address sites
-// see over IPv4 and IPv6, and its location and provider.
-var checkServices = []string{"https://api.ipify.org", "https://api6.ipify.org", "https://ipinfo.io"}
+// checkServices — внешние сервисы, к которым обращается браузерная часть «Проверки»: ipleak.net
+// сообщает адреса и сети по IPv4 и IPv6, а через уникальные поддомены — DNS-серверы браузера.
+var checkServices = []string{"https://ipleak.net", "https://*.ipleak.net"}
 
 type checkResult struct {
 	ID     string `json:"id"`

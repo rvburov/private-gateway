@@ -115,15 +115,22 @@ func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token,
 	}
 	link := scheme + "://" + r.Host + storage.SubscriptionPathPrefix + token
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The token is validated, the host is checked above and the device name is escaped, so the
-	// app links may carry their own schemes.
-	_ = subscriptionPage.Execute(w, map[string]any{
-		"Name":    name,
-		"Link":    link,
-		"Hiddify": template.URL("hiddify://import/" + link + "#" + url.PathEscape(name)),
-		"Clash": template.URL("clash://install-config?url=" + url.QueryEscape(link+"?format=mihomo") +
-			"&name=" + url.QueryEscape(name)),
-	})
+	// Токен проверен, хост проверен выше, а имя устройства экранируется, поэтому ссылки импорта
+	// могут нести собственные схемы приложений. Порядок — как в «Инструкциях» панели.
+	type app struct {
+		Name string
+		URL  template.URL
+	}
+	apps := []app{
+		{"Happ", template.URL("happ://add/" + link)},
+		{"v2rayNG", template.URL("v2rayng://install-sub?url=" + url.QueryEscape(link) + "#" + url.PathEscape(name))},
+		{"Hiddify", template.URL("hiddify://import/" + link + "#" + url.PathEscape(name))},
+		{"Streisand", template.URL("streisand://import/" + link)},
+		{"V2Box", template.URL("v2box://install-sub?url=" + url.QueryEscape(link) + "&name=" + url.QueryEscape(name))},
+		{"Clash Meta / Mihomo", template.URL("clash://install-config?url=" + url.QueryEscape(link+"?format=mihomo") +
+			"&name=" + url.QueryEscape(name))},
+	}
+	_ = subscriptionPage.Execute(w, map[string]any{"Name": name, "Link": link, "Apps": apps})
 }
 
 const subscriptionHTML = `<!doctype html>
@@ -138,15 +145,14 @@ body { margin: 0; background: #f4f6f8; color: #17202a; font: 16px/1.5 system-ui,
 main { max-width: 34rem; margin: 0 auto; padding: 24px 16px 40px; }
 h1 { font-size: 1.4rem; margin: 0 0 4px; }
 .name { color: #4b5866; margin: 0 0 20px; }
-.actions { display: grid; gap: 10px; margin: 20px 0; }
+.hint { color: #4b5866; margin: 16px 0 0; font-size: 0.9rem; }
+.actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 10px; margin: 10px 0 20px; }
 .button { display: block; padding: 12px 16px; border-radius: 10px; background: #1f6feb; color: #fff; text-align: center; text-decoration: none; font-weight: 600; }
-.button.secondary { background: #e6ebf1; color: #17202a; }
 textarea { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid #c8d1dc; border-radius: 8px; font: 14px ui-monospace, monospace; word-break: break-all; resize: none; }
 .warning { margin-top: 20px; padding: 12px; border-radius: 8px; background: #fff4e5; color: #6b4300; }
 @media (prefers-color-scheme: dark) {
   body { background: #0f1419; color: #e6edf3; }
-  .name { color: #9aa7b4; }
-  .button.secondary { background: #273340; color: #e6edf3; }
+  .name, .hint { color: #9aa7b4; }
   textarea { background: #161d24; color: #e6edf3; border-color: #34414e; }
   .warning { background: #3a2a10; color: #f5d9a8; }
 }
@@ -157,11 +163,11 @@ textarea { box-sizing: border-box; width: 100%; padding: 10px; border: 1px solid
 <h1>Подключение к Private Gateway</h1>
 <p class="name">{{.Name}}</p>
 <p>Это ссылка-подписка. Добавьте её в приложение VPN с поддержкой VLESS + REALITY: оно само получит профиль и будет его обновлять.</p>
+<p class="hint">Кнопка сработает, если приложение уже установлено.</p>
 <div class="actions">
-<a class="button" href="{{.Hiddify}}">Открыть в Hiddify</a>
-<a class="button secondary" href="{{.Clash}}">Открыть в Clash Meta / Mihomo</a>
-</div>
-<p>В v2rayNG, v2rayN, Streisand, Shadowrocket и других приложениях выберите добавление подписки по ссылке и вставьте:</p>
+{{range .Apps}}<a class="button" href="{{.URL}}">Открыть в {{.Name}}</a>
+{{end}}</div>
+<p>В других приложениях (v2rayN, Shadowrocket, Karing и других) выберите добавление подписки по ссылке и вставьте:</p>
 <textarea readonly rows="3" aria-label="Ссылка-подписка">{{.Link}}</textarea>
 <p class="warning">Ссылка даёт доступ к VPN. Передавайте её только тому, кто будет подключаться, и не публикуйте. Если она попала не туда, владелец выдаст новую — прежняя сразу перестанет работать.</p>
 </main>

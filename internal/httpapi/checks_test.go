@@ -141,12 +141,12 @@ func TestServerChecksPostgreSQL(t *testing.T) {
 	})
 }
 
-// The browser part of the checks reaches these services and nothing else outside the panel.
+// Браузерная часть проверки обращается к этим сервисам и больше никуда за пределы панели.
 func TestPanelPolicyAllowsOnlyTheCheckServices(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	New(nil, nil, nil, Options{}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	policy := recorder.Header().Get("Content-Security-Policy")
-	if !strings.Contains(policy, "connect-src 'self' https://api.ipify.org https://api6.ipify.org https://ipinfo.io;") ||
+	if !strings.Contains(policy, "connect-src 'self' https://ipleak.net https://*.ipleak.net;") ||
 		!strings.Contains(policy, "default-src 'self';") {
 		t.Fatalf("Content-Security-Policy = %q", policy)
 	}

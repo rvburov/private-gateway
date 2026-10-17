@@ -19,18 +19,28 @@ describe("setup instructions", () => {
 
   it("gives every system the same path: link, app, VPN mode, full tunnel, IPv6, kill switch, check", () => {
     for (const platform of platforms) {
-      expect(platform.apps.length).toBeGreaterThan(0);
       const titles = platform.steps.map((step) => step.title).join(" | ");
       expect(titles).toContain("ссылку-подписку");
       expect(titles).toContain("Весь трафик через сервер");
       expect(titles).toContain("IPv6");
       expect(titles).toMatch(/[Kk]ill switch/);
       expect(platform.steps.at(-1)?.title).toBe("Проверьте подключение");
-      for (const app of platform.apps) {
+    }
+    // Проверенным помечено только то, что пробовали на настоящем устройстве.
+    expect(platforms.filter((platform) => platform.checked).map((platform) => platform.id)).toEqual(["ios"]);
+  });
+
+  it("ranks three clients for every system and keeps the steps general", () => {
+    for (const platform of platforms) {
+      expect(platform.top).toHaveLength(3);
+      expect(platform.others.length).toBeGreaterThan(0);
+      const names = [...platform.top, ...platform.others].map((app) => app.name);
+      expect(new Set(names).size).toBe(names.length);
+      for (const app of [...platform.top, ...platform.others]) {
         if (app.link) expect(app.link).toMatch(/^https:\/\//);
       }
+      // Шаги подходят любому клиенту: ни одно приложение в них не главное.
+      for (const step of platform.steps) expect(`${step.title} ${step.text}`).not.toMatch(/hiddify|happ|v2ray|streisand/i);
     }
-    // Only what was tried on a real device is marked as checked.
-    expect(platforms.filter((platform) => platform.checked).map((platform) => platform.id)).toEqual(["ios"]);
   });
 });

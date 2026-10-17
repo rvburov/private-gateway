@@ -1,50 +1,91 @@
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { Icon } from "./icons";
 
-// Setup instructions for every system the owner uses. Menu names differ between app versions, so
-// steps name the setting and say where it usually is. Only what was tried on a real device is
-// marked as checked; everything else follows the app's documented features.
+// Инструкции для каждой системы владельца. Названия пунктов меню отличаются от версии к версии и
+// от приложения к приложению, поэтому шаги называют настройку и её обычные имена. Проверенным
+// помечено только то, что пробовали на настоящем устройстве; остальное следует возможностям приложений.
 export type PlatformId = "android" | "ios" | "windows" | "macos" | "linux";
 type ClientApp = { name: string; note: string; source: string; link?: string };
 type Step = { title: string; text: string };
-type Platform = { id: PlatformId; label: string; checked?: string; apps: ClientApp[]; steps: Step[] };
+type Platform = {
+  id: PlatformId;
+  label: string;
+  checked?: string;
+  // Тройка по популярности и надёжности: первым — самый распространённый и проверенный временем.
+  top: ClientApp[];
+  // Тоже подходят, без места в рейтинге.
+  others: ClientApp[];
+  steps: Step[];
+};
+
+const links = {
+  v2rayNG: "https://github.com/2dust/v2rayNG/releases",
+  v2rayN: "https://github.com/2dust/v2rayN/releases",
+  happAndroid: "https://github.com/Happ-proxy/happ-android/releases",
+  happDesktop: "https://github.com/Happ-proxy/happ-desktop/releases",
+  hiddify: "https://github.com/hiddify/hiddify-app/releases",
+  throne: "https://github.com/throneproj/Throne/releases",
+  clashVerge: "https://github.com/clash-verge-rev/clash-verge-rev/releases",
+  clashAndroid: "https://github.com/MetaCubeX/ClashMetaForAndroid/releases",
+  nekoBox: "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases",
+  karing: "https://github.com/KaringX/karing/releases",
+  singBox: "https://sing-box.sagernet.org/clients/",
+};
 
 const linkStep = {
   title: "Возьмите ссылку-подписку",
   text: "В панели: «Устройства» → «Профиль» нужного устройства → «Скопировать ссылку». Для каждого телефона и компьютера заведите своё устройство в панели: тогда его можно отозвать отдельно.",
 };
+const phoneSubscriptionStep = {
+  title: "Добавьте подписку",
+  text: "Откройте ссылку в браузере на телефоне: страница предложит кнопки импорта в популярные приложения. Или скопируйте ссылку и в приложении нажмите «+» → «Импорт из буфера обмена» (в некоторых — «Подписки» → «Добавить»), затем обновите подписку.",
+};
+const desktopSubscriptionStep = {
+  title: "Добавьте подписку",
+  text: "Скопируйте ссылку и добавьте подписку в приложении: «+» → «Импорт из буфера обмена» или «Подписки» → «Добавить», затем «Обновить подписку». Если приложению нужен файл, в окне профиля есть форматы sing-box и Mihomo.",
+};
+const allTrafficStep = {
+  title: "Весь трафик через сервер",
+  text: "В настройках маршрутизации выберите вариант без обхода: «Global», «Весь трафик» или регион «Other». Иначе сайты вашей страны открываются напрямую и видят ваш настоящий IP.",
+};
+const ipv6Step = {
+  title: "Отключите IPv6",
+  text: "Выключите IPv6 в настройках приложения, а если такого пункта нет — в системе: сервер работает только по IPv4, и IPv6 может пойти мимо VPN.",
+};
 const checkStep = {
   title: "Проверьте подключение",
-  text: "Включите VPN, откройте на этом устройстве панель, раздел «Проверка», и нажмите «Проверить»: сайты должны видеть IP сервера, а IPv6 и WebRTC — не выдавать ваш адрес. DNS проверьте на одном из сайтов в том же разделе.",
+  text: "Включите VPN, откройте на этом устройстве панель, раздел «Проверка», и нажмите «Проверить»: вы должны выходить в интернет через свой шлюз, а IPv6, WebRTC и DNS — не показывать вашего провайдера.",
 };
-const hiddify = "https://github.com/hiddify/hiddify-app/releases";
+const desktopKillSwitchStep = {
+  title: "Kill switch",
+  text: "У большинства клиентов полноценного kill switch нет: при обрыве VPN программы выходят в интернет напрямую. Держите режим TUN включённым и следите за значком подключения.",
+};
 
 export const platforms: Platform[] = [
   {
     id: "android",
     label: "Android",
-    apps: [
-      { name: "Hiddify", note: "Рекомендуем: подписка, режим VPN и настройки в одном месте.", source: "Google Play или GitHub", link: hiddify },
-      { name: "v2rayNG", note: "Клиент на ядре Xray.", source: "Google Play или GitHub", link: "https://github.com/2dust/v2rayNG/releases" },
-      { name: "NekoBox", note: "Клиент на ядре sing-box.", source: "GitHub", link: "https://github.com/MatsuriDayo/NekoBoxForAndroid/releases" },
-      { name: "Clash Meta for Android", note: "Если нужен формат Mihomo (Clash).", source: "GitHub", link: "https://github.com/MetaCubeX/ClashMetaForAndroid/releases" },
+    top: [
+      { name: "v2rayNG", note: "Самый распространённый клиент на ядре Xray — том же, что на сервере. Бесплатный, открытый код.", source: "GitHub", link: links.v2rayNG },
+      { name: "Happ", note: "Очень популярный и простой, ядро Xray. Бесплатный, код закрыт.", source: "Google Play или GitHub", link: links.happAndroid },
+      { name: "Hiddify", note: "Понятный интерфейс, ядро sing-box. Бесплатный, открытый код.", source: "Google Play или GitHub", link: links.hiddify },
+    ],
+    others: [
+      { name: "v2RayTun", note: "Google Play", source: "Google Play" },
+      { name: "NekoBox", note: "только с GitHub: в Google Play чужая сборка", source: "GitHub", link: links.nekoBox },
+      { name: "Clash Meta for Android", note: "формат Mihomo", source: "GitHub", link: links.clashAndroid },
+      { name: "Karing", note: "ядро sing-box", source: "GitHub", link: links.karing },
     ],
     steps: [
       linkStep,
-      { title: "Установите приложение", text: "Hiddify — из Google Play или с GitHub." },
-      {
-        title: "Добавьте подписку",
-        text: "Откройте ссылку на телефоне в браузере и нажмите «Открыть в Hiddify». Или скопируйте её и в Hiddify нажмите «+» → «Добавить из буфера обмена». В v2rayNG ссылку добавляют в настройках группы подписок, затем нажимают «Обновить подписку».",
-      },
+      { title: "Установите приложение", text: "Поставьте одно из трёх приложений выше — с GitHub или из Google Play от его разработчика." },
+      phoneSubscriptionStep,
       {
         title: "Режим VPN, а не прокси",
-        text: "В настройках Hiddify выберите режим работы «VPN» (Service mode). Тогда через сервер идут все приложения, а не только браузер. v2rayNG работает как VPN по умолчанию.",
+        text: "При первом подключении разрешите приложению создать VPN. Если есть выбор «Прокси» или «VPN», выберите VPN: тогда через сервер идут все приложения, а не только браузер.",
       },
-      {
-        title: "Весь трафик через сервер",
-        text: "В Hiddify выберите регион «Other»: иначе местные сайты открываются напрямую и видят ваш настоящий IP. В v2rayNG выберите маршрутизацию без обхода — «Global».",
-      },
-      { title: "Отключите IPv6", text: "В настройках приложения выключите IPv6: сервер работает только по IPv4." },
+      allTrafficStep,
+      ipv6Step,
       {
         title: "Включите kill switch",
         text: "Настройки Android → «Сеть и интернет» → «VPN» → шестерёнка у приложения → «Постоянная VPN» и «Блокировать подключения без VPN». Если VPN отключится, интернет не пойдёт напрямую.",
@@ -56,20 +97,26 @@ export const platforms: Platform[] = [
     id: "ios",
     label: "iPhone и iPad",
     checked: "Проверено на iPhone с Hiddify по LTE: сайты видят IP сервера, WebRTC — без вашего адреса.",
-    apps: [
-      { name: "Hiddify", note: "Рекомендуем; проверен с этим сервером.", source: "App Store" },
-      { name: "Streisand", note: "Бесплатный клиент с поддержкой подписок.", source: "App Store" },
-      { name: "Shadowrocket", note: "Платный клиент с поддержкой подписок.", source: "App Store" },
+    top: [
+      { name: "Happ", note: "Очень популярный и простой, ядро Xray, импорт подписки по кнопке. Бесплатный.", source: "App Store" },
+      { name: "Hiddify", note: "Бесплатный, открытый код. Проверен с этим сервером на iPhone по LTE.", source: "App Store" },
+      { name: "Streisand", note: "Бесплатный, давно популярный клиент с подписками.", source: "App Store" },
+    ],
+    others: [
+      { name: "Shadowrocket", note: "платный", source: "App Store" },
+      { name: "V2Box", note: "бесплатный, с рекламой", source: "App Store" },
+      { name: "Karing", note: "ядро sing-box", source: "App Store" },
     ],
     steps: [
       linkStep,
-      { title: "Установите приложение", text: "Hiddify — из App Store." },
       {
-        title: "Добавьте подписку",
-        text: "Откройте ссылку в Safari и нажмите «Открыть в Hiddify». Или скопируйте её и в Hiddify нажмите «+» → «Добавить из буфера обмена». При первом подключении разрешите добавить конфигурацию VPN.",
+        title: "Установите приложение",
+        text: "Установите одно из трёх приложений выше из App Store. В российском App Store многих VPN-клиентов нет — понадобится Apple ID другой страны.",
       },
-      { title: "Весь трафик через сервер", text: "В настройках Hiddify выберите регион «Other», чтобы местные сайты не открывались напрямую." },
-      { title: "Отключите IPv6", text: "В настройках Hiddify выключите IPv6: сервер работает только по IPv4." },
+      phoneSubscriptionStep,
+      { title: "Разрешите VPN", text: "При первом подключении iOS попросит добавить конфигурацию VPN — разрешите." },
+      allTrafficStep,
+      ipv6Step,
       {
         title: "Kill switch",
         text: "Системного переключателя в iOS нет. Если VPN отключился, трафик идёт напрямую: следите за значком VPN в строке состояния и включайте подключение снова.",
@@ -80,48 +127,53 @@ export const platforms: Platform[] = [
   {
     id: "windows",
     label: "Windows",
-    apps: [
-      { name: "Hiddify", note: "Рекомендуем: простой интерфейс и режим VPN.", source: "GitHub", link: hiddify },
-      { name: "v2rayN", note: "Клиент на ядре Xray с режимом TUN.", source: "GitHub", link: "https://github.com/2dust/v2rayN/releases" },
-      { name: "Clash Verge Rev", note: "Если нужен формат Mihomo (Clash).", source: "GitHub", link: "https://github.com/clash-verge-rev/clash-verge-rev/releases" },
+    top: [
+      { name: "v2rayN", note: "Самый популярный клиент для Windows: ядро Xray или sing-box, режим TUN. Бесплатный, открытый код.", source: "GitHub", link: links.v2rayN },
+      { name: "Happ", note: "Простой, ядро Xray. Бесплатный, код закрыт.", source: "GitHub", link: links.happDesktop },
+      { name: "Hiddify", note: "Понятный интерфейс, ядро sing-box. Бесплатный, открытый код.", source: "GitHub", link: links.hiddify },
+    ],
+    others: [
+      { name: "Throne", note: "бывший NekoRay", source: "GitHub", link: links.throne },
+      { name: "Clash Verge Rev", note: "формат Mihomo", source: "GitHub", link: links.clashVerge },
+      { name: "Karing", note: "ядро sing-box", source: "GitHub", link: links.karing },
     ],
     steps: [
       linkStep,
-      { title: "Установите приложение", text: "Hiddify или v2rayN — со страницы выпусков на GitHub." },
-      {
-        title: "Добавьте подписку",
-        text: "Hiddify: «+» → «Добавить из буфера обмена». v2rayN: «Подписки» → «Настройки подписок» → «Добавить», вставьте ссылку, затем «Обновить подписки».",
-      },
+      { title: "Установите приложение", text: "Скачайте одно из трёх приложений выше со страницы выпусков на GitHub." },
+      desktopSubscriptionStep,
       {
         title: "Режим VPN (TUN)",
-        text: "Hiddify: режим работы «VPN» — Windows попросит права администратора. v2rayN: включите «Режим TUN» внизу окна. Без этого через сервер идут только программы, которые используют системный прокси.",
+        text: "Включите режим TUN — в разных приложениях он называется «TUN», «Режим TUN» или «VPN»; Windows попросит права администратора. В режиме системного прокси через сервер идут только программы, которые используют прокси.",
       },
-      { title: "Весь трафик через сервер", text: "Hiddify: регион «Other». v2rayN: маршрутизация «Global» (без обхода)." },
-      { title: "Отключите IPv6", text: "Выключите IPv6 в настройках приложения: сервер работает только по IPv4." },
-      {
-        title: "Kill switch",
-        text: "Полноценного kill switch в этих приложениях нет: при обрыве VPN программы выходят напрямую. Держите режим VPN включённым и проверяйте значок подключения.",
-      },
+      allTrafficStep,
+      ipv6Step,
+      desktopKillSwitchStep,
       checkStep,
     ],
   },
   {
     id: "macos",
     label: "macOS",
-    apps: [
-      { name: "Hiddify", note: "Рекомендуем: режим VPN и подписки.", source: "App Store или GitHub", link: hiddify },
-      { name: "Clash Verge Rev", note: "Если нужен формат Mihomo (Clash).", source: "GitHub", link: "https://github.com/clash-verge-rev/clash-verge-rev/releases" },
+    top: [
+      { name: "Happ", note: "Простой, ядро Xray. Бесплатный, код закрыт.", source: "App Store или GitHub", link: links.happDesktop },
+      { name: "Hiddify", note: "Понятный интерфейс, ядро sing-box. Бесплатный, открытый код.", source: "App Store или GitHub", link: links.hiddify },
+      { name: "v2rayN", note: "Ядро Xray или sing-box, открытый код; интерфейс сложнее, чем у первых двух.", source: "GitHub", link: links.v2rayN },
+    ],
+    others: [
+      { name: "V2Box", note: "App Store", source: "App Store" },
+      { name: "Streisand", note: "App Store, только Mac на Apple Silicon", source: "App Store" },
+      { name: "Clash Verge Rev", note: "формат Mihomo", source: "GitHub", link: links.clashVerge },
     ],
     steps: [
       linkStep,
-      { title: "Установите приложение", text: "Hiddify — из App Store или с GitHub." },
-      { title: "Добавьте подписку", text: "В Hiddify: «+» → «Добавить из буфера обмена»." },
+      { title: "Установите приложение", text: "Установите одно из трёх приложений выше из App Store или со страницы выпусков на GitHub." },
+      desktopSubscriptionStep,
       {
-        title: "Режим VPN",
-        text: "Выберите режим работы «VPN». macOS попросит разрешить сетевое расширение — разрешите в «Системных настройках».",
+        title: "Режим VPN (TUN)",
+        text: "Включите режим VPN (TUN). macOS попросит разрешить сетевое расширение — разрешите в «Системных настройках».",
       },
-      { title: "Весь трафик через сервер", text: "В Hiddify выберите регион «Other»." },
-      { title: "Отключите IPv6", text: "Выключите IPv6 в настройках приложения." },
+      allTrafficStep,
+      ipv6Step,
       {
         title: "Kill switch",
         text: "Системного переключателя нет: при обрыве VPN трафик идёт напрямую. Следите за значком подключения в строке меню.",
@@ -132,21 +184,26 @@ export const platforms: Platform[] = [
   {
     id: "linux",
     label: "Linux",
-    apps: [
-      { name: "Hiddify", note: "AppImage или deb, режим VPN.", source: "GitHub", link: hiddify },
-      { name: "Clash Verge Rev", note: "deb, rpm или AppImage, формат Mihomo.", source: "GitHub", link: "https://github.com/clash-verge-rev/clash-verge-rev/releases" },
-      { name: "sing-box", note: "Консольный клиент: JSON из профиля в панели работает как локальный прокси.", source: "sing-box.sagernet.org", link: "https://sing-box.sagernet.org/clients/" },
+    top: [
+      { name: "v2rayN", note: "Ядро Xray или sing-box, открытый код; пакеты для x64 и arm64.", source: "GitHub", link: links.v2rayN },
+      { name: "Hiddify", note: "AppImage или deb, режим VPN. Открытый код.", source: "GitHub", link: links.hiddify },
+      { name: "Throne", note: "Бывший NekoRay: режим TUN, открытый код.", source: "GitHub", link: links.throne },
+    ],
+    others: [
+      { name: "Happ", note: "deb, rpm", source: "GitHub", link: links.happDesktop },
+      { name: "Clash Verge Rev", note: "формат Mihomo", source: "GitHub", link: links.clashVerge },
+      { name: "sing-box", note: "консольный; JSON из профиля работает как локальный прокси", source: "sing-box.sagernet.org", link: links.singBox },
     ],
     steps: [
       linkStep,
-      { title: "Установите приложение", text: "Hiddify — AppImage или deb-пакет с GitHub." },
-      { title: "Добавьте подписку", text: "В Hiddify: «+» → «Добавить из буфера обмена»." },
+      { title: "Установите приложение", text: "Установите одно из трёх приложений выше: deb, rpm или AppImage со страницы выпусков на GitHub." },
+      desktopSubscriptionStep,
       {
         title: "Режим VPN (TUN)",
-        text: "Выберите режим «VPN»; для него нужны права администратора, и приложение их запросит. Без него через сервер идут только программы с настроенным прокси.",
+        text: "Включите режим TUN; для него нужны права администратора, и приложение их запросит. Без него через сервер идут только программы с настроенным прокси.",
       },
-      { title: "Весь трафик через сервер", text: "В Hiddify выберите регион «Other»." },
-      { title: "Отключите IPv6", text: "Выключите IPv6 в настройках приложения." },
+      allTrafficStep,
+      ipv6Step,
       {
         title: "Kill switch",
         text: "Встроенного нет. Продвинутый вариант — запретить исходящий трафик мимо VPN правилами файрвола.",
@@ -226,6 +283,17 @@ export function detectPlatform(agent = navigator.userAgent, touchPoints = naviga
   return "windows";
 }
 
+function Source({ app }: { app: ClientApp }) {
+  return app.link ? (
+    <a className="text-button" href={app.link} target="_blank" rel="noopener noreferrer">
+      {app.source}
+      <Icon name="external" size={15} />
+    </a>
+  ) : (
+    <span className="secondary small">{app.source}</span>
+  );
+}
+
 export function Guide({ onCheck }: { onCheck?: () => void }) {
   const [platformId, setPlatformId] = useState<PlatformId>(() => detectPlatform());
   const platform = platforms.find((item) => item.id === platformId) ?? platforms[0];
@@ -235,14 +303,18 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
         <div className="card-heading">
           <div>
             <h2>Перед началом</h2>
-            <p>Три вещи, которые делают подключение надёжным.</p>
+            <p>Что делает подключение надёжным.</p>
           </div>
           <Icon name="book" size={23} />
         </div>
         <ul className="guide-points">
+          <li>
+            Подойдёт любое приложение с поддержкой VLESS, REALITY и Vision. Ниже для каждой системы — тройка самых
+            популярных и надёжных.
+          </li>
           <li>Одно устройство в панели — один телефон или компьютер. Тогда потерянное устройство отключается отдельно.</li>
           <li>После добавления устройства нажмите «Применить конфигурацию» на «Обзоре».</li>
-          <li>Названия пунктов в приложениях зависят от их версии: ищите похожие слова.</li>
+          <li>Названия пунктов в приложениях зависят от приложения и его версии: ищите похожие слова.</li>
         </ul>
       </section>
       <section className="card">
@@ -269,25 +341,38 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
             <Icon name={platform.checked ? "check" : "lock"} size={17} />
             {platform.checked ?? `На ${platform.label} с этим сервером ещё не проверяли: шаги основаны на возможностях приложений.`}
           </div>
-          <h3 className="guide-subtitle">Приложения</h3>
-          <ul className="guide-apps">
-            {platform.apps.map((app) => (
+          <h3 className="guide-subtitle">Приложения: тройка по популярности и надёжности</h3>
+          <ol className="guide-apps" aria-label={`Приложения для ${platform.label}`}>
+            {platform.top.map((app, index) => (
               <li key={app.name}>
+                <span className="guide-rank" aria-hidden="true">
+                  {index + 1}
+                </span>
                 <div>
                   <strong>{app.name}</strong>
                   <span>{app.note}</span>
                 </div>
-                {app.link ? (
-                  <a className="text-button" href={app.link} target="_blank" rel="noopener noreferrer">
-                    {app.source}
-                    <Icon name="external" size={15} />
-                  </a>
-                ) : (
-                  <span className="secondary small">{app.source}</span>
-                )}
+                <Source app={app} />
               </li>
             ))}
-          </ul>
+          </ol>
+          <p className="guide-others">
+            Тоже подходят:{" "}
+            {platform.others.map((app, index) => (
+              <Fragment key={app.name}>
+                {index > 0 && ", "}
+                {app.link ? (
+                  <a href={app.link} target="_blank" rel="noopener noreferrer">
+                    {app.name}
+                  </a>
+                ) : (
+                  app.name
+                )}{" "}
+                ({app.note})
+              </Fragment>
+            ))}
+            .
+          </p>
           <h3 className="guide-subtitle">Шаги</h3>
           <ol className="guide-steps">
             {platform.steps.map((step) => (

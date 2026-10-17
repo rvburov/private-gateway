@@ -32,9 +32,18 @@ let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
 let browserRunning = false;
-// What the outside services of the "Проверка" section answer.
+// Что отвечает ipleak.net, внешний сервис раздела «Проверка».
 let visibleIP = "203.0.113.7";
 let visibleIPv6: string | null = null;
+let dnsResolvers = ["162.158.1.10"];
+const ownZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+const networks: Record<string, { as_number: number; isp_name: string; country_code: string | null; time_zone: string | null }> = {
+  "203.0.113.7": { as_number: 14061, isp_name: "DigitalOcean, LLC", country_code: "NL", time_zone: ownZone },
+  "198.51.100.20": { as_number: 9009, isp_name: "M247 Europe SRL", country_code: "DE", time_zone: ownZone },
+  "2001:db8::20": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
+  "162.158.1.10": { as_number: 13335, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
+  "192.0.2.53": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
+};
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -51,6 +60,7 @@ beforeEach(() => {
   browserRunning = false;
   visibleIP = "203.0.113.7";
   visibleIPv6 = null;
+  dnsResolvers = ["162.158.1.10"];
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -62,19 +72,15 @@ beforeEach(() => {
     this.removeAttribute("open");
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
-    if (path === "https://api.ipify.org?format=json") return Response.json({ ip: visibleIP });
-    if (path === "https://api6.ipify.org?format=json") {
+    const about = (ip: string) => Response.json({ ip, ...networks[ip] });
+    if (path === "https://ipv4.ipleak.net/json/") return about(visibleIP);
+    if (path === "https://ipv6.ipleak.net/json/") {
       if (!visibleIPv6) throw new TypeError("Failed to fetch");
-      return Response.json({ ip: visibleIPv6 });
+      return about(visibleIPv6);
     }
-    if (path === "https://ipinfo.io/json")
-      return Response.json({
-        ip: visibleIP,
-        city: "Amsterdam",
-        country: "NL",
-        org: "AS14061 DigitalOcean, LLC",
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-      });
+    if (/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path))
+      return Response.json({ session: "test", ip: Object.fromEntries(dnsResolvers.map((ip) => [ip, 1])) });
+    if (path.startsWith("https://ipleak.net/json/")) return about(path.slice("https://ipleak.net/json/".length));
     if (path === "/api/v1/auth/login") {
       const input = JSON.parse(options.body as string) as { username: string; password: string };
       return input.username === "admin" && input.password === "long-password"
@@ -248,37 +254,42 @@ describe("administrator panel", () => {
     expect(screen.getByRole("link", { name: "ipleak.net" }).getAttribute("href")).toBe("https://ipleak.net/");
 
     fireEvent.click(screen.getByRole("button", { name: "Проверить" }));
-    expect(await screen.findByText(/Всё в порядке: сайты видят IP сервера, утечек не найдено/)).toBeTruthy();
-    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — это IP сервера/)).toBeTruthy();
+    expect(await screen.findByText(/Всё в порядке: вы выходите в интернет через свой шлюз, утечек не найдено/)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
+    expect(screen.getByText(/Ваши DNS-запросы видит Cloudflare, Inc\. — публичный DNS/)).toBeTruthy();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();
-    // The outside services get no cookies and no address of the panel.
-    for (const service of ["https://api.ipify.org?format=json", "https://api6.ipify.org?format=json", "https://ipinfo.io/json"])
-      expect(fetchMock).toHaveBeenCalledWith(
-        service,
-        expect.objectContaining({ credentials: "omit", referrerPolicy: "no-referrer" }),
-      );
+    // Внешний сервис не получает cookies и адрес панели.
+    const outsideCalls = fetchMock.mock.calls.filter(([path]) => String(path).startsWith("https://"));
+    expect(
+      outsideCalls.some(([path]) => /^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(String(path))),
+    ).toBe(true);
+    for (const [, options] of outsideCalls)
+      expect(options).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/checks",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer admin-token" }) }),
     );
 
-    // Results stay while the owner looks at other sections.
+    // Результаты остаются, пока владелец смотрит другие разделы.
     fireEvent.click(within(menu).getByRole("button", { name: "Инструкции" }));
     fireEvent.click(await screen.findByRole("button", { name: "Перейти к проверке" }));
     expect(await screen.findByText(/Всё в порядке/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Проверить снова" })).toBeTruthy();
   });
 
-  it("reports a browser outside the tunnel and a visible IPv6 address", async () => {
+  it("names the provider an IPv6 address and DNS go to past another VPN", async () => {
     visibleIP = "198.51.100.20";
     visibleIPv6 = "2001:db8::20";
+    dnsResolvers = ["192.0.2.53"];
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
     fireEvent.click(await screen.findByRole("button", { name: "Проверить" }));
-    expect(await screen.findByText(/Найдено проблем: 2\./)).toBeTruthy();
-    expect(screen.getByText(/Сайты видят 198\.51\.100\.20, а IP сервера — 203\.0\.113\.7/)).toBeTruthy();
-    expect(screen.getByText(/Сайты видят IPv6-адрес 2001:db8::20/)).toBeTruthy();
+    expect(await screen.findByText(/Найдено проблем: 2, замечаний: 1\./)).toBeTruthy();
+    // Другой VPN — замечание, а не проблема.
+    expect(screen.getByText(/M247 Europe SRL, Германия\. Это не ваш шлюз/)).toBeTruthy();
+    expect(screen.getByText(/IPv6-адрес 2001:db8::20 — MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL/)).toBeTruthy();
+    expect(screen.getByText(/Ваши DNS-запросы видит MTS PJSC, Россия/)).toBeTruthy();
   });
 
   it("shows setup instructions for each system and opens them from a profile", async () => {

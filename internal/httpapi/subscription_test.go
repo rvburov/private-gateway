@@ -109,9 +109,17 @@ func TestSubscriptionLinkPostgreSQL(t *testing.T) {
 	response, data = call("GET", link, "", map[string]string{"Accept": "text/html,application/xhtml+xml"})
 	page := string(data)
 	if response.StatusCode != 200 || !strings.HasPrefix(response.Header.Get("Content-Type"), "text/html") ||
-		!strings.Contains(page, `href="hiddify://import/http://`) || !strings.Contains(page, "clash://install-config?url=") ||
 		!strings.Contains(page, link) || strings.Contains(page, profile.URI) {
 		t.Fatal("the browser page must offer the link to apps without showing the profile itself")
+	}
+	// Импорт в популярные приложения: каждая кнопка несёт ссылку в форме, которую ждёт приложение.
+	for _, button := range []string{
+		`href="happ://add/http://`, `href="v2rayng://install-sub?url=http%3A%2F%2F`, `href="hiddify://import/http://`,
+		`href="streisand://import/http://`, `href="v2box://install-sub?url=http%3A%2F%2F`, `href="clash://install-config?url=`,
+	} {
+		if !strings.Contains(page, button) {
+			t.Fatalf("the browser page lacks the import button %s", button)
+		}
 	}
 	if response, _ = call("GET", link+"?format=v2ray-json", "", nil); response.StatusCode != 400 {
 		t.Fatalf("unknown format=%d", response.StatusCode)

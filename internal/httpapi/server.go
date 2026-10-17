@@ -138,8 +138,8 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		// The panel's "Проверка" asks these services, on a button press only, which address and
-		// location sites see.
+		// «Проверка» панели только по кнопке спрашивает у этих сервисов, какие адреса, сети и
+		// DNS-серверы видят сайты.
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' "+strings.Join(checkServices, " ")+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})

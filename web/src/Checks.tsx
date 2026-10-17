@@ -10,25 +10,28 @@ export interface CheckResult {
   title: string;
   status: CheckStatus;
   detail: string;
-  // The traffic check of the server: the address sites see behind the gateway.
+  // Только у проверки трафика сервера: адрес, который видят сайты за шлюзом.
   ip?: string;
 }
 
-export interface Geo {
-  ip?: string;
-  city?: string;
-  country?: string;
-  org?: string;
-  timezone?: string;
+// Адрес и сеть, которой он принадлежит; сеть неизвестна, если её не удалось узнать.
+export interface Network {
+  ip: string;
+  asn: number | null;
+  isp: string | null;
+  countryCode: string | null;
+  city: string | null;
+  timeZone: string | null;
 }
 
-// What the browser learns about itself when the owner presses the button.
+// Что браузер узнаёт о себе по нажатию кнопки.
 export interface BrowserFacts {
-  ipv4: string | null;
-  ipv6: string | null;
-  geo: Geo | null;
-  // Addresses from WebRTC candidates; null when the browser has WebRTC off.
-  webrtc: { public: string[]; local: string[] } | null;
+  ipv4: Network | null;
+  ipv6: Network | null;
+  // Внешние адреса, которые раскрывает WebRTC, и локальные адреса сети; null — WebRTC выключен.
+  webrtc: { public: Network[]; local: string[] } | null;
+  // DNS-серверы, которые разрешали имена для этого браузера; null — проверка DNS не ответила.
+  dns: Network[] | null;
   timeZone: string;
 }
 
@@ -40,11 +43,17 @@ interface CheckRun {
   checkedAt: number;
 }
 
-// The outside services of the check; the API's Content-Security-Policy allows exactly these.
-export const ipv4Service = "https://api.ipify.org?format=json";
-export const ipv6Service = "https://api6.ipify.org?format=json";
-export const geoService = "https://ipinfo.io/json";
+// Внешние сервисы проверки. ipleak.net сообщает адрес и сеть по IPv4 и по IPv6, узнаёт сеть
+// любого адреса и видит, какие DNS-серверы спрашивают у него уникальные имена его поддоменов.
+// Content-Security-Policy панели разрешает ровно ipleak.net и его поддомены.
+export const ipv4Service = "https://ipv4.ipleak.net/json/";
+export const ipv6Service = "https://ipv6.ipleak.net/json/";
+const lookupService = "https://ipleak.net/json/";
 const stunServers = ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"];
+// Публичные DNS-сервисы: они видят запросы, но это не интернет-провайдер владельца.
+const publicDNS = /google|cloudflare|quad9|opendns|cisco|adguard|nextdns|control ?d|mullvad|yandex/i;
+// Так выглядят IPv4- и IPv6-адреса; всё остальное в запрос к ipleak.net не подставляется.
+const addressPattern = /^[0-9a-f:.]+$/i;
 
 const sites = [
   {
@@ -135,7 +144,7 @@ export function isIPAddress(value: string) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(value) || value.includes(":");
 }
 
-// Addresses that mean nothing outside the device's own network.
+// Адреса, которые ничего не значат за пределами сети самого устройства.
 export function isPrivateAddress(address: string) {
   const parts = address.split(".").map(Number);
   if (parts.length === 4 && parts.every((part) => Number.isInteger(part) && part >= 0 && part <= 255)) {
@@ -169,7 +178,7 @@ function utcOffset(timeZone: string, at: Date) {
   }
 }
 
-function countryName(code?: string) {
+function countryName(code: string | null) {
   if (!code) return "";
   try {
     return new Intl.DisplayNames(["ru"], { type: "region" }).of(code) ?? code;
@@ -178,160 +187,174 @@ function countryName(code?: string) {
   }
 }
 
-// Turns what the browser saw into results. serverIP is the address sites see behind the gateway.
+// Чей адрес — так, чтобы владелец узнал провайдера: «MTS PJSC, Россия».
+function owner(network: Network) {
+  const country = countryName(network.countryCode);
+  const isp = network.isp ?? "сеть неизвестна";
+  return country ? `${isp}, ${country}` : isp;
+}
+
+function sameNetwork(a: Network, b: Network) {
+  if (a.asn !== null && b.asn !== null) return a.asn === b.asn;
+  return !!a.isp && a.isp === b.isp;
+}
+
+function unknownNetwork(network: Network) {
+  return network.asn === null && !network.isp;
+}
+
+function addresses(networks: Network[]) {
+  return networks.map((network) => `${network.ip} (${owner(network)})`).join(", ");
+}
+
+// Превращает увиденное браузером в результаты. Основной выход в интернет — по IPv4; утечка —
+// адрес или DNS-сервер другой сети. serverIP — адрес шлюза, который видят сайты.
 export function browserVerdicts(facts: BrowserFacts, serverIP: string | null, now = new Date()): CheckResult[] {
   const results: CheckResult[] = [];
-  const ip = facts.ipv4;
-  if (!ip) {
+  const main = facts.ipv4 ?? facts.ipv6;
+  const exit = { id: "exit", title: "Выход в интернет" };
+  if (!main) {
     results.push({
-      id: "ip",
-      title: "IP-адрес для сайтов",
+      ...exit,
       status: "warn",
-      detail: "Не удалось узнать адрес: api.ipify.org не ответил. Проверьте вручную на ipleak.net из списка ниже.",
+      detail: "Не удалось узнать адрес: ipleak.net не ответил. Проверьте вручную на сайтах из списка ниже.",
     });
-  } else if (!serverIP) {
+  } else if (serverIP && same(main.ip, serverIP)) {
+    results.push({ ...exit, status: "ok", detail: `Сайты видят ${main.ip} — ваш шлюз (${owner(main)}).` });
+  } else if (serverIP) {
     results.push({
-      id: "ip",
-      title: "IP-адрес для сайтов",
-      status: "info",
-      detail: `Сайты видят ${ip}. Адрес сервера узнать не удалось — сравните сами с адресом в разделе «Сервер».`,
-    });
-  } else if (same(ip, serverIP)) {
-    results.push({
-      id: "ip",
-      title: "IP-адрес для сайтов",
-      status: "ok",
-      detail: `Сайты видят ${ip} — это IP сервера: браузер выходит в интернет через шлюз.`,
+      ...exit,
+      status: "warn",
+      detail: `Сайты видят ${main.ip} — ${owner(main)}. Это не ваш шлюз (${serverIP}): если сейчас включён другой VPN, так и должно быть, а если это ваш домашний провайдер — VPN на этом устройстве не работает.`,
     });
   } else {
     results.push({
-      id: "ip",
-      title: "IP-адрес для сайтов",
-      status: "fail",
-      detail: `Сайты видят ${ip}, а IP сервера — ${serverIP}: этот браузер выходит в интернет не через шлюз. Включите VPN и проверьте, что он пропускает через туннель весь трафик.`,
+      ...exit,
+      status: "info",
+      detail: `Сайты видят ${main.ip} — ${owner(main)}. Адрес шлюза узнать не удалось.`,
     });
   }
 
-  results.push(
-    facts.ipv6
-      ? {
-          id: "ipv6",
-          title: "IPv6",
-          status: "fail",
-          detail: `Сайты видят IPv6-адрес ${facts.ipv6} — он идёт мимо VPN: шлюз работает только по IPv4. Отключите IPv6 в приложении VPN или в системе — шаг «IPv6» в «Инструкциях».`,
-        }
-      : {
-          id: "ipv6",
-          title: "IPv6",
-          status: "ok",
-          detail: "Сайты не видят IPv6-адреса. Шлюз работает по IPv4, так и должно быть.",
-        },
-  );
-
-  const webrtc = facts.webrtc;
-  if (!webrtc) {
+  const ipv6 = { id: "ipv6", title: "IPv6" };
+  if (!facts.ipv6) {
+    results.push({ ...ipv6, status: "ok", detail: "Сайты не видят IPv6-адреса: всё идёт по IPv4." });
+  } else if (!facts.ipv4) {
     results.push({
-      id: "webrtc",
-      title: "WebRTC",
+      ...ipv6,
+      status: "info",
+      detail: "Устройство выходит в интернет только по IPv6 — этот адрес и проверен выше.",
+    });
+  } else if (sameNetwork(facts.ipv6, facts.ipv4)) {
+    results.push({
+      ...ipv6,
       status: "ok",
-      detail: "WebRTC в этом браузере выключен — через него адрес не утечёт.",
+      detail: `Сайты видят IPv6-адрес ${facts.ipv6.ip} той же сети, что и IPv4 (${owner(facts.ipv6)}): IPv6 идёт тем же путём.`,
+    });
+  } else if (unknownNetwork(facts.ipv6)) {
+    results.push({
+      ...ipv6,
+      status: "warn",
+      detail: `Сайты видят IPv6-адрес ${facts.ipv6.ip}, но чей он, узнать не удалось. Если это адрес вашего провайдера, IPv6 идёт мимо VPN.`,
     });
   } else {
-    const local = webrtc.local.filter(isPrivateAddress);
-    const leaked = [...webrtc.public, ...webrtc.local.filter((address) => !isPrivateAddress(address))].filter(
-      (address) => !same(address, serverIP) && !same(address, ip),
-    );
-    if (leaked.length) {
+    results.push({
+      ...ipv6,
+      status: "fail",
+      detail: `Сайты видят IPv6-адрес ${facts.ipv6.ip} — ${owner(facts.ipv6)}, а IPv4 идёт через ${owner(facts.ipv4)}: IPv6 идёт мимо VPN. Отключите IPv6 в приложении VPN или в системе — шаг «IPv6» в «Инструкциях».`,
+    });
+  }
+
+  const webrtc = { id: "webrtc", title: "WebRTC" };
+  if (!facts.webrtc) {
+    results.push({ ...webrtc, status: "ok", detail: "WebRTC в этом браузере выключен — через него адрес не утечёт." });
+  } else {
+    const exits = [facts.ipv4, facts.ipv6].filter((network): network is Network => network !== null);
+    // Адреса, которые сайты и так видят, оценены выше; утечка WebRTC — только то, что он добавляет.
+    const added = facts.webrtc.public.filter((network) => !exits.some((known) => same(known.ip, network.ip)));
+    const foreign = main ? added.filter((network) => !sameNetwork(network, main)) : [];
+    if (!main && added.length) {
       results.push({
-        id: "webrtc",
-        title: "WebRTC",
-        status: "fail",
-        detail: `WebRTC раскрывает ${leaked.join(", ")} — сайты узнают этот адрес в обход VPN. Ограничьте WebRTC в браузере (раздел «Браузеры» в «Инструкциях») или включите в приложении VPN режим TUN.`,
+        ...webrtc,
+        status: "info",
+        detail: `WebRTC показывает ${addresses(added)}; сравнить с выходом в интернет не удалось: ipleak.net не ответил.`,
       });
-    } else if (local.length) {
+    } else if (foreign.length) {
       results.push({
-        id: "webrtc",
-        title: "WebRTC",
+        ...webrtc,
+        status: "fail",
+        detail: `WebRTC раскрывает ${addresses(foreign)} — сайты узнают этот адрес в обход VPN. Ограничьте WebRTC в браузере (раздел «Браузеры» в «Инструкциях») или включите в приложении VPN режим TUN.`,
+      });
+    } else if (facts.webrtc.local.length) {
+      results.push({
+        ...webrtc,
         status: "warn",
-        detail: `WebRTC показывает адрес в вашей локальной сети: ${local.join(", ")}. Внешний IP он не раскрывает, но делает браузер заметнее.`,
+        detail: `WebRTC показывает адрес в вашей локальной сети: ${facts.webrtc.local.join(", ")}. Внешний IP он не раскрывает, но делает браузер заметнее.`,
       });
     } else {
       results.push({
-        id: "webrtc",
-        title: "WebRTC",
+        ...webrtc,
         status: "ok",
-        detail: webrtc.public.length
-          ? "WebRTC показывает только адрес, который сайты и так видят."
+        detail: facts.webrtc.public.length
+          ? "WebRTC показывает только адреса той сети, через которую вы выходите."
           : "WebRTC не раскрывает ваших адресов.",
       });
     }
   }
 
-  const geo = facts.geo;
-  if (!geo) {
+  const dns = { id: "dns", title: "DNS" };
+  if (!facts.dns) {
+    results.push({ ...dns, status: "skip", detail: "Не удалось проверить: ipleak.net не ответил." });
+  } else if (!facts.dns.length) {
     results.push({
-      id: "location",
-      title: "Страна и провайдер",
+      ...dns,
       status: "skip",
-      detail: "Не удалось узнать: ipinfo.io не ответил.",
+      detail: "ipleak.net не увидел DNS-запросов этого браузера — повторите проверку.",
     });
   } else {
-    const place = [countryName(geo.country), geo.city].filter(Boolean).join(", ") || "Место не определено";
-    const network = geo.org ? ` · ${geo.org}` : "";
+    const role = (network: Network) =>
+      main && sameNetwork(network, main) ? "сеть вашего выхода" : publicDNS.test(network.isp ?? "") ? "публичный DNS" : null;
+    const owners = (networks: Network[]) =>
+      [...new Set(networks.map((network) => owner(network) + (role(network) ? ` — ${role(network)}` : "")))].join("; ");
+    const foreign = facts.dns.filter((network) => !role(network));
     results.push(
-      same(geo.ip, serverIP)
+      foreign.length
         ? {
-            id: "location",
-            title: "Страна и провайдер",
-            status: "ok",
-            detail: `${place}${network} — по адресу сервера сайты считают, что вы там.`,
+            ...dns,
+            status: "fail",
+            detail: `Ваши DNS-запросы видит ${owners(foreign)}: это не сеть, через которую вы выходите, и не публичный DNS. Если это ваш провайдер, он знает, какие сайты вы открываете. Направьте DNS через туннель в настройках приложения VPN.`,
           }
-        : {
-            id: "location",
-            title: "Страна и провайдер",
-            status: "info",
-            detail: `${place}${network} — так сайты определяют ваше место по адресу ${geo.ip ?? "—"}.`,
-          },
+        : { ...dns, status: "ok", detail: `Ваши DNS-запросы видит ${owners(facts.dns)}, а не ваш провайдер.` },
     );
   }
 
-  const ipZone = geo?.timezone;
+  const ipZone = main?.timeZone ?? null;
   const browserOffset = utcOffset(facts.timeZone, now);
   const ipOffset = ipZone ? utcOffset(ipZone, now) : null;
+  const timezone = { id: "timezone", title: "Часовой пояс" };
   if (!ipZone) {
     results.push({
-      id: "timezone",
-      title: "Часовой пояс",
+      ...timezone,
       status: "info",
-      detail: `Часовой пояс браузера — ${facts.timeZone}. Пояс IP узнать не удалось.`,
+      detail: `Часовой пояс браузера — ${facts.timeZone}. Пояс вашего IP узнать не удалось.`,
     });
   } else if (ipZone === facts.timeZone || (browserOffset !== null && browserOffset === ipOffset)) {
     results.push({
-      id: "timezone",
-      title: "Часовой пояс",
+      ...timezone,
       status: "ok",
       detail: `Пояс браузера ${facts.timeZone} совпадает по времени с поясом IP (${ipZone}).`,
     });
   } else {
     results.push({
-      id: "timezone",
-      title: "Часовой пояс",
+      ...timezone,
       status: "warn",
       detail: `Пояс браузера — ${facts.timeZone}${browserOffset ? ` (${browserOffset})` : ""}, а IP — из ${ipZone}${ipOffset ? ` (${ipOffset})` : ""}. Это не утечка адреса, но по несовпадению сайты могут понять, что вы за VPN.`,
     });
   }
-
-  results.push({
-    id: "dns",
-    title: "DNS",
-    status: "info",
-    detail: "Из браузера DNS не проверить. Откройте DNS Leak Test из списка ниже и нажмите «Extended test»: в ответе не должно быть серверов вашего домашнего или мобильного провайдера.",
-  });
   return results;
 }
 
 async function outside<T>(url: string, signal: AbortSignal): Promise<T> {
-  // No cookies and no referrer: the service learns only the address, as any site would.
+  // Без cookies и без адреса панели: сервис узнаёт только адрес, как любой сайт.
   const response = await fetch(url, {
     credentials: "omit",
     referrerPolicy: "no-referrer",
@@ -342,18 +365,78 @@ async function outside<T>(url: string, signal: AbortSignal): Promise<T> {
   return (await response.json()) as T;
 }
 
-async function address(url: string, signal: AbortSignal) {
+// Ответ ipleak.net об адресе.
+interface Lookup {
+  ip?: unknown;
+  as_number?: unknown;
+  isp_name?: unknown;
+  country_code?: unknown;
+  city_name?: unknown;
+  time_zone?: unknown;
+}
+
+function text(value: unknown) {
+  return typeof value === "string" && value ? value : null;
+}
+
+function network(data: Lookup, ip: string): Network {
+  return {
+    ip: text(data.ip) ?? ip,
+    asn: typeof data.as_number === "number" ? data.as_number : null,
+    isp: text(data.isp_name),
+    countryCode: text(data.country_code),
+    city: text(data.city_name),
+    timeZone: text(data.time_zone),
+  };
+}
+
+// Адрес и сеть, с которыми браузер выходит в интернет по одному протоколу; null — такого выхода нет.
+async function exitNetwork(url: string, signal: AbortSignal) {
   try {
-    const data = await outside<{ ip?: unknown }>(url, signal);
-    return typeof data.ip === "string" && data.ip ? data.ip : null;
+    const data = await outside<Lookup>(url, signal);
+    const ip = text(data.ip);
+    return ip ? network(data, ip) : null;
   } catch {
     return null;
   }
 }
 
-// Collects WebRTC candidates the way a site would: a STUN server tells the browser its outside
-// address. mDNS names (*.local) already hide local addresses and are skipped.
-function webrtcAddresses(timeout = 4_000): Promise<BrowserFacts["webrtc"]> {
+async function lookup(ip: string, signal: AbortSignal): Promise<Network> {
+  const unknown = { ip, asn: null, isp: null, countryCode: null, city: null, timeZone: null };
+  if (!addressPattern.test(ip)) return unknown;
+  try {
+    return network(await outside<Lookup>(lookupService + ip, signal), ip);
+  } catch {
+    return unknown;
+  }
+}
+
+// ipleak.net — авторитетный DNS-сервер своих поддоменов. Каждое имя ниже новое, поэтому DNS-сервер,
+// которым пользуется браузер, спрашивает его у ipleak.net, а ответ на запрос называет всех, кто
+// спрашивал имена этой сессии. null — ни одного ответа.
+async function dnsServers(signal: AbortSignal) {
+  const session = Array.from(crypto.getRandomValues(new Uint8Array(20)), (byte) =>
+    byte.toString(16).padStart(2, "0"),
+  ).join("");
+  const answers = await Promise.all(
+    Array.from({ length: 10 }, (_, index) =>
+      outside<{ ip?: unknown }>(`https://${session}-${index}.ipleak.net/dnsdetection/`, signal).catch(() => null),
+    ),
+  );
+  const found = new Set<string>();
+  let answered = false;
+  for (const answer of answers) {
+    if (!answer) continue;
+    answered = true;
+    if (answer.ip && typeof answer.ip === "object")
+      for (const address of Object.keys(answer.ip)) if (addressPattern.test(address)) found.add(address);
+  }
+  return answered ? [...found] : null;
+}
+
+// Собирает кандидатов WebRTC так же, как это сделал бы сайт: STUN-сервер сообщает браузеру его
+// внешний адрес. Имена mDNS (*.local) уже скрывают локальные адреса и пропускаются.
+function webrtcAddresses(timeout = 4_000): Promise<{ public: string[]; local: string[] } | null> {
   if (typeof RTCPeerConnection === "undefined") return Promise.resolve(null);
   return new Promise((resolve) => {
     const found = { public: new Set<string>(), local: new Set<string>() };
@@ -387,13 +470,38 @@ function webrtcAddresses(timeout = 4_000): Promise<BrowserFacts["webrtc"]> {
 }
 
 async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
-  const [ipv4, ipv6, geo, webrtc] = await Promise.all([
-    address(ipv4Service, signal),
-    address(ipv6Service, signal),
-    outside<Geo>(geoService, signal).catch(() => null),
+  const [ipv4, ipv6, webrtc, dns] = await Promise.all([
+    exitNetwork(ipv4Service, signal),
+    exitNetwork(ipv6Service, signal),
     webrtcAddresses(),
+    dnsServers(signal),
   ]);
-  return { ipv4, ipv6, geo, webrtc, timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone };
+  // Один запрос на адрес: сети выходов уже известны, а DNS-серверы повторяются.
+  const known = new Map<string, Promise<Network>>();
+  for (const exit of [ipv4, ipv6]) if (exit) known.set(exit.ip.toLowerCase(), Promise.resolve(exit));
+  const find = (address: string) => {
+    const key = address.toLowerCase();
+    let found = known.get(key);
+    if (!found) {
+      found = lookup(address, signal);
+      known.set(key, found);
+    }
+    return found;
+  };
+  const outsideRTC = webrtc
+    ? [...webrtc.public, ...webrtc.local.filter((address) => !isPrivateAddress(address))]
+    : [];
+  const [rtc, servers] = await Promise.all([
+    Promise.all(outsideRTC.map(find)),
+    dns ? Promise.all(dns.slice(0, 12).map(find)) : null,
+  ]);
+  return {
+    ipv4,
+    ipv6,
+    webrtc: webrtc && { public: rtc, local: webrtc.local.filter(isPrivateAddress) },
+    dns: servers,
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+  };
 }
 
 function fingerprint(): [string, string][] {
@@ -467,12 +575,14 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
         <div className="check-run-text">
           <h2>Проверить сейчас</h2>
           <p>
-            Браузер узнает, какой адрес и место видят сайты и нет ли утечек через IPv6 и WebRTC, а сервер
-            проверит себя и пропустит настоящий VLESS-трафик. Займёт до 20 секунд.
+            Браузер узнает, через чью сеть и какую страну он выходит в интернет по IPv4 и IPv6, чьи DNS-серверы
+            видят его запросы и какие адреса раскрывает WebRTC. Утечка — адрес или DNS другой сети, чем ваш
+            выход в интернет. Сервер проверит себя и пропустит настоящий VLESS-трафик. Займёт до 20 секунд.
           </p>
           <p className="hint">
-            Для этого браузер обратится к api.ipify.org, ipinfo.io и STUN-серверам Google и Cloudflare — они
-            увидят тот же адрес, что и любой сайт. Панель им ничего не передаёт.
+            Для этого браузер обратится к ipleak.net (его держит VPN-сервис AirVPN) и к STUN-серверам Google и
+            Cloudflare — они увидят ваши адреса и DNS-серверы, как любой сайт проверки. Панель им ничего не
+            передаёт.
           </p>
         </div>
         <button className="button primary" onClick={() => void run.refetch()} disabled={run.isFetching}>
@@ -490,7 +600,7 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
                 ? `Найдено проблем: ${problems}${warnings ? `, замечаний: ${warnings}` : ""}. Подробности и что сделать — ниже.`
                 : warnings
                   ? `Проблем нет, замечаний: ${warnings}. Посмотрите их ниже.`
-                  : "Всё в порядке: сайты видят IP сервера, утечек не найдено."}{" "}
+                  : "Всё в порядке: вы выходите в интернет через свой шлюз, утечек не найдено."}{" "}
               Проверено в {new Date(result.checkedAt).toLocaleTimeString("ru-RU", { timeStyle: "short" })}.
             </span>
           </div>
