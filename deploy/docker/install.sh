@@ -178,19 +178,27 @@ install -d -o 10001 -g 10001 -m 0700 /var/lib/private-gateway-docker/xray
 install -d -m 0755 "$release"
 tar --extract --gzip --file "$archive" --directory "$release" --no-same-owner --no-same-permissions
 chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
+# Content tags: an image keeps its tag, and update.sh keeps its container, until its files change.
+image_tags=$(python3 "$release/docker/image-tags.py" "$release")
 
-python3 - "$host" "$domain" "$version" "$release/bin/gateway-api" <<'PY'
+python3 - "$host" "$domain" "$version" "$release/bin/gateway-api" "$image_tags" <<'PY'
 import json
 import os
 from pathlib import Path
+import re
 import secrets
 import subprocess
 import sys
 
-host, domain, version, api = sys.argv[1:]
+host, domain, version, api, image_tags = sys.argv[1:]
+tags = dict(line.split('=', 1) for line in image_tags.splitlines())
+if (set(tags) != {'PG_API_IMAGE', 'PG_XRAY_IMAGE', 'PG_BROWSER_IMAGE'}
+        or not all(re.fullmatch(r'[0-9a-f]{32}', tag) for tag in tags.values())):
+    raise SystemExit('The release image tags are invalid.')
 keys = json.loads(subprocess.check_output([api, 'keygen']))
 values = {
     'PG_RELEASE_SHA': version,
+    **tags,
     'POSTGRES_PASSWORD': secrets.token_hex(32),
     'GATEWAY_API_TOKEN': keys['api_token'],
     'GATEWAY_MASTER_KEY': keys['master_key'],

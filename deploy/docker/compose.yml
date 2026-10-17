@@ -2,7 +2,8 @@ name: private-gateway
 
 # Public images are pinned by digest: a deployment recreates postgres, caddy or edge only when
 # a commit changes the digest, not whenever Docker Hub publishes an update. Recreating edge
-# drops every VPN connection.
+# drops every VPN connection. The images built here carry content tags from image-tags.py, so a
+# deployment recreates api, xray or browser only when its Dockerfile or files change.
 services:
   postgres:
     image: postgres:18@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
@@ -21,7 +22,7 @@ services:
     restart: unless-stopped
 
   api:
-    image: private-gateway/api:${PG_RELEASE_SHA:?Set PG_RELEASE_SHA}
+    image: private-gateway/api:${PG_API_IMAGE:-${PG_RELEASE_SHA:?Set PG_RELEASE_SHA}}
     build:
       context: ..
       dockerfile: docker/Dockerfile.api
@@ -70,7 +71,7 @@ services:
     restart: unless-stopped
 
   xray:
-    image: private-gateway/xray:${PG_RELEASE_SHA}
+    image: private-gateway/xray:${PG_XRAY_IMAGE:-${PG_RELEASE_SHA}}
     build:
       context: ..
       dockerfile: docker/Dockerfile.xray
@@ -87,7 +88,7 @@ services:
     restart: unless-stopped
 
   browser:
-    image: private-gateway/browser:${PG_RELEASE_SHA}
+    image: private-gateway/browser:${PG_BROWSER_IMAGE:-${PG_RELEASE_SHA}}
     build:
       context: ..
       dockerfile: docker/Dockerfile.browser

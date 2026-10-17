@@ -58,8 +58,21 @@ fi
 install -d -m 0755 "$release"
 tar -xzf "$archive" -C "$release" --no-same-owner --no-same-permissions
 chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
+# Content tags: an image keeps its tag, and its container keeps running, until its files change.
+# A release without the tag helper builds commit tags, as its compose file says.
+image_tags=()
+if [[ -f $release/docker/image-tags.py ]]; then
+  tag_lines=$(python3 "$release/docker/image-tags.py" "$release")
+  mapfile -t image_tags <<< "$tag_lines"
+  [[ ${#image_tags[@]} == 3 ]] || fail 'The release image tags are invalid.'
+  for tag in "${image_tags[@]}"; do
+    [[ $tag =~ ^PG_(API|XRAY|BROWSER)_IMAGE=[0-9a-f]{32}$ ]] || fail 'The release image tags are invalid.'
+  done
+fi
 compose_old() { docker compose --env-file "$env_file" -f "$old_compose" "$@"; }
-compose_new() { PG_RELEASE_SHA="$version" docker compose --env-file "$env_file" -f "$new_compose" "$@"; }
+compose_new() {
+  env PG_RELEASE_SHA="$version" "${image_tags[@]}" docker compose --env-file "$env_file" -f "$new_compose" "$@"
+}
 # Configuration checks run in the same pinned images as the stack.
 image_of() {
   compose_new config --format json \
@@ -103,7 +116,10 @@ if compose_new config --services | grep -qx edge; then
 else
   compose_new pull postgres caddy
 fi
-compose_new build api xray browser
+# A rebuilt tag would get a new image ID, and compose would recreate a container that did not change.
+for service in api xray browser; do
+  if ! docker image inspect "$(image_of "$service")" >/dev/null 2>&1; then compose_new build "$service"; fi
+done
 domain=$(sed -n 's/^PANEL_DOMAIN=//p' "$env_file")
 [[ $domain =~ ^[A-Za-z0-9.-]+$ ]] || fail 'Panel domain is invalid.'
 # An unchanged configuration file stays as it is, and so does the container that reads it.
@@ -134,7 +150,19 @@ caddy_changed=false
 haproxy_changed=false
 stack_started=false
 pointer_changed=false
+vless_failed=false
 success=false
+# Real VLESS traffic through TCP 443 with the profile of the first active device, checked by the
+# vpn-smoke.py of the given release. A recreated Xray gets a new address, which HAProxy resolves
+# again within seconds.
+vless_works() {
+  local attempt
+  for attempt in 1 2 3; do
+    if python3 "$1/docker/vpn-smoke.py"; then return 0; fi
+    if ((attempt < 3)); then sleep 5; fi
+  done
+  return 1
+}
 rollback() {
   if [[ $success == true || $api_stopped != true ]]; then return; fi
   printf 'Deployment failed. Restoring the previous database and release. Backup: %s\n' "$backup" >&2
@@ -174,6 +202,13 @@ rollback() {
   if [[ $stack_started == true && $haproxy_changed == true && $old_edge == true ]]; then
     compose_old up -d --wait --no-deps --force-recreate edge || true
   fi
+  if [[ $vless_failed == true ]]; then
+    if vless_works "$old_release"; then
+      printf 'VLESS traffic passes again with the previous release.\n' >&2
+    else
+      printf 'VLESS traffic fails with the previous release too: check the network and the REALITY target.\n' >&2
+    fi
+  fi
   printf 'Check Docker health and the backup before another deployment.\n' >&2
 }
 trap 'rollback; cleanup' EXIT
@@ -182,19 +217,23 @@ compose_old exec -T postgres pg_dump -Fc -U gateway gateway > "$backup/gateway.d
 database_saved=true
 
 compose_new run --rm --no-deps api migrate
-python3 - "$env_file" "$version" <<'PY'
+python3 - "$env_file" "PG_RELEASE_SHA=$version" "${image_tags[@]}" <<'PY'
 import os
 from pathlib import Path
 import sys
 import tempfile
 
 path = Path(sys.argv[1])
-version = sys.argv[2]
 lines = path.read_text().splitlines()
-matches = [i for i, line in enumerate(lines) if line.startswith('PG_RELEASE_SHA=')]
-if len(matches) != 1:
-    raise SystemExit('Expected exactly one PG_RELEASE_SHA in stack.env')
-lines[matches[0]] = f'PG_RELEASE_SHA={version}'
+for assignment in sys.argv[2:]:
+    name = assignment.split('=', 1)[0]
+    matches = [i for i, line in enumerate(lines) if line.startswith(name + '=')]
+    if len(matches) > 1 or (name == 'PG_RELEASE_SHA' and not matches):
+        raise SystemExit(f'Expected exactly one {name} in stack.env')
+    if matches:
+        lines[matches[0]] = assignment
+    else:
+        lines.append(assignment)
 with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, prefix='.stack.', delete=False) as output:
     output.write('\n'.join(lines) + '\n')
     staged = output.name
@@ -245,7 +284,17 @@ browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/nul
   --write-out '%{http_code}' --max-time 10 --resolve "$domain:$panel_port:127.0.0.1" \
   "https://$domain:$panel_port/browser/vnc.html") || fail 'Browser access check failed.'
 [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
-compose_new exec -T api /usr/local/bin/gatewayctl status
+gateway_status=$(compose_new exec -T api /usr/local/bin/gatewayctl status)
+printf '%s\n' "$gateway_status"
+active_devices=$(awk '$1 == "ACTIVE" && $2 == "DEVICES" {print $3}' <<< "$gateway_status")
+[[ $active_devices =~ ^[0-9]+$ ]] || fail 'The number of active devices could not be read.'
+# The panel answering proves nothing about VPN clients: their traffic must pass too.
+if ((active_devices == 0)); then
+  printf 'VLESS traffic check skipped: there is no active device yet.\n'
+elif ! vless_works "$release"; then
+  vless_failed=true
+  fail 'VLESS traffic does not pass through the new release.'
+fi
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"
 pointer_changed=true

@@ -70,8 +70,8 @@ jobs:
             -f deploy/docker/compose.yml config --quiet
           python3 scripts/verify-release.py --tar "$RUNNER_TEMP/release/release.tar.gz"
       # The real bootstrap, installer and updater on this runner, as on a new VPS: the first
-      # deployment, an update that must leave postgres, Caddy and HAProxy running, and an update
-      # that breaks the panel and must roll back. Ports 80, 443 and 8443 belong to it afterwards.
+      # deployment, a panel-only update that must recreate the API alone, and two updates that
+      # break the panel and VLESS traffic and must roll back. Ports 80, 443 and 8443 stay taken.
       - name: Test installation, update and rollback
         if: github.event_name == 'push'
         run: bash scripts/test-install-update.sh "$RUNNER_TEMP/release/release.tar.gz"

@@ -91,9 +91,12 @@ vless_works() {
 version_a=$(python3 "$repository/scripts/verify-release.py" --tar "$archive")
 version_b=$(printf 'b%.0s' {1..40})
 version_c=$(printf 'c%.0s' {1..40})
-# B is the same build under another version. C sends the panel name to Xray instead of Caddy:
-# the panel check fails only if the updater really restarts HAProxy, and then it must roll back.
-python3 - "$archive" "$work" "$version_b" "$version_c" <<'PY'
+version_d=$(printf 'd%.0s' {1..40})
+# B is the same build with one more panel file, so only the API image gets a new content tag.
+# C sends the panel name to Xray instead of Caddy: the panel check fails only if the updater
+# really restarts HAProxy, and then it must roll back. D sends every other name, VPN clients
+# included, to Caddy: the panel still works, so only the VLESS check can catch it.
+python3 - "$archive" "$work" "$version_b" "$version_c" "$version_d" <<'PY'
 import gzip
 import hashlib
 import io
@@ -126,12 +129,15 @@ def write(version, changes):
 
 
 route = "use_backend panel_https if { req.ssl_sni -i __PANEL_DOMAIN__ }"
+default = "default_backend vpn_reality"
 template = files["docker/haproxy.cfg.template"].decode()
-if route not in template:
-    raise SystemExit("The panel route is missing from the HAProxy template.")
-write(sys.argv[3], {})
+if route not in template or default not in template:
+    raise SystemExit("The panel route or the default route is missing from the HAProxy template.")
+write(sys.argv[3], {"web/installation-test.txt": b"A panel file that only the API image contains.\n"})
 write(sys.argv[4], {"docker/haproxy.cfg.template":
                     template.replace(route, route.replace("panel_https", "vpn_reality")).encode()})
+write(sys.argv[5], {"docker/haproxy.cfg.template":
+                    template.replace(default, "default_backend panel_https").encode()})
 PY
 
 # Caddy signs .localhost names with its local CA. The test gives Caddy a CA this runner trusts,
@@ -181,18 +187,21 @@ node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" 
 compose exec -T api /usr/local/bin/gatewayctl device add installation-test --node "$node" >/dev/null
 compose exec -T api /usr/local/bin/gatewayctl config apply
 vless_works || fail 'VLESS traffic does not pass after the first deployment.'
+xray_container=$(container xray)
 
-printf '\n== Update to %s ==\n' "$version_b"
+printf '\n== Update to %s, which changes only the panel ==\n' "$version_b"
 declare -A before
-for service in postgres caddy edge; do before[$service]=$(container "$service"); done
+for service in postgres api browser xray caddy edge; do before[$service]=$(container "$service"); done
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/update-b.log"
 grep -q "^Docker deployment verified: $version_b\. " "$work/update-b.log" \
   || fail 'the update did not report success.'
+grep -q '^VLESS traffic OK' "$work/update-b.log" || fail 'the update did not check VLESS traffic.'
 [[ $(installed) == "$version_b" ]] || fail 'the update did not switch the installed version.'
-for service in postgres caddy edge; do
+for service in postgres browser xray caddy edge; do
   [[ $(container "$service") == "${before[$service]}" ]] \
     || fail "$service was recreated although its image and configuration did not change."
 done
+[[ $(container api) != "${before[api]}" ]] || fail 'the API was not recreated with its new image.'
 panel_ready || fail 'the panel does not answer after the update.'
 vless_works || fail 'VLESS traffic does not pass after the update.'
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/repeat-b.log"
@@ -217,4 +226,19 @@ panel_ready || fail 'the panel does not answer after the rollback.'
 compose exec -T api /usr/local/bin/gatewayctl status | grep -Eq '^ACTIVE DEVICES +1$' \
   || fail 'the device did not survive the rollback.'
 vless_works || fail 'VLESS traffic does not pass after the rollback.'
+
+printf '\n== Update to %s, which sends VPN clients to Caddy ==\n' "$version_d"
+if deliver "$version_d" "$work/release-d.tar.gz" 2>&1 | tee "$work/update-d.log"; then
+  fail 'the updater accepted a release whose HAProxy routing breaks VLESS.'
+fi
+grep -q '^Docker deployment stopped: VLESS traffic does not pass through the new release.' "$work/update-d.log" \
+  || fail 'the VLESS check did not stop the update.'
+grep -q '^VLESS traffic passes again with the previous release.' "$work/update-d.log" \
+  || fail 'the rollback did not bring VLESS traffic back.'
+[[ $(installed) == "$version_b" ]] || fail 'the rollback did not restore the installed version.'
+sudo cmp -s /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg" \
+  || fail 'the rollback did not restore the HAProxy configuration.'
+panel_ready || fail 'the panel does not answer after the VLESS rollback.'
+vless_works || fail 'VLESS traffic does not pass after the VLESS rollback.'
+[[ $(container xray) == "$xray_container" ]] || fail 'Xray was recreated although its image never changed.'
 printf '\nInstallation, update and rollback passed on %s.\n' "$(. /etc/os-release && printf '%s' "$PRETTY_NAME")"
