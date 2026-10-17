@@ -4,18 +4,18 @@
 
 ## Параллельная работа агентов — прежде всего
 
-Пользователь ведёт одновременно несколько чатов Claude Code и других ИИ на ПК с Windows, а ещё Codex Cloud и Codex CLI на VPS. Ни одна работа не должна потеряться, и ни один агент не должен испортить работу другого, поэтому:
+Пользователь ведёт одновременно несколько чатов Claude Code и других ИИ на ПК с Windows, а ещё Claude Code в облаке, Codex Cloud и Codex CLI на VPS. Ни одна работа не должна потеряться, и ни один агент не должен испортить работу другого, поэтому:
 
 1. **В основной папке репозитория агенты не работают.** Каждый чат на ПК — в своей рабочей папке (git worktree) на своей ветке, даже если сейчас он один. В основной папке только `master`: сюда вливается готовая работа.
 2. **В начале чата** — `bash scripts/worktree.sh check` (на Windows из Git Bash) и показать пользователю всё, что в итоге помечено: незакоммиченное, не влитое в `master`, не отправленное в GitHub, папки не на месте. Чужие папки и ветки не трогать.
 3. **Своя папка** — внутри основной, в каталоге с точкой, который исключён в `.gitignore`:
    - **Claude Code** — `EnterWorktree` с именем: папка `.claude/worktrees/<имя>`, ветка `worktree-<имя>` от локального `master` (`worktree.baseRef` в `.claude/settings.json`);
    - **остальные ИИ на ПК** — `bash scripts/worktree.sh new <имя>`: папка `.agents/worktrees/<имя>`, ветка `<имя>`;
-   - **Codex Cloud и Codex CLI на VPS** работают в своих копиях репозитория и рабочих папок не заводят: облачная задача уже изолирована, на VPS исходники лежат в `~/private-gateway`, а `/opt/private-gateway-docker/current` — установленный релиз, его не редактировать. Изменения между копиями ходят только через GitHub: перед push — `git fetch origin`, `git rebase origin/master`, `bash scripts/dev.sh test`, затем `git push origin HEAD:master` обычной перемоткой.
+   - **Claude Code в облаке** (claude.ai/code, приложение Claude, `claude --cloud`), **Codex Cloud и Codex CLI на VPS** работают в своих копиях репозитория и рабочих папок не заводят: облачная задача уже изолирована в своей машине, на VPS исходники лежат в `~/private-gateway`, а `/opt/private-gateway-docker/current` — установленный релиз, его не редактировать. Изменения между копиями ходят только через GitHub: перед push — `git fetch origin`, `git rebase origin/master`, `bash scripts/dev.sh test`, затем `git push origin HEAD:master` обычной перемоткой.
 
    Дальше работать только в своей папке. Имя — по сути задачи (`subscription-link`, `fix-apply`): латиница, цифры, дефис, до 20 знаков.
-4. **«Сделай коммит» — это коммит и сразу перенос в `master`:** коммит в свою ветку → `bash scripts/worktree.sh sync` (ветка встаёт на свежий `master` или на `origin/master`, если копия Codex отправила что-то новее) → `bash scripts/dev.sh test` → `bash scripts/worktree.sh merge`. Если `merge` отказал, потому что `master` ушёл вперёд, — снова `sync`, тесты, `merge`. Сообщать пользователю «сделано» — только после строки `Merged ... into master`.
-5. **push — только по отдельной просьбе пользователя,** в том числе из копий Codex: каждый push в `master` запускает CI и автоматическую выкладку на серверы. Перед push — `bash scripts/worktree.sh check`; если `origin/master` ушёл вперёд — `sync`, тесты и `merge`. Затем из основной папки `git push origin master` — только перемоткой.
+4. **«Сделай коммит» — это коммит и сразу перенос в `master`:** коммит в свою ветку → `bash scripts/worktree.sh sync` (ветка встаёт на свежий `master` или на `origin/master`, если копия Codex отправила что-то новее) → `bash scripts/dev.sh test` → `bash scripts/worktree.sh merge`. Если `merge` отказал, потому что `master` ушёл вперёд, — снова `sync`, тесты, `merge`. Сообщать пользователю «сделано» — только после строки `Merged ... into master`. В облачной копии и на VPS «сделай коммит» — коммит в её ветку; в `master` на GitHub он попадает, когда пользователь попросит отправить (п. 3 и 5).
+5. **push — только по отдельной просьбе пользователя,** в том числе из облачных копий и с VPS: каждый push в `master` запускает CI и автоматическую выкладку на серверы. Перед push — `bash scripts/worktree.sh check`; если `origin/master` ушёл вперёд — `sync`, тесты и `merge`. Затем из основной папки `git push origin master` — только перемоткой.
 6. **Перед последним ответом в чате** — снова `bash scripts/worktree.sh check` и назвать пользователю всё помеченное.
 7. **Папку и ветку убирать только по слову пользователя** — `bash scripts/worktree.sh remove <имя>`, у Claude Code ещё `ExitWorktree` с `remove`: оба откажут, если есть незакоммиченное или не влитое. `discard_changes`, `git worktree remove --force`, `git branch -D`, `git reset --hard`, `git clean`, `git push --force` и удаление папок руками запрещены.
 8. **В других местах проекта рабочих папок не создавать.** `check` помечает такие папки — показать пользователю.
@@ -25,11 +25,13 @@
 - **Проверки** каждой папки идут в своём наборе контейнеров Docker (имя — от имени папки), поэтому их можно запускать параллельно. Кеш сборки Go — общий том `private-gateway-checks-go-build`; не удалять его, пока идут чужие прогоны.
 - **Рабочий VPS** один на всех: менять его вручную — только в задаче по эксплуатации или развёртыванию.
 
-**Claude Code:** из рабочей папки он не пускает git в основную, поэтому `merge` так: `ExitWorktree` с `keep` → в основной папке `bash scripts/worktree.sh merge <имя>` → снова `EnterWorktree` с `path`, если работа продолжается. В рабочей папке он читает AGENTS.md своей ветки: правка AGENTS.md, влитая в `master`, доходит до чата после `sync`. Если при закрытии чата Claude Code спросит, оставить ли папку, а в ней не влитое, — оставить.
+**Claude Code на ПК:** из рабочей папки он не пускает git в основную, поэтому `merge` так: `ExitWorktree` с `keep` → в основной папке `bash scripts/worktree.sh merge <имя>` → снова `EnterWorktree` с `path`, если работа продолжается. В рабочей папке он читает AGENTS.md своей ветки: правка AGENTS.md, влитая в `master`, доходит до чата после `sync`. Если при закрытии чата Claude Code спросит, оставить ли папку, а в ней не влитое, — оставить.
+
+**Claude Code в облаке:** сессия получает свежий клон с GitHub в отдельной машине с Docker, поэтому `bash scripts/dev.sh test` работает и там (среде нужна сеть Custom: стандартный список и `deb.debian.org`, см. [README](README.md#claude-code-в-облаке)). `.claude/settings.json` отключает подписи Claude в коммитах, а при старте облачной сессии `scripts/cloud-session.sh` ставит автором и коммитером владельца; перед push сверить `git log -1 --format='%an <%ae> | %cn <%ce>'`. Неотправленная работа живёт только в машине сессии и может пропасть, когда среда истечёт, поэтому, закончив кусок работы, предложить пользователю отправить свою ветку (`git push origin HEAD`): это CI без выкладки.
 
 ## Проект
 
-Private Gateway — личный шлюз VLESS + REALITY с панелью управления и временным удалённым браузером. Xray передаёт трафик, Go API управляет устройствами и конфигурациями, PostgreSQL 18 хранит состояние, панель написана на React, TypeScript и Vite. Разработка идёт на ПК с Windows (Git Bash, Docker Desktop) и в копиях Codex; production — Docker Compose на VPS с Ubuntu 26.04 amd64.
+Private Gateway — личный шлюз VLESS + REALITY с панелью управления и временным удалённым браузером. Xray передаёт трафик, Go API управляет устройствами и конфигурациями, PostgreSQL 18 хранит состояние, панель написана на React, TypeScript и Vite. Разработка идёт на ПК с Windows (Git Bash, Docker Desktop) и в облачных копиях Claude Code и Codex; production — Docker Compose на VPS с Ubuntu 26.04 amd64.
 
 Где что лежит:
 
@@ -69,7 +71,7 @@ bash scripts/dev.sh release DIR   # релиз закоммиченной вер
 ```
 
 - **Тесты гонять всегда:** перед коммитом — `bash scripts/dev.sh test`. В отчёте — числа прогона; упавшее или пропущенное не выдавать за прошедшее.
-- Нужен только Docker. Образ [deploy/checks/Dockerfile](deploy/checks/Dockerfile) содержит Go 1.26.9, Node.js 22, Python, настоящий Xray 26.3.27, sqlc 1.30.0 и actionlint 1.7.12, загрузки сверяются по SHA-256. PostgreSQL 18 работает рядом во временном контейнере без открытых портов.
+- Нужен только Docker; в облачной среде Claude Code он тоже есть. Образ [deploy/checks/Dockerfile](deploy/checks/Dockerfile) содержит Go 1.26.9, Node.js 22, Python, настоящий Xray 26.3.27, sqlc 1.30.0 и actionlint 1.7.12, загрузки сверяются по SHA-256. PostgreSQL 18 работает рядом во временном контейнере без открытых портов.
 - Образ собирается из содержимого будущего коммита: отслеживаемые файлы с правками и новые неигнорируемые, с переводами строк репозитория (LF) независимо от `core.autocrlf`. `.env` и другие игнорируемые файлы в образ не попадают.
 - Входят `sqlc diff`, `go vet`, `go test -race` с PostgreSQL и Xray, сборка программ, тесты и сборка панели, `actionlint` для workflow, синтаксис и тесты скриптов выпуска, развёртывания и списка серверов. Внутри Docker интеграционные тесты не пропускаются молча: пропуск из-за `TEST_DATABASE_URL` или `PRIVATE_GATEWAY_REAL_XRAY_BINARY` проваливает прогон.
 - Сборку production-образов, проверки Caddy и HAProxy (`test-browser-proxy.py`, `test-edge-router.py`, `test-first-deploy.sh`) и тест установки, обновления и отката (`test-install-update.sh`, только на runner Ubuntu 26.04) выполняет GitHub Actions при push любой ветки; локально они не идут, так и писать в отчёте. Для релизных и деплойных изменений проверять связанные скрипты и Docker-конфигурацию.
@@ -88,7 +90,7 @@ bash scripts/dev.sh release DIR   # релиз закоммиченной вер
 
 ## Git
 
-- Автор и коммитер всех новых коммитов: `Roman Burov <romanburov89@gmail.com>`. **Никогда не добавлять `Co-Authored-By`** и другие подписи ИИ в коммиты и описания, даже если среда агента делает это по умолчанию.
+- Автор и коммитер всех новых коммитов: `Roman Burov <romanburov89@gmail.com>`. **Никогда не добавлять `Co-Authored-By`** и другие подписи ИИ в коммиты и описания, даже если среда агента делает это по умолчанию. У Claude Code подписи отключены в `.claude/settings.json` (`attribution`), включая ссылку на облачную сессию.
 - Коммит — только по просьбе пользователя; порядок — в разделе «Параллельная работа агентов». Других веток, кроме ветки своей папки, не заводить. История `master` линейная: вливание только перемоткой.
 - Сообщение — в стиле истории репозитория: английский заголовок в повелительном наклонении (`Allow deletion of revoked devices after Xray apply`) и тело: что изменилось, зачем и как проверено.
 - Расхождения не устранять через `git push --force`, `git reset --hard` или `git clean`. Чужие незакоммиченные изменения сохранять.
