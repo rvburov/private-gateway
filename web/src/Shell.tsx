@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Icon, type IconName } from "./icons";
 import type { ThemePreference } from "./theme";
 
-export type Page = "overview" | "devices" | "nodes" | "audit";
+export type Page = "overview" | "devices" | "nodes" | "audit" | "guide";
 type NavItem = { page: Page; label: string; short: string; icon: IconName };
 
 const items: Record<Page, NavItem> = {
@@ -10,13 +10,17 @@ const items: Record<Page, NavItem> = {
   devices: { page: "devices", label: "Устройства", short: "Устройства", icon: "devices" },
   nodes: { page: "nodes", label: "Сервер", short: "Сервер", icon: "server" },
   audit: { page: "audit", label: "Журнал действий", short: "Журнал", icon: "history" },
+  guide: { page: "guide", label: "Инструкции", short: "Инструкции", icon: "book" },
 };
-const sidebarItems = [items.overview, items.devices, items.nodes, items.audit];
+const sidebarGroups = [
+  { label: "Управление", items: [items.overview, items.devices, items.nodes, items.audit] },
+  { label: "Подключение", items: [items.guide] },
+];
 // Bottom tabs on a phone, as in ai_agent_capper: the round button in the middle adds a device,
 // sections that do not fit go to the "More" sheet.
 const tabItems = [items.overview, items.devices];
 const tabItemsAfterAdd = [items.audit];
-const moreItems = [items.nodes];
+const moreItems = [items.guide, items.nodes];
 const themes: { value: ThemePreference; label: string; icon: IconName }[] = [
   { value: "system", label: "Авто", icon: "monitor" },
   { value: "light", label: "Светлая", icon: "sun" },
@@ -100,22 +104,26 @@ export function Shell({
               private<span className="brand-light">gateway</span>
             </span>
           </div>
-          <span className="nav-group-label">Управление</span>
           <nav aria-label="Главное меню">
-            {sidebarItems.map((item) => (
-              <button
-                key={item.page}
-                type="button"
-                className="nav-link"
-                aria-current={page === item.page ? "page" : undefined}
-                onClick={() => onNavigate(item.page)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-                {item.page === "devices" && deviceCount !== undefined && (
-                  <span className="nav-count">{deviceCount}</span>
-                )}
-              </button>
+            {sidebarGroups.map((group) => (
+              <div key={group.label}>
+                <span className="nav-group-label">{group.label}</span>
+                {group.items.map((item) => (
+                  <button
+                    key={item.page}
+                    type="button"
+                    className="nav-link"
+                    aria-current={page === item.page ? "page" : undefined}
+                    onClick={() => onNavigate(item.page)}
+                  >
+                    <Icon name={item.icon} />
+                    {item.label}
+                    {item.page === "devices" && deviceCount !== undefined && (
+                      <span className="nav-count">{deviceCount}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
             ))}
           </nav>
           <div className="sidebar-foot">

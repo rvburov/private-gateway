@@ -428,6 +428,7 @@ textarea:focus {
   color: var(--fg-3);
 }
 .nav-group-label {
+  display: block;
   padding: 14px 12px 6px;
   font-size: var(--fs-xs);
   font-weight: 600;
@@ -884,6 +885,152 @@ textarea:focus {
   overflow-wrap: anywhere;
 }
 
+/* Instructions */
+.guide-points {
+  margin: 0;
+  padding: 16px 20px 18px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--fg-2);
+}
+.choice-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.choice-pills button {
+  min-height: var(--tap);
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--fg-2);
+  font-weight: 600;
+}
+.choice-pills button[aria-pressed="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+}
+.guide-subtitle {
+  margin-top: 4px;
+  font-size: var(--fs-md);
+}
+.guide-apps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+}
+.guide-apps li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line);
+}
+.guide-apps li:first-child {
+  border-top: 0;
+}
+.guide-apps li > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.guide-apps li span {
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+.guide-steps {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: step;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.guide-steps li {
+  counter-increment: step;
+  position: relative;
+  padding-left: 40px;
+}
+.guide-steps li::before {
+  content: counter(step);
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent-ink);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+.guide-steps p {
+  margin-top: 2px;
+  color: var(--fg-2);
+}
+.guide-browsers details {
+  border-top: 1px solid var(--line);
+}
+.guide-browsers details:first-child {
+  border-top: 0;
+}
+.guide-browsers summary {
+  min-height: 52px;
+  padding: 14px 20px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.guide-browsers dl,
+.guide-exposures {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 20px 18px;
+}
+.guide-exposures {
+  padding-top: 18px;
+}
+.guide-browsers dt,
+.guide-exposures dt {
+  font-weight: 600;
+}
+.guide-browsers dd,
+.guide-exposures dd {
+  margin-top: 2px;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+.guide-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 16px 20px;
+}
+.guide-banner > div {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.guide-banner p {
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+
 /* Dialogs */
 .modal {
   width: min(560px, calc(100vw - 24px));
@@ -1209,8 +1356,16 @@ textarea:focus {
   .card-heading,
   .card-body,
   .card-footer,
-  .node-card dl {
+  .node-card dl,
+  .guide-browsers summary,
+  .guide-browsers dl,
+  .guide-exposures,
+  .guide-banner {
     padding-left: 16px;
+    padding-right: 16px;
+  }
+  .guide-points {
+    padding-left: 34px;
     padding-right: 16px;
   }
   .item-head {

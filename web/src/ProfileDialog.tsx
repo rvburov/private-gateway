@@ -12,11 +12,13 @@ export function ProfileDialog({
   profile,
   onChange,
   onClose,
+  onGuide,
 }: {
   token: string;
   profile: RevealedProfile;
   onChange: (profile: RevealedProfile) => void;
   onClose: () => void;
+  onGuide: () => void;
 }) {
   const [format, setFormat] = useState<ProfileFormat>("subscription");
   const [copied, setCopied] = useState(false);
@@ -152,6 +154,10 @@ export function ProfileDialog({
             Ссылку можно передать человеку, который будет подключаться. «Отозвать» отключает и
             ссылку, и доступ.
           </p>
+          <button type="button" className="text-button" onClick={onGuide}>
+            Как добавить ссылку в приложение
+            <Icon name="arrow" size={16} />
+          </button>
           {rotated && (
             <p className="notice" role="status">
               Ссылка заменена: прежняя больше не работает.

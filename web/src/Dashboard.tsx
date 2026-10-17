@@ -10,6 +10,7 @@ import {
   type Status,
   type TrafficUsage,
 } from "./api";
+import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
 import { Shell, type Page } from "./Shell";
@@ -26,6 +27,10 @@ const intros: Record<Page, [string, string]> = {
   audit: [
     "История действий",
     "Изменения доступа и конфигурации шлюза. Секреты и ссылки в журнал не попадают.",
+  ],
+  guide: [
+    "Как подключить устройство",
+    "Пошагово для вашей системы: приложение, ссылка-подписка, режимы и проверка. А ещё — как настроить браузер и что может выдать вас и с VPN.",
   ],
 };
 
@@ -443,6 +448,20 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
               </div>
             </section>
           </div>
+          <section className="card guide-banner">
+            <div>
+              <span className="node-icon">
+                <Icon name="book" size={22} />
+              </span>
+              <div>
+                <h2 className="guide-subtitle">Как подключить телефон или компьютер</h2>
+                <p>Пошагово для Android, iPhone, Windows, macOS и Linux, и как не выдать себя в браузере.</p>
+              </div>
+            </div>
+            <button className="button secondary-button" onClick={() => navigate("guide")}>
+              Открыть инструкции
+            </button>
+          </section>
           <section className="card">
             <div className="card-heading">
               <div>
@@ -557,6 +576,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
           )}
         </div>
       )}
+      {page === "guide" && <Guide />}
       {page === "audit" && (
         <section className="card">
           <div className="card-heading">
@@ -716,6 +736,10 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
           profile={profile}
           onChange={setProfile}
           onClose={() => setProfile(null)}
+          onGuide={() => {
+            setProfile(null);
+            navigate("guide");
+          }}
         />
       )}
     </Shell>

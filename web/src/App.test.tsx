@@ -202,6 +202,25 @@ describe("administrator panel", () => {
     expect(await screen.findByRole("dialog", { name: "Добавить устройство" })).toBeTruthy();
   });
 
+  it("shows setup instructions for each system and opens them from a profile", async () => {
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Инструкции" }));
+    expect(await screen.findByText("Как подключить устройство")).toBeTruthy();
+    const systems = screen.getByRole("group", { name: "Система устройства" });
+    fireEvent.click(within(systems).getByRole("button", { name: "Android" }));
+    expect(within(systems).getByRole("button", { name: "Android" }).getAttribute("aria-pressed")).toBe("true");
+    expect(screen.getByText(/«Постоянная VPN» и «Блокировать подключения без VPN»/)).toBeTruthy();
+    expect(screen.getByText(/ещё не проверяли/)).toBeTruthy();
+    fireEvent.click(within(systems).getByRole("button", { name: "iPhone и iPad" }));
+    expect(screen.getByText(/Проверено на iPhone с Hiddify по LTE/)).toBeTruthy();
+    const menu = screen.getByRole("navigation", { name: "Главное меню" });
+    fireEvent.click(within(menu).getByRole("button", { name: "Обзор" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Профиль" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Как добавить ссылку в приложение" }));
+    expect(await screen.findByText("Как подключить устройство")).toBeTruthy();
+    expect(screen.queryByRole("dialog", { name: /Профиль:/ })).toBeNull();
+  });
+
   it("shows separate Xray traffic counters for the device", async () => {
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Все устройства" }));
