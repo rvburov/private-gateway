@@ -14,8 +14,8 @@ import (
 	"time"
 )
 
-// The compiled test binary stands in for both Xray and the restart executable.
-// This exercises real subprocess invocation without installing fake binaries.
+// Скомпилированный тестовый бинарник подменяет и Xray, и программу перезапуска: так
+// проверяется настоящий запуск процессов без установки поддельных бинарников.
 func TestMain(m *testing.M) {
 	if os.Getenv("PRIVATE_GATEWAY_XRAY_TEST_HELPER") == "1" {
 		os.Exit(helperCommand(os.Args[1:]))

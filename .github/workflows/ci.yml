@@ -7,18 +7,18 @@ on:
 permissions:
   contents: read
 
-# Every job runs on Ubuntu 26.04, the release the servers run.
+# Все задания идут на Ubuntu 26.04 — той же версии, что на серверах.
 jobs:
   verify:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # The same command as on a developer PC: every check in the deploy/checks Docker image,
-      # with PostgreSQL 18 and real Xray; a skipped integration test fails it.
+      # Та же команда, что на компьютере разработчика: все проверки в Docker-образе deploy/checks,
+      # с PostgreSQL 18 и настоящим Xray; пропущенный интеграционный тест проваливает её.
       - name: Run all checks in Docker
         run: bash scripts/dev.sh test
-      # Release, image and installation checks run on every pushed branch, so a branch can be
-      # proven on GitHub before it reaches master. Only master uploads the release and deploys.
+      # Проверки релиза, образов и установки идут для каждой отправленной ветки, чтобы ветку можно
+      # было проверить на GitHub до master. Загружает релиз и выкладывает только master.
       - name: Build production release
         if: github.event_name == 'push'
         run: bash scripts/dev.sh release "$RUNNER_TEMP/release"
@@ -69,9 +69,10 @@ jobs:
           docker compose --env-file "$RUNNER_TEMP/docker-test.env" \
             -f deploy/docker/compose.yml config --quiet
           python3 scripts/verify-release.py --tar "$RUNNER_TEMP/release/release.tar.gz"
-      # The real bootstrap, installer and updater on this runner, as on a new VPS: the first
-      # deployment, a panel-only update that must recreate the API alone, and two updates that
-      # break the panel and VLESS traffic and must roll back. Ports 80, 443 and 8443 stay taken.
+      # Настоящие первичная установка, установщик и обновление на этом runner, как на новом VPS:
+      # первая выкладка, обновление одной панели, которое должно пересоздать только API, и два
+      # обновления, которые ломают панель и VLESS-трафик и должны откатиться. Порты 80, 443 и
+      # 8443 остаются занятыми.
       - name: Test installation, update and rollback
         if: github.event_name == 'push'
         run: bash scripts/test-install-update.sh "$RUNNER_TEMP/release/release.tar.gz"
@@ -96,8 +97,9 @@ jobs:
         id: list
         run: python3 scripts/servers.py list >> "$GITHUB_OUTPUT"
 
-  # Every server in deploy/servers gets the verified release of this commit. One failing server
-  # does not stop the others; each keeps its own queue, so two pushes never deploy to it at once.
+  # Каждый сервер из deploy/servers получает проверенный релиз этого коммита. Сбой одного сервера
+  # не останавливает остальные; у каждого своя очередь, поэтому два push не выкладываются на него
+  # одновременно.
   deploy:
     name: Deploy Docker to VPS (${{ matrix.server }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.servers.outputs.names != '[]'
@@ -151,8 +153,8 @@ jobs:
               -o UserKnownHostsFile="$RUNNER_TEMP/deploy-ssh/known_hosts" \
               -i "$RUNNER_TEMP/deploy-ssh/id_ed25519" -p "$DEPLOY_PORT" \
               "$DEPLOY_USER@$DEPLOY_HOST"
-      # From outside, with full TLS verification: DNS, HAProxy, Caddy and the API must all answer.
-      # A new server needs a few minutes for its first certificate. This does not test VLESS.
+      # Снаружи, с полной проверкой TLS: должны ответить DNS, HAProxy, Caddy и API. Новому серверу
+      # нужно несколько минут на первый сертификат. VLESS этим не проверяется.
       - name: Check the panel from the internet
         env:
           DOMAIN: ${{ steps.server.outputs.domain }}

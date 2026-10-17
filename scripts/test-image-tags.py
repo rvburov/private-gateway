@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Content tags change for exactly the images whose Dockerfile or copied files change."""
+"""Теги по содержимому меняются ровно у тех образов, чей Dockerfile или копируемые файлы изменились."""
 
 import importlib.util
 from pathlib import Path
@@ -19,7 +19,7 @@ class ImageTagTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
-        # The layout of an extracted release, with the real Dockerfiles.
+        # Раскладка распакованного релиза с настоящими Dockerfile.
         self.release = Path(temporary.name)
         for name in ("Dockerfile.api", "Dockerfile.xray", "Dockerfile.browser"):
             self.write(f"docker/{name}", (ROOT / "deploy/docker" / name).read_text())

@@ -12,8 +12,8 @@ import (
 	"time"
 )
 
-// RemoteOptions selects the private browser worker used by the Docker stack.
-// The worker owns only the temporary browser process, never the Docker socket.
+// RemoteOptions задаёт закрытый browser worker из Docker-стека.
+// Worker управляет только временным процессом браузера и никогда — сокетом Docker.
 type RemoteOptions struct {
 	URL       string
 	Token     string
@@ -25,7 +25,7 @@ type Status struct {
 	URL     string `json:"url"`
 }
 
-// DisabledManager keeps local development usable without a browser worker.
+// DisabledManager позволяет работать локально без browser worker.
 type DisabledManager struct{}
 
 func (DisabledManager) Status(context.Context) (Status, error) { return Status{}, nil }

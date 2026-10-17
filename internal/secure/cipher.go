@@ -31,7 +31,7 @@ func New(encodedKey string) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	// Subscription links get their own key, so the encryption key itself is never used for them.
+	// У ссылок-подписок свой ключ: сам ключ шифрования для них никогда не используется.
 	subscription, err := hkdf.Key(sha256.New, key, nil, "private-gateway subscription link v1", 32)
 	if err != nil {
 		return nil, err
@@ -59,16 +59,16 @@ func (c *Cipher) Decrypt(value []byte, recordID string) (string, error) {
 	return string(plaintext), nil
 }
 
-// SubscriptionToken is the secret part of a device's subscription link: 43 characters of
-// unpadded base64url. It is derived from the master key, so the database keeps only its hash,
-// and a new generation of the same device gives a new, unrelated link.
+// SubscriptionToken — секретная часть ссылки-подписки устройства: 43 символа base64url без
+// выравнивания. Он выводится из главного ключа, поэтому база хранит только его хеш, а новое
+// поколение того же устройства даёт новую ссылку, никак не связанную с прежней.
 func (c *Cipher) SubscriptionToken(deviceID string, generation int64) string {
 	mac := hmac.New(sha256.New, c.subscription)
 	mac.Write([]byte(strings.ToLower(deviceID) + "/" + strconv.FormatInt(generation, 10)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }
 
-// SubscriptionHash is what the database stores to find a device by its link.
+// SubscriptionHash — то, что хранит база, чтобы найти устройство по его ссылке.
 func SubscriptionHash(token string) []byte {
 	sum := sha256.Sum256([]byte(token))
 	return sum[:]

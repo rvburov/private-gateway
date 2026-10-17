@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise release trust boundaries with valid and deliberately malformed artifacts."""
+"""Прогнать границы доверия релиза на правильных и намеренно испорченных артефактах."""
 
 import hashlib
 import importlib.util

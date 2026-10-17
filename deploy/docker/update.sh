@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Forced SSH command for verified Docker releases. No arguments or shell access.
+# Принудительная команда SSH для проверенных Docker-релизов. Без аргументов и доступа к оболочке.
 set -Eeuo pipefail
 umask 077
 
@@ -58,8 +58,8 @@ fi
 install -d -m 0755 "$release"
 tar -xzf "$archive" -C "$release" --no-same-owner --no-same-permissions
 chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
-# Content tags: an image keeps its tag, and its container keeps running, until its files change.
-# A release without the tag helper builds commit tags, as its compose file says.
+# Теги по содержимому: образ сохраняет свой тег, а его контейнер продолжает работать, пока не
+# изменятся его файлы. Релиз без помощника тегов собирает теги коммита, как велит его compose.
 image_tags=()
 if [[ -f $release/docker/image-tags.py ]]; then
   tag_lines=$(python3 "$release/docker/image-tags.py" "$release")
@@ -73,12 +73,12 @@ compose_old() { docker compose --env-file "$env_file" -f "$old_compose" "$@"; }
 compose_new() {
   env PG_RELEASE_SHA="$version" "${image_tags[@]}" docker compose --env-file "$env_file" -f "$new_compose" "$@"
 }
-# Configuration checks run in the same pinned images as the stack.
+# Проверки конфигурации идут в тех же закреплённых образах, что и стек.
 image_of() {
   compose_new config --format json \
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
 }
-# Render a template for the panel domain next to its live file; the live file stays untouched.
+# Заполнить шаблон для домена панели рядом с рабочим файлом; рабочий файл не трогается.
 stage_config() {
 python3 - "$1" "$2" "$3" "$domain" <<'PY'
 import os
@@ -96,14 +96,14 @@ os.chmod(staged, int(sys.argv[3], 8))
 PY
 }
 
-# Image builds and configuration checks happen before the brief API interruption.
+# Сборка образов и проверки конфигурации идут до короткой остановки API.
 compose_new config --quiet
 edge_enabled=false
 old_edge=false
 panel_port=8443
 services=(postgres api browser xray caddy)
 old_services=(api browser xray caddy)
-# Lists are read whole: grep -q exits at its match, and pipefail would turn the writer's SIGPIPE into "no".
+# Списки читаются целиком: grep -q выходит на первом совпадении, и pipefail превратил бы SIGPIPE пишущего в «нет».
 old_service_list=$(compose_old config --services)
 new_service_list=$(compose_new config --services)
 if grep -qx edge <<< "$old_service_list"; then
@@ -119,18 +119,18 @@ if grep -qx edge <<< "$new_service_list"; then
 else
   compose_new pull postgres caddy
 fi
-# A rebuilt tag would get a new image ID, and compose would recreate a container that did not change.
+# Пересобранный тег получил бы новый ID образа, и compose пересоздал бы контейнер, который не менялся.
 for service in api xray browser; do
   if ! docker image inspect "$(image_of "$service")" >/dev/null 2>&1; then compose_new build "$service"; fi
 done
 domain=$(sed -n 's/^PANEL_DOMAIN=//p' "$env_file")
 [[ $domain =~ ^[A-Za-z0-9.-]+$ ]] || fail 'Panel domain is invalid.'
-# An unchanged configuration file stays as it is, and so does the container that reads it.
+# Неизменный файл конфигурации остаётся как есть, а с ним и контейнер, который его читает.
 stage_config "$release/docker/Caddyfile.template" "$caddyfile.next" 600
 if cmp -s "$caddyfile.next" "$caddyfile"; then
   rm -f -- "$caddyfile.next"
 else
-  # For a name under Caddy's own CA (.localhost, .internal) validation creates that CA in /data.
+  # Для имени под собственным центром сертификации Caddy (.localhost, .internal) проверка создаёт этот центр в /data.
   docker run --rm --network none --read-only --tmpfs /data --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
     -v "$caddyfile.next:/etc/caddy/Caddyfile:ro" \
     --entrypoint caddy "$(image_of caddy)" validate --config /etc/caddy/Caddyfile
@@ -155,9 +155,9 @@ stack_started=false
 pointer_changed=false
 vless_failed=false
 success=false
-# Real VLESS traffic through TCP 443 with the profile of the first active device, checked by the
-# vpn-smoke.py of the given release. A recreated Xray gets a new address, which HAProxy resolves
-# again within seconds.
+# Настоящий VLESS-трафик через TCP 443 с профилем первого активного устройства — его проверяет
+# vpn-smoke.py указанного релиза. Пересозданный Xray получает новый адрес, и HAProxy заново
+# находит его за секунды.
 vless_works() {
   local attempt
   for attempt in 1 2 3; do
@@ -171,7 +171,7 @@ rollback() {
   printf 'Deployment failed. Restoring the previous database and release. Backup: %s\n' "$backup" >&2
   if [[ $env_changed == true ]]; then cp -p "$backup/stack.env" "$env_file"; fi
   if [[ $caddy_changed == true ]]; then cp -p "$backup/Caddyfile" "$caddyfile"; fi
-  # Before HAProxy, the previous release published its own services on TCP 443.
+  # До HAProxy прежний релиз сам публиковал свои службы на TCP 443.
   if [[ $edge_enabled == true && $old_edge != true ]]; then compose_new stop edge || true; fi
   if [[ $haproxy_changed == true ]]; then
     if [[ -f $backup/haproxy.cfg ]]; then
@@ -198,7 +198,7 @@ rollback() {
     compose_old exec -T postgres pg_restore -e -U gateway -d gateway < "$backup/gateway.dump" || true
   fi
   compose_old up -d --wait "${old_services[@]}" || true
-  # Containers this deployment started read the replaced files; new ones read the restored files.
+  # Контейнеры, запущенные этой выкладкой, читают заменённые файлы; новые прочитают восстановленные.
   if [[ $stack_started == true && $caddy_changed == true ]]; then
     compose_old up -d --wait --no-deps --force-recreate caddy || true
   fi
@@ -244,8 +244,9 @@ os.chmod(staged, 0o600)
 os.replace(staged, path)
 PY
 env_changed=true
-# A bind-mounted file keeps the content its container started with, so a replaced file needs a
-# new container. Recreating edge drops every VPN connection: only a changed HAProxy file does it.
+# Примонтированный файл сохраняет то содержимое, с которым запустился его контейнер, поэтому
+# заменённому файлу нужен новый контейнер. Пересоздание edge рвёт все VPN-подключения: это
+# делает только изменённый файл HAProxy.
 if [[ -f $caddyfile.next ]]; then
   mv -f -- "$caddyfile.next" "$caddyfile"
   caddy_changed=true
@@ -291,7 +292,7 @@ gateway_status=$(compose_new exec -T api /usr/local/bin/gatewayctl status)
 printf '%s\n' "$gateway_status"
 active_devices=$(awk '$1 == "ACTIVE" && $2 == "DEVICES" {print $3}' <<< "$gateway_status")
 [[ $active_devices =~ ^[0-9]+$ ]] || fail 'The number of active devices could not be read.'
-# The panel answering proves nothing about VPN clients: their traffic must pass too.
+# Ответ панели ничего не доказывает о VPN-клиентах: их трафик тоже должен проходить.
 if ((active_devices == 0)); then
   printf 'VLESS traffic check skipped: there is no active device yet.\n'
 elif ! vless_works "$release"; then

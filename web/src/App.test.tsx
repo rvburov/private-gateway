@@ -64,7 +64,7 @@ beforeEach(() => {
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
-  // jsdom lacks native modal behavior; keep the same open/close lifecycle for interaction tests.
+  // В jsdom нет настоящих модальных окон: для тестов взаимодействия повторяем их открытие и закрытие.
   HTMLDialogElement.prototype.showModal = function () {
     this.setAttribute("open", "");
   };

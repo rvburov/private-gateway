@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Set the administrator login/password in PostgreSQL; enroll 2FA in the browser."""
+"""Задать логин и пароль администратора в PostgreSQL; 2FA подключается в браузере."""
 
 import fcntl
 import getpass

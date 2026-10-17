@@ -23,8 +23,8 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 		t.Fatal(err)
 	}
 	passwordHash := "pbkdf2_sha256:600000:" + hex.EncodeToString(salt) + ":" + hex.EncodeToString(hash)
-	// Upgrading a legacy env account imports only its password hash: a disclosed
-	// old TOTP seed cannot authenticate after this migration.
+	// При переносе учётной записи из env переносится только хеш пароля: раскрытый прежний
+	// секрет TOTP после этого не даёт войти.
 	if err := store.ImportAdministrator(t.Context(), "admin@example.com", passwordHash); err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestAdministratorBrowserEnrollmentAndDatabasePersistence(t *testing.T) {
 	if got := browserAccess(); got != 403 {
 		t.Fatalf("browser access survived logout: %d", got)
 	}
-	// A new API process must read the encrypted seed and replay step from PostgreSQL.
+	// Новый процесс API должен прочитать из PostgreSQL зашифрованный секрет и шаг последнего кода.
 	handler = New(store, nil, &testBrowser{}, Options{Token: cliToken})
 	second := call("POST", "/api/v1/auth/login", loginBody, "", remote)
 	if second.Code != 200 || json.Unmarshal(second.Body.Bytes(), &pending) != nil || pending.Status != "totp_required" {

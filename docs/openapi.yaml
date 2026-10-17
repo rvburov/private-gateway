@@ -3,11 +3,11 @@ info:
   title: Private Gateway API
   version: 0.1.0
   description: >-
-    One local Xray node. Device changes remain pending until config/apply.
-    Profiles contain credentials and must not be cached, logged or shared.
-    Public Bearer access requires a temporary session from password verification
-    and authenticator confirmation. Before administrator setup, public access is
-    unavailable. The long-lived CLI token is accepted only from loopback.
+    Один локальный узел Xray. Изменения устройств ждут применения через config/apply.
+    Профили содержат секреты: их нельзя кешировать, журналировать и передавать.
+    Публичный доступ по Bearer требует временного сеанса после проверки пароля и
+    подтверждения аутентификатора. Пока администратор не настроен, публичного доступа
+    нет. Долгоживущий токен CLI принимается только с loopback.
 servers:
   - url: http://127.0.0.1:8080
 security:
@@ -17,7 +17,7 @@ paths:
     post:
       operationId: adminLogin
       security: []
-      description: Verify username and password. Returns a five-minute pending token for authenticator setup or verification.
+      description: Проверить логин и пароль. Возвращает пятиминутный промежуточный токен для подключения или проверки аутентификатора.
       requestBody:
         required: true
         content:
@@ -30,7 +30,7 @@ paths:
                 password: {type: string, format: password}
       responses:
         '200':
-          description: Pending login; never persist the token beyond the current tab.
+          description: Незавершённый вход; не сохраняйте токен за пределами текущей вкладки.
           content:
             application/json:
               schema:
@@ -44,10 +44,10 @@ paths:
   /api/v1/auth/2fa/setup:
     post:
       operationId: startAdministratorTOTPSetup
-      description: After password verification, return a temporary TOTP secret and URI for browser enrollment. The secret is stored in PostgreSQL only after code confirmation.
+      description: После проверки пароля вернуть временный секрет TOTP и URI для подключения аутентификатора в браузере. Секрет сохраняется в PostgreSQL только после подтверждения кода.
       responses:
         '200':
-          description: Authenticator enrollment data; never log or cache it.
+          description: Данные для подключения аутентификатора; не журналируйте и не кешируйте их.
           content:
             application/json:
               schema:
@@ -60,7 +60,7 @@ paths:
   /api/v1/auth/2fa/setup/confirm:
     post:
       operationId: confirmAdministratorTOTPSetup
-      description: Confirm the first six-digit code, encrypt the seed in PostgreSQL, and issue an eight-hour session.
+      description: Подтвердить первый шестизначный код, зашифровать секрет в PostgreSQL и выдать сеанс на восемь часов.
       requestBody:
         required: true
         content:
@@ -72,7 +72,7 @@ paths:
                 code: {type: string, pattern: '^[0-9]{6}$'}
       responses:
         '200':
-          description: Temporary bearer session.
+          description: Временный сеанс Bearer.
           content:
             application/json:
               schema:
@@ -84,7 +84,7 @@ paths:
   /api/v1/auth/2fa:
     post:
       operationId: verifyAdministratorTOTP
-      description: Complete a later login using a fresh authenticator code. Replayed codes are rejected across API restarts.
+      description: Завершить последующий вход новым кодом аутентификатора. Повторно использованный код отклоняется и после перезапуска API.
       requestBody:
         required: true
         content:
@@ -96,7 +96,7 @@ paths:
                 code: {type: string, pattern: '^[0-9]{6}$'}
       responses:
         '200':
-          description: Temporary bearer session.
+          description: Временный сеанс Bearer.
           content:
             application/json:
               schema:
@@ -109,26 +109,26 @@ paths:
     post:
       operationId: adminLogout
       responses:
-        '200': {description: Current session revoked}
+        '200': {description: Текущий сеанс отозван}
   /healthz:
     get:
       operationId: health
       security: []
       responses:
-        '200': {description: Process alive}
+        '200': {description: Процесс работает}
   /readyz:
     get:
       operationId: ready
       security: []
       responses:
-        '200': {description: PostgreSQL reachable}
+        '200': {description: PostgreSQL доступна}
         '503': {$ref: '#/components/responses/Error'}
   /api/v1/status:
     get:
       operationId: status
       responses:
         '200':
-          description: Database and configuration revision state
+          description: Состояние базы и версий конфигурации
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Status'}
@@ -138,7 +138,7 @@ paths:
       operationId: listNodes
       responses:
         '200':
-          description: Local node public connection parameters
+          description: Открытые параметры подключения локального узла
           content:
             application/json:
               schema:
@@ -154,7 +154,7 @@ paths:
       operationId: listDevices
       responses:
         '200':
-          description: Devices, including revoked records, without credentials
+          description: Устройства, в том числе отозванные, без секретов
           content:
             application/json:
               schema:
@@ -180,7 +180,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 64
-                  description: Letters, numbers, spaces, dots, underscores and hyphens; starts with a letter or number
+                  description: Буквы, цифры, пробелы, точки, подчёркивания и дефисы; начинается с буквы или цифры
                 node_id:
                   type: string
                   format: uuid
@@ -196,11 +196,11 @@ paths:
     delete:
       operationId: deleteRevokedDevice
       description: >-
-        Permanently remove a revoked device after the Xray configuration has
-        applied its revocation. The immutable audit history retains the device UUID.
+        Окончательно удалить отозванное устройство после того, как конфигурация Xray
+        применила его отзыв. Неизменяемая история аудита сохраняет UUID устройства.
       responses:
         '200':
-          description: Device removed
+          description: Устройство удалено
           content:
             application/json:
               schema:
@@ -218,7 +218,7 @@ paths:
       operationId: exportDevice
       responses:
         '200':
-          description: Sensitive VLESS share URI and sing-box/Mihomo client configurations, Cache-Control no-store
+          description: Секретная ссылка VLESS и конфигурации клиентов sing-box и Mihomo, Cache-Control no-store
           content:
             application/json:
               schema:
@@ -226,9 +226,9 @@ paths:
                 required: [uri, sing_box_json, mihomo_yaml, subscription_path]
                 properties:
                   uri: {type: string, format: uri}
-                  sing_box_json: {type: string, description: Complete sing-box JSON configuration}
-                  mihomo_yaml: {type: string, description: Complete Mihomo YAML configuration}
-                  subscription_path: {type: string, description: '/sub/ and the secret token of the device subscription link on the panel domain'}
+                  sing_box_json: {type: string, description: Полная конфигурация sing-box в JSON}
+                  mihomo_yaml: {type: string, description: Полная конфигурация Mihomo в YAML}
+                  subscription_path: {type: string, description: '/sub/ и секретный токен ссылки-подписки устройства на домене панели'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
@@ -237,10 +237,10 @@ paths:
       - {$ref: '#/components/parameters/DeviceID'}
     post:
       operationId: rotateSubscription
-      description: Give an active device a new subscription link. The previous link stops working at once.
+      description: Выдать активному устройству новую ссылку-подписку. Прежняя ссылка сразу перестаёт работать.
       responses:
         '200':
-          description: The new link path, Cache-Control no-store
+          description: Путь новой ссылки, Cache-Control no-store
           content:
             application/json:
               schema:
@@ -256,7 +256,7 @@ paths:
       operationId: deviceTraffic
       responses:
         '200':
-          description: Bytes per active device since Xray last restarted, keyed by device ID
+          description: Байты каждого активного устройства с последнего перезапуска Xray, по ID устройства
           content:
             application/json:
               schema:
@@ -282,11 +282,12 @@ paths:
       operationId: subscription
       security: []
       description: >-
-        Public subscription link of an active device: the secret is the token in the path.
-        Without format the client's User-Agent chooses it; a browser gets an HTML page.
-        Revoked devices and replaced links answer 404. Reads are not logged or audited.
+        Открытая ссылка-подписка активного устройства: секрет — токен в пути. Без format
+        формат выбирает User-Agent клиента; браузер получает HTML-страницу. Отозванные
+        устройства и заменённые ссылки отвечают 404. Чтения не журналируются и не попадают
+        в аудит.
       responses:
-        '200': {description: The device profile in the requested format}
+        '200': {description: Профиль устройства в запрошенном формате}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
   /api/v1/devices/{id}/revoke:
@@ -294,7 +295,7 @@ paths:
       - {$ref: '#/components/parameters/DeviceID'}
     post:
       operationId: revokeDevice
-      description: Idempotent. Actual network access ends after successful config/apply.
+      description: Повторный вызов безопасен. Сетевой доступ прекращается после успешного config/apply.
       responses:
         '200': {$ref: '#/components/responses/Device'}
         '404': {$ref: '#/components/responses/Error'}
@@ -304,7 +305,7 @@ paths:
       operationId: listAudit
       responses:
         '200':
-          description: Newest 100 append-only audit events without credentials
+          description: Последние 100 неизменяемых событий аудита без секретов
           content:
             application/json:
               schema:
@@ -319,13 +320,13 @@ paths:
     get:
       operationId: serverChecks
       description: >-
-        Server checks for the panel: PostgreSQL, the applied configuration revision, the running
-        Xray process, the REALITY target over TLS 1.3, the panel certificate, and a real VLESS
-        request through Xray with the oldest active device. Takes up to about 20 seconds; one
-        run at a time.
+        Серверные проверки для панели: PostgreSQL, применённая версия конфигурации, работающий
+        процесс Xray, сайт маскировки REALITY по TLS 1.3, сертификат панели и настоящий
+        VLESS-запрос через Xray с профилем самого старого активного устройства. Занимает до
+        20 секунд; одновременно идёт только одна проверка.
       responses:
         '200':
-          description: Results in a fixed order, without credentials
+          description: Результаты в постоянном порядке, без секретов
           content:
             application/json:
               schema:
@@ -342,13 +343,13 @@ paths:
                         title: {type: string}
                         status: {type: string, enum: [ok, warn, fail, skip]}
                         detail: {type: string}
-                        ip: {type: string, description: 'traffic only: the address sites see behind the gateway'}
+                        ip: {type: string, description: 'только у traffic: адрес, который видят сайты за шлюзом'}
         '409': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
   /api/v1/config/validate:
     post:
       operationId: validateConfig
-      description: Render current active devices and validate with the configured Xray binary.
+      description: Собрать конфигурацию из текущих активных устройств и проверить её заданным бинарником Xray.
       responses:
         '200': {$ref: '#/components/responses/Operation'}
         '503': {$ref: '#/components/responses/Error'}
@@ -356,7 +357,7 @@ paths:
   /api/v1/config/apply:
     post:
       operationId: applyConfig
-      description: Validate, atomically write config, run fixed restart argv, roll back on failure and record applied revision.
+      description: Проверить и атомарно записать конфигурацию, выполнить заданную команду перезапуска, при сбое откатить, затем записать применённую ревизию.
       responses:
         '200': {$ref: '#/components/responses/Operation'}
         '503': {$ref: '#/components/responses/Error'}
@@ -364,7 +365,7 @@ paths:
   /api/v1/browser:
     get:
       operationId: browserStatus
-      description: Returns browser status and sets a Secure, HttpOnly cookie scoped to /browser for the verified administrator session. Caddy checks this cookie before proxying noVNC.
+      description: Возвращает состояние браузера и ставит cookie Secure и HttpOnly на /browser для подтверждённого сеанса администратора. Caddy проверяет этот cookie, прежде чем пропустить к noVNC.
       responses:
         '200': {$ref: '#/components/responses/Browser'}
         '503': {$ref: '#/components/responses/Error'}
@@ -379,7 +380,7 @@ paths:
   /api/v1/browser/stop:
     post:
       operationId: stopBrowser
-      description: Remove the ephemeral browser session, including cookies.
+      description: Удалить временный сеанс браузера вместе с cookies.
       responses:
         '200': {$ref: '#/components/responses/Browser'}
         '503': {$ref: '#/components/responses/Error'}
@@ -389,7 +390,7 @@ paths:
       operationId: metrics
       responses:
         '200':
-          description: Prometheus metrics, requires Bearer authentication
+          description: Метрики Prometheus, нужна авторизация Bearer
           content:
             text/plain:
               schema: {type: string}
@@ -405,7 +406,7 @@ components:
       schema: {type: string, format: uuid}
   responses:
     Error:
-      description: Unauthorized, invalid input, unavailable service or operation failure
+      description: Нет доступа, неверные данные, служба недоступна или операция не удалась
       content:
         application/json:
           schema:
@@ -414,12 +415,12 @@ components:
             properties:
               error: {type: string}
     Device:
-      description: Device record without credential
+      description: Запись устройства без секрета
       content:
         application/json:
           schema: {$ref: '#/components/schemas/Device'}
     Operation:
-      description: Successfully validated or applied config
+      description: Конфигурация проверена или применена
       content:
         application/json:
           schema:
@@ -428,7 +429,7 @@ components:
             properties:
               status: {type: string, enum: [valid, applied]}
     Browser:
-      description: Browser readiness on the private Docker worker
+      description: Готовность браузера в закрытом Docker worker
       content:
         application/json:
           schema:
@@ -436,7 +437,7 @@ components:
             required: [running]
             properties:
               running: {type: boolean}
-              url: {type: string, format: uri, description: HTTPS noVNC address protected by the verified administrator browser cookie}
+              url: {type: string, format: uri, description: Адрес noVNC по HTTPS под защитой cookie подтверждённого сеанса администратора}
   schemas:
     Node:
       type: object
@@ -476,4 +477,4 @@ components:
         active_devices: {type: integer, minimum: 0}
         desired_revision: {type: integer, minimum: 1}
         applied_revision: {type: integer, minimum: 0}
-        xray_configured: {type: boolean, description: Restart command configured; does not establish Xray process health}
+        xray_configured: {type: boolean, description: 'Команда перезапуска задана; это не значит, что процесс Xray работает'}

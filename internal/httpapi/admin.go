@@ -252,7 +252,7 @@ func (s *Server) finishLogin(w http.ResponseWriter, pendingToken string, pending
 }
 
 func loginClient(r *http.Request) string {
-	// Caddy's reverse_proxy overwrites untrusted incoming X-Forwarded-For.
+	// reverse_proxy в Caddy перезаписывает недоверенный входящий X-Forwarded-For.
 	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 		parts := strings.Split(forwarded, ",")
 		if ip := net.ParseIP(strings.TrimSpace(parts[len(parts)-1])); ip != nil {
@@ -295,8 +295,8 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]string{"status": "logged out"})
 }
 
-// The browser cookie is a separate opaque ticket tied to the already verified
-// administrator session. It cannot authorize any other API operation.
+// Cookie браузера — отдельный непрозрачный билет, привязанный к уже подтверждённому сеансу
+// администратора. Никакую другую операцию API он не разрешает.
 func (s *Server) issueBrowserCookie(w http.ResponseWriter, r *http.Request) error {
 	admin, err := s.administrator(r.Context())
 	if err != nil {
@@ -308,7 +308,7 @@ func (s *Server) issueBrowserCookie(w http.ResponseWriter, r *http.Request) erro
 	session, found := s.sessions[sessionID]
 	if !found || !admin.Credentials.Configured() || session.generation != admin.Generation ||
 		time.Now().After(session.expires) {
-		return nil // Internal CLI requests never receive a browser ticket.
+		return nil // Внутренние запросы CLI билет браузера не получают.
 	}
 	var ticket string
 	for candidate, parent := range s.browserTickets {

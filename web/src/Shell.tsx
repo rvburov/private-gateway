@@ -17,8 +17,8 @@ const sidebarGroups = [
   { label: "Управление", items: [items.overview, items.devices, items.nodes, items.audit] },
   { label: "Подключение", items: [items.guide, items.checks] },
 ];
-// Bottom tabs on a phone, as in ai_agent_capper: the round button in the middle adds a device,
-// sections that do not fit go to the "More" sheet.
+// Нижние вкладки на телефоне, как в ai_agent_capper: круглая кнопка посередине добавляет
+// устройство, а разделы, которые не поместились, уходят в шторку «Ещё».
 const tabItems = [items.overview, items.devices];
 const tabItemsAfterAdd = [items.checks];
 const moreItems = [items.guide, items.audit, items.nodes];

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Rotate the internal CLI token without changing administrator credentials."""
+"""Сменить внутренний токен CLI, не меняя учётные данные администратора."""
 
 import fcntl
 import hmac
@@ -63,7 +63,7 @@ def run(command, *, env=None, timeout=120):
     except (OSError, subprocess.TimeoutExpired) as error:
         raise RotationError("Docker command could not complete") from error
     if result.returncode:
-        # Docker output could include environment values. Never copy it to logs.
+        # В выводе Docker могут оказаться значения окружения. Никогда не копировать его в журналы.
         raise RotationError("Docker command failed")
     return result.stdout.strip()
 

@@ -1,9 +1,9 @@
-# The local stack of `bash scripts/dev.sh start`: added on top of the production compose file of
-# a release built from this checkout. PostgreSQL, the API with the panel on
-# http://127.0.0.1:8080 and the Xray worker run; Caddy, HAProxy and the remote browser stay off.
+# Локальный стек `bash scripts/dev.sh start`: добавляется поверх production-файла compose из
+# релиза, собранного из этой копии. Работают PostgreSQL, API с панелью на http://127.0.0.1:8080
+# и Xray worker; Caddy, HAProxy и удалённый браузер выключены.
 services:
-  # A new volume belongs to root, while the API and the Xray worker run as 10001. dev.sh runs
-  # this one-off service before the stack.
+  # Новый том принадлежит root, а API и Xray worker работают как 10001. dev.sh запускает эту
+  # разовую службу перед стеком.
   state:
     profiles: [setup]
     image: private-gateway/api:${PG_API_IMAGE:?Set PG_API_IMAGE}
@@ -18,8 +18,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      # Without Caddy noVNC is unreachable, so the browser worker is not started either, and
-      # the panel has no certificate to check.
+      # Без Caddy noVNC недоступен, поэтому browser worker тоже не запускается, а у панели нет
+      # сертификата для проверки.
       GATEWAY_BROWSER_WORKER_URL: ""
       GATEWAY_PANEL_TLS_ADDRESS: ""
     volumes:

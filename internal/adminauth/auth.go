@@ -18,8 +18,8 @@ import (
 
 const iterations = 600_000
 
-// Credentials are read from PostgreSQL. The terminal script saves the password
-// hash, while the browser enrollment saves an encrypted TOTP seed after confirmation.
+// Учётные данные читаются из PostgreSQL. Скрипт в терминале сохраняет хеш пароля, а
+// подключение аутентификатора в браузере после подтверждения — зашифрованный секрет TOTP.
 type Credentials struct {
 	Username     string
 	PasswordHash string
@@ -30,7 +30,7 @@ func (c Credentials) Configured() bool { return c.Username != "" }
 
 func (c Credentials) Validate() error {
 	if c == (Credentials{}) {
-		return nil // Existing installations stay usable until the terminal setup is run.
+		return nil // Прежние установки работают, пока не выполнена настройка в терминале.
 	}
 	if err := c.ValidatePassword(); err != nil {
 		return err
@@ -99,7 +99,7 @@ func (c Credentials) Verify(username, password, code string, now time.Time) (int
 	return VerifyCode(c.TOTPSecret, code, now, -1)
 }
 
-// Code implements RFC 6238 (HMAC-SHA1, 30 seconds, 6 digits).
+// Code реализует RFC 6238 (HMAC-SHA1, 30 секунд, 6 цифр).
 func Code(secret []byte, step int64) string {
 	var counter [8]byte
 	binary.BigEndian.PutUint64(counter[:], uint64(step))

@@ -59,7 +59,8 @@ func Open(ctx context.Context, dsn string, cipher *secure.Cipher) (*Store, error
 func (s *Store) Close()                         { s.pool.Close() }
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-// All config mutations and deployments share a database lock, including across API processes.
+// Все изменения и применения конфигурации делят одну блокировку в базе, в том числе между
+// процессами API.
 func (s *Store) transaction(ctx context.Context, fn func(*db.Queries) error) error {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -119,8 +120,8 @@ func (s *Store) Devices(ctx context.Context) ([]model.Device, error) {
 	return out, nil
 }
 
-// ActiveTrafficIDs maps Xray's private user IDs to public device IDs without
-// exposing credentials in API responses or logs.
+// ActiveTrafficIDs сопоставляет закрытые идентификаторы пользователей Xray с открытыми
+// идентификаторами устройств, не раскрывая секреты в ответах API и журналах.
 func (s *Store) ActiveTrafficIDs(ctx context.Context) (map[string]string, error) {
 	rows, err := s.queries.ActiveClients(ctx, uid(LocalNodeID))
 	if err != nil {
@@ -240,7 +241,7 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 		if err != nil {
 			return err
 		}
-		// The link is computed again on every export; only its hash is stored, once shown.
+		// Ссылка вычисляется заново при каждой выдаче; после показа хранится только её хеш.
 		token := s.cipher.SubscriptionToken(id(row.ID), row.SubscriptionGeneration)
 		if hash := secure.SubscriptionHash(token); !bytes.Equal(row.SubscriptionHash, hash) {
 			if err = q.SetSubscriptionHash(ctx, db.SetSubscriptionHashParams{ID: row.ID, SubscriptionHash: hash}); err != nil {
@@ -253,9 +254,9 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 	return result, err
 }
 
-// ProbeCredential returns the node and the credential of one active device for the server's own
-// traffic check: the oldest one, which Xray has most likely received already. It returns
-// ErrNotFound when no device is active.
+// ProbeCredential возвращает узел и секрет одного активного устройства для собственной проверки
+// трафика сервером — самого старого: его Xray скорее всего уже получил. Если активных устройств
+// нет, возвращает ErrNotFound.
 func (s *Store) ProbeCredential(ctx context.Context) (model.Node, string, error) {
 	rows, err := s.queries.ActiveClients(ctx, uid(LocalNodeID))
 	if err != nil {
@@ -281,11 +282,11 @@ func (s *Store) ProbeCredential(ctx context.Context) (model.Node, string, error)
 	return nodeModel(node), credential, nil
 }
 
-// SubscriptionPathPrefix is where the public subscription endpoint serves profiles.
+// SubscriptionPathPrefix — путь, по которому открытый адрес подписки выдаёт профили.
 const SubscriptionPathPrefix = "/sub/"
 
-// RotateSubscription gives an active device a new subscription link; the previous one stops
-// working at once.
+// RotateSubscription выдаёт активному устройству новую ссылку-подписку; прежняя сразу перестаёт
+// работать.
 func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string, error) {
 	if _, err := uuid.Parse(deviceID); err != nil {
 		return "", ErrNotFound
@@ -312,9 +313,9 @@ func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string
 	return path, err
 }
 
-// Subscription returns the profile and name of the active device whose link carries this token.
-// A revoked device and a replaced link are not found. Clients poll their links, so reads are
-// not audited.
+// Subscription возвращает профиль и имя активного устройства, в ссылке которого этот токен.
+// Отозванное устройство и заменённая ссылка не находятся. Клиенты регулярно опрашивают ссылки,
+// поэтому чтения не попадают в аудит.
 func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, string, error) {
 	row, err := s.queries.GetActiveDeviceBySubscription(ctx, secure.SubscriptionHash(token))
 	if err != nil {
@@ -382,7 +383,7 @@ func (s *Store) Configure(ctx context.Context, apply bool, operation func(contex
 		if !initialized || node.ConfigHash != expected {
 			return ErrStaleConfig
 		}
-		// A repeated apply must not restart Xray and disconnect active clients.
+		// Повторное применение не должно перезапускать Xray и отключать активных клиентов.
 		if apply && node.AppliedRevision == node.Revision {
 			return nil
 		}

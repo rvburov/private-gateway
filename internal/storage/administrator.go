@@ -18,8 +18,8 @@ type Administrator struct {
 	LastStep    int64
 }
 
-// AdministratorSnapshot is a root-only rollback record. Its password hash and
-// encrypted TOTP seed must never appear in HTTP responses or logs.
+// AdministratorSnapshot — запись для отката, доступная только root. Её хеш пароля и
+// зашифрованный секрет TOTP никогда не должны попадать в ответы HTTP и журналы.
 type AdministratorSnapshot struct {
 	Exists               bool   `json:"exists"`
 	Username             string `json:"username,omitempty"`
@@ -95,8 +95,8 @@ func (s *Store) Administrator(ctx context.Context) (Administrator, error) {
 	return result, nil
 }
 
-// ImportAdministrator preserves a legacy username/password on upgrade while
-// requiring a fresh browser enrollment. The old TOTP seed is never imported.
+// ImportAdministrator при обновлении сохраняет прежние логин и пароль, но требует заново
+// подключить аутентификатор в браузере. Прежний секрет TOTP никогда не переносится.
 func (s *Store) ImportAdministrator(ctx context.Context, username, passwordHash string) error {
 	if username == "" {
 		return nil

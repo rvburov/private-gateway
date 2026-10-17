@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-# All state lives in explicit tmpfs mounts and disappears at stop.
+# Всё состояние лежит в явно подключённых tmpfs и исчезает при остановке.
 export HOME=/home/browser/private DISPLAY=:99 XDG_RUNTIME_DIR=/tmp/browser-runtime
 umask 077
 mkdir -p "$HOME" "$XDG_RUNTIME_DIR" /tmp/chromium
@@ -36,8 +36,8 @@ websockify --web=/usr/share/novnc 6080 127.0.0.1:5900 &
 novnc_pid=$!
 pids="$pids $novnc_pid"
 
-# The restricted Docker container is the isolation boundary. Chrome's nested
-# namespace/setuid sandbox requires privileges denied by this deployment.
+# Граница изоляции — ограниченный Docker-контейнер. Вложенной песочнице Chrome на namespace и
+# setuid нужны права, которых эта установка не даёт.
 chromium --no-sandbox --disable-dev-shm-usage --no-first-run \
     --no-default-browser-check --user-data-dir=/tmp/chromium \
     --window-size=1280,720 --start-maximized about:blank &
@@ -45,8 +45,8 @@ chromium_pid=$!
 pids="$pids $chromium_pid"
 printf '%s\n' "$pids" > /tmp/browser.pids
 
-# Losing a required process ends the container rather than leaving a reachable
-# noVNC page after Chromium or its display has died.
+# Потеря нужного процесса завершает контейнер, чтобы не оставлять доступную страницу
+# noVNC после того, как Chromium или его дисплей упали.
 while :; do
     for pid in $pids; do
         kill -0 "$pid" || { echo "Required browser process $pid exited" >&2; exit 1; }

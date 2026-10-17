@@ -1,4 +1,4 @@
-// Package xray renders Xray's VLESS/REALITY configuration and importable profiles.
+// Пакет xray собирает конфигурацию VLESS/REALITY для Xray и профили для импорта в клиенты.
 package xray
 
 import (
@@ -34,7 +34,7 @@ type Settings struct {
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
-// PublicKey derives the REALITY X25519 public key without invoking Xray.
+// PublicKey выводит открытый ключ REALITY X25519, не запуская Xray.
 func PublicKey(privateKey string) (string, error) {
 	key, err := decodeKey(privateKey)
 	if err != nil {
@@ -57,7 +57,7 @@ func decodeKey(key string) ([]byte, error) {
 
 func validPort(port int) bool { return port > 0 && port <= 65535 }
 
-// Hostnames are ASCII DNS names; callers can use punycode for international names.
+// Имена хостов — DNS-имена в ASCII; международные имена можно передать в punycode.
 func validHost(host string) bool {
 	if net.ParseIP(host) != nil {
 		return true
@@ -88,7 +88,7 @@ func validateShortID(id string) error {
 	return nil
 }
 
-// Profile emits a standard VLESS share URI, including IPv6 endpoint support.
+// Profile выдаёт стандартную ссылку VLESS, в том числе для адреса IPv6.
 func Profile(node model.Node, credentialID, name string) (string, error) {
 	if !uuidPattern.MatchString(credentialID) {
 		return "", errors.New("VLESS credential must be a UUID")
@@ -118,8 +118,8 @@ func Profile(node model.Node, credentialID, name string) (string, error) {
 	return u.String(), nil
 }
 
-// ClientProfiles derives all client exports from the same validated credential.
-// Each format is returned only by the authenticated profile endpoint.
+// ClientProfiles строит все форматы для клиентов из одного проверенного секрета.
+// Каждый формат выдаёт только адрес профиля, доступный после входа.
 func ClientProfiles(node model.Node, credentialID, name string) (model.Profile, error) {
 	uri, err := Profile(node, credentialID, name)
 	if err != nil {
@@ -149,8 +149,8 @@ func ClientProfiles(node model.Node, credentialID, name string) (model.Profile, 
 	if err != nil {
 		return model.Profile{}, fmt.Errorf("encode sing-box profile: %w", err)
 	}
-	// JSON quoted strings are valid YAML scalars and protect the device name
-	// and IPv6 host from changing the meaning of the generated configuration.
+	// Строки в кавычках JSON — допустимые скаляры YAML: так имя устройства и хост IPv6
+	// не могут изменить смысл созданной конфигурации.
 	quoted := func(value string) string {
 		encoded, _ := json.Marshal(value)
 		return string(encoded)
@@ -185,7 +185,7 @@ rules:
 	return model.Profile{URI: uri, SingBoxJSON: string(singBoxJSON) + "\n", MihomoYAML: mihomoYAML}, nil
 }
 
-// Render produces the server configuration for current Xray RAW/TCP + REALITY.
+// Render создаёт конфигурацию сервера для текущего Xray: RAW/TCP + REALITY.
 func Render(settings Settings, clients []Client) ([]byte, error) {
 	if _, err := PublicKey(settings.PrivateKey); err != nil {
 		return nil, err

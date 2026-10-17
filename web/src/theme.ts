@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 
-// Without a choice the panel follows the system theme. Only the choice itself is stored, and only
-// when the administrator changes it; no session data ever goes to browser storage.
+// Пока тема не выбрана, панель следует теме системы. Хранится только сам выбор и только после
+// того, как администратор его сделал; данные сеанса в хранилище браузера не попадают никогда.
 export type ThemePreference = "system" | "light" | "dark";
 const storageKey = "private-gateway-theme";
 
@@ -10,7 +10,7 @@ export function readTheme(): ThemePreference {
     const value = window.localStorage.getItem(storageKey);
     if (value === "light" || value === "dark") return value;
   } catch {
-    // Storage can be unavailable, for example in a private window.
+    // Хранилище может быть недоступно, например в приватном окне.
   }
   return "system";
 }
@@ -30,7 +30,7 @@ export function useTheme(): [ThemePreference, (theme: ThemePreference) => void] 
       if (next === "system") window.localStorage.removeItem(storageKey);
       else window.localStorage.setItem(storageKey, next);
     } catch {
-      // The choice still applies to this tab.
+      // Выбор всё равно действует в этой вкладке.
     }
   }
   return [theme, choose];

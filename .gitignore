@@ -8,8 +8,8 @@ coverage.out
 __pycache__/
 *.py[cod]
 
-# Agent worktrees (see AGENTS.md): Claude Code uses .claude/worktrees, other AIs .agents/worktrees
-# (scripts/worktree.sh). Personal Claude Code settings stay local too.
+# Рабочие папки агентов (см. AGENTS.md): Claude Code — в .claude/worktrees, другие ИИ — в
+# .agents/worktrees (scripts/worktree.sh). Личные настройки Claude Code тоже остаются локальными.
 .claude/worktrees/
 .agents/worktrees/
 .claude/settings.local.json

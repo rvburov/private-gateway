@@ -21,18 +21,18 @@ import (
 	"github.com/rvburov/private-gateway/internal/xray"
 )
 
-// ServerChecks configures the server side of the panel's "Проверка" section. A check without its
-// address is skipped, as Caddy is in a local stack.
+// ServerChecks настраивает серверную часть раздела «Проверка» панели. Проверка без адреса
+// пропускается — так пропускается Caddy в локальном стеке.
 type ServerChecks struct {
 	XrayBinary        string
-	XrayConfigPath    string // the Xray worker writes xray.status.json beside it
-	XrayServer        string // the Xray inbound as the API reaches it, xray:443 in Docker
+	XrayConfigPath    string // рядом Xray worker пишет xray.status.json
+	XrayServer        string // вход Xray, каким его видит API: в Docker — xray:443
 	RealityTarget     string
 	RealityServerName string
-	PanelAddress      string // Caddy as the API reaches it, caddy:443 in Docker
+	PanelAddress      string // Caddy, каким его видит API: в Docker — caddy:443
 	PanelDomain       string
-	TrafficURL        string         // answers with ip=... lines, like Cloudflare's /cdn-cgi/trace
-	RootCAs           *x509.CertPool // nil means the system roots
+	TrafficURL        string         // отвечает строками ip=..., как /cdn-cgi/trace у Cloudflare
+	RootCAs           *x509.CertPool // nil — системные корневые сертификаты
 }
 
 // checkServices — внешние сервисы, к которым обращается браузерная часть «Проверки»: ipleak.net
@@ -42,14 +42,15 @@ var checkServices = []string{"https://ipleak.net", "https://*.ipleak.net"}
 type checkResult struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
-	Status string `json:"status"` // ok, warn, fail or skip
+	Status string `json:"status"` // ok, warn, fail или skip
 	Detail string `json:"detail"`
-	// The address sites see behind the gateway, from the traffic check.
+	// Адрес, который видят сайты за шлюзом, — из проверки трафика.
 	IP string `json:"ip,omitempty"`
 }
 
 func (s *Server) serverChecks(w http.ResponseWriter, r *http.Request) {
-	// Each run starts an Xray client; a second tab waits for the first one's result instead.
+	// Каждый запуск поднимает клиент Xray, поэтому одновременно идёт только один: второй
+	// запрос, пока идёт первый, получает 409.
 	if !s.checksMu.TryLock() {
 		fail(w, 409, "a server check is already running")
 		return
@@ -177,8 +178,8 @@ func (s *Server) checkPanelCertificate(ctx context.Context) checkResult {
 		result.Status, result.Detail = "skip", "В этом запуске панель открывается без Caddy и HTTPS."
 		return result
 	}
-	// The chain is read without verification and verified here, so an invalid certificate is
-	// described instead of failing the connection.
+	// Цепочка читается без проверки и проверяется здесь: так неверный сертификат описывается,
+	// а не обрывает соединение.
 	state, err := handshake(ctx, checks.PanelAddress, checks.PanelDomain, checks.RootCAs, true)
 	if err != nil {
 		result.Status, result.Detail = "fail", "Caddy не ответил по TLS ("+reason(err)+")."
@@ -259,8 +260,8 @@ func (s *Server) checkTraffic(ctx context.Context) checkResult {
 	return result
 }
 
-// serverAddress reports whether ip is the address of host, which profiles name as an IP address
-// or a domain. An unresolvable domain is not held against the check.
+// serverAddress сообщает, принадлежит ли ip хосту, который профили называют IP-адресом или
+// доменом. Домен, который не удалось разрешить, проверке в вину не ставится.
 func serverAddress(ctx context.Context, host, ip string) bool {
 	seen := net.ParseIP(ip)
 	if seen == nil {
@@ -297,7 +298,7 @@ func handshake(ctx context.Context, address, serverName string, roots *x509.Cert
 	return connection.(*tls.Conn).ConnectionState(), nil
 }
 
-// reason shortens an error for the panel. These errors name addresses and causes, never secrets.
+// reason сокращает ошибку для панели. В этих ошибках — адреса и причины, но никогда не секреты.
 func reason(err error) string {
 	var netError net.Error
 	if errors.Is(err, context.DeadlineExceeded) || errors.As(err, &netError) && netError.Timeout() {

@@ -34,7 +34,7 @@ func NewManager(options Options) *Manager {
 	return &Manager{options: options}
 }
 
-// Validate invokes Xray's own parser. It never changes the live configuration.
+// Validate вызывает собственный разбор конфигурации Xray. Рабочую конфигурацию он не меняет.
 func (m *Manager) Validate(ctx context.Context, clients []Client) error {
 	path, err := m.stage(ctx, clients)
 	if err != nil {
@@ -44,9 +44,9 @@ func (m *Manager) Validate(ctx context.Context, clients []Client) error {
 	return m.validateFile(ctx, path, clients)
 }
 
-// Apply serializes updates, validates with Xray, and atomically replaces the
-// live configuration. A failed restart restores the previous file and attempts
-// to restart the previous configuration before returning the original failure.
+// Apply выполняет обновления по одному, проверяет их Xray и атомарно заменяет рабочую
+// конфигурацию. При сбое перезапуска возвращает прежний файл, пробует перезапустить прежнюю
+// конфигурацию и затем возвращает исходную ошибку.
 func (m *Manager) Apply(ctx context.Context, clients []Client) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -72,7 +72,7 @@ func (m *Manager) Apply(ctx context.Context, clients []Client) error {
 		return fmt.Errorf("replace Xray configuration: %w", err)
 	}
 	if err := m.restart(ctx, clients); err != nil {
-		// A timed-out caller must not prevent restoration of a live service.
+		// Истёкшее время вызывающего не должно мешать восстановлению работающей службы.
 		rollbackCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
 		if restoreErr := restore(m.options.ConfigPath, previous, existed); restoreErr != nil {
@@ -116,7 +116,8 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 	commandCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(commandCtx, binary, args...)
-	// A child which leaves output descriptors open must not block the caller.
+	// Дочерний процесс, оставивший открытыми дескрипторы вывода, не должен блокировать
+	// вызывающего.
 	cmd.WaitDelay = time.Second
 	var output limitedOutput
 	cmd.Stdout, cmd.Stderr = &output, &output
@@ -130,8 +131,8 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 				message = strings.ReplaceAll(message, secret, "[redacted]")
 			}
 		}
-		// Redact before truncating, retaining enough extra bytes to recognize a
-		// secret which crosses the displayed output boundary.
+		// Скрыть секреты до обрезки, с запасом байтов, чтобы узнать и секрет, который
+		// пересекает границу показанного вывода.
 		if len(message) > 4096 {
 			message = message[:4096] + " [output truncated]"
 		}

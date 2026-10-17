@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the production target repair without touching Docker or the VPS."""
+"""Прогнать исправление сайта маскировки, не трогая Docker и VPS."""
 
 import importlib.util
 from pathlib import Path

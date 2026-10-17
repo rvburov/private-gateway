@@ -142,7 +142,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
     },
     onError: async (_, action) => {
       if (action === "apply") {
-        // The administrator's own VPN may drop the response while Xray restarts.
+        // Собственный VPN администратора может оборвать ответ, пока Xray перезапускается.
         await queryClient.invalidateQueries({ queryKey: ["status"] });
       }
     },

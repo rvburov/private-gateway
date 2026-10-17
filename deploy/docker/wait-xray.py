@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Wait until the separate Xray container has loaded the exact applied config."""
+"""Дождаться, пока отдельный контейнер Xray загрузит в точности применённую конфигурацию."""
 
 import hashlib
 import json

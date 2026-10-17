@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Switch the installed REALITY target after an isolated VLESS check.
+"""Сменить сайт маскировки REALITY установленного стека после отдельной проверки VLESS.
 
-This one-time repair preserves the database, devices and REALITY keys. It
-recreates only the API container so its node metadata follows the new SNI.
+Это разовое исправление сохраняет базу, устройства и ключи REALITY. Оно пересоздаёт
+только контейнер API, чтобы данные узла последовали за новым SNI.
 """
 
 import fcntl
@@ -63,7 +63,7 @@ def run(command, timeout=120):
     except (OSError, subprocess.TimeoutExpired) as error:
         raise MigrationError("command could not complete: " + command[0]) from error
     if result.returncode:
-        # Command output may contain credentials, so it is deliberately hidden.
+        # В выводе команды могут быть секреты, поэтому он намеренно скрыт.
         raise MigrationError("command failed: " + " ".join(command[-3:]))
     return result.stdout
 

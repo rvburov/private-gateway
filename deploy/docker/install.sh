@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install the verified Docker stack, replacing a legacy systemd installation only after checks.
+# Установить проверенный Docker-стек; прежнюю установку на systemd заменить только после проверок.
 set -Eeuo pipefail
 umask 077
 
@@ -121,7 +121,7 @@ release="/opt/private-gateway-docker/releases/$version"
 env_file=/etc/private-gateway-docker/stack.env
 compose_file="$release/docker/compose.yml"
 compose() { docker compose --env-file "$env_file" --file "$compose_file" "$@"; }
-# Configuration checks run in the same pinned images as the stack.
+# Проверки конфигурации идут в тех же закреплённых образах, что и стек.
 image_of() {
   compose config --format json \
     | python3 -c 'import json, sys; print(json.load(sys.stdin)["services"][sys.argv[1]]["image"])' "$1"
@@ -178,7 +178,7 @@ install -d -o 10001 -g 10001 -m 0700 /var/lib/private-gateway-docker/xray
 install -d -m 0755 "$release"
 tar --extract --gzip --file "$archive" --directory "$release" --no-same-owner --no-same-permissions
 chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
-# Content tags: an image keeps its tag, and update.sh keeps its container, until its files change.
+# Теги по содержимому: образ сохраняет свой тег, а update.sh — его контейнер, пока не изменятся его файлы.
 image_tags=$(python3 "$release/docker/image-tags.py" "$release")
 
 python3 - "$host" "$domain" "$version" "$release/bin/gateway-api" "$image_tags" <<'PY'
@@ -240,7 +240,7 @@ if '__' in text:
 destination.write_text(text)
 destination.chmod(0o600)
 PY
-# For a name under Caddy's own CA (.localhost, .internal) validation creates that CA in /data.
+# Для имени под собственным центром сертификации Caddy (.localhost, .internal) проверка создаёт этот центр в /data.
 docker run --rm --network none --read-only --tmpfs /data --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
   -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \
   --entrypoint caddy "$(image_of caddy)" validate --config /etc/caddy/Caddyfile
@@ -318,7 +318,7 @@ if [[ $replace_legacy == true ]]; then
   systemctl disable gateway-api.service private-gateway-xray.service caddy.service postgresql.service
   systemctl stop postgresql.service
 fi
-# Reuse the dedicated SSH identity, allowing only the root-owned Docker updater.
+# Использовать отдельный ключ SSH, разрешив с ним только принадлежащий root обновлятор Docker.
 install -d -m 0755 /usr/local/lib/private-gateway-docker
 access_stage=$(mktemp -d /var/tmp/private-gateway-access.XXXXXXXX)
 for item in helper verifier sudoers keys; do

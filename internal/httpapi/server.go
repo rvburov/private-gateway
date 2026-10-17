@@ -112,7 +112,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 		r.NotFound(func(w http.ResponseWriter, r *http.Request) { fail(w, 404, "not found") })
 	})
 	r.Get("/*", s.web)
-	// Avoid metric labels containing device identifiers or secrets.
+	// В метках метрик не должно быть идентификаторов устройств и секретов.
 	measured := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		m := httpsnoop.CaptureMetrics(r, w, req)
 		class := "5xx"
@@ -286,9 +286,9 @@ func (s *Server) apply(w http.ResponseWriter, r *http.Request)    { s.configure(
 func (s *Server) configure(w http.ResponseWriter, r *http.Request, apply bool) {
 	operationContext := r.Context()
 	if apply {
-		// Applying a profile restarts Xray. When the administrator uses this
-		// same VPN, that restart can disconnect the HTTP caller. Finish the
-		// authenticated operation and commit its revision independently.
+		// Применение перезапускает Xray. Если администратор подключён через этот же VPN,
+		// перезапуск может оборвать его HTTP-запрос. Поэтому подтверждённая операция доводится
+		// до конца и фиксирует ревизию независимо от запроса.
 		operationContext = context.WithoutCancel(operationContext)
 	}
 	ctx, cancel := context.WithTimeout(operationContext, 60*time.Second)
@@ -302,7 +302,7 @@ func (s *Server) configure(w http.ResponseWriter, r *http.Request, apply bool) {
 			fail(w, 409, err.Error())
 			return
 		}
-		// The manager removes the REALITY key and client UUIDs from Xray's output.
+		// Менеджер вычищает из вывода Xray ключ REALITY и UUID клиентов.
 		slog.Error("Xray operation failed", "error", err)
 		fail(w, 503, "Xray operation failed; verify binary, configuration and restart service")
 		return

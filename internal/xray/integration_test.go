@@ -28,9 +28,9 @@ import (
 	"github.com/rvburov/private-gateway/internal/model"
 )
 
-// TestRealXrayTrafficAndRevocation proves that server configuration carries
-// traffic and that removal of a credential affects a running data plane.
-// The REALITY camouflage TLS server and HTTP origin both run on loopback.
+// TestRealXrayTrafficAndRevocation доказывает, что конфигурация сервера передаёт трафик и
+// что удаление секрета действует на работающий Xray. TLS-сервер маскировки REALITY и
+// HTTP-сайт работают на loopback.
 func TestRealXrayTrafficAndRevocation(t *testing.T) {
 	binary := os.Getenv("PRIVATE_GATEWAY_REAL_XRAY_BINARY")
 	if binary == "" {
@@ -79,16 +79,16 @@ func TestRealXrayTrafficAndRevocation(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Switching to a new account must immediately prevent the old device from
-	// establishing a new REALITY session after the server has restarted.
+	// Переход на новую учётную запись должен сразу не дать старому устройству установить
+	// новый сеанс REALITY после перезапуска сервера.
 	server.stop(t)
 	newID := "372d849d-1985-48a6-bcf7-3a0828f10f40"
 	writeServer([]Client{{ID: newID}})
 	_ = startXrayProcess(t, binary, serverPath, serverPort)
 	newProxy := startRealXrayClient(t, binary, serverPort, key, settings, newID)
 	assertProxyResponse(t, newProxy, origin)
-	// Prove the restarted server carries traffic before attributing failure to
-	// revocation. A failed old request alone could only mean the server is down.
+	// Сначала доказать, что перезапущенный сервер передаёт трафик, и лишь потом считать сбой
+	// следствием отзыва: один неудачный старый запрос мог бы значить, что сервер не работает.
 	if body, err := fetchViaSOCKS(oldProxy, origin); err == nil {
 		t.Fatalf("revoked credential still carried HTTP traffic: %q", body)
 	}
@@ -124,7 +124,7 @@ func startTLS13Target(t *testing.T) string {
 	server := &http.Server{
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS13, NextProtos: []string{"h2", "http/1.1"}},
 		Handler:   http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, "camouflage") }),
-		ErrorLog:  log.New(io.Discard, "", 0), // Unauthenticated REALITY probes intentionally fail their TLS handshake.
+		ErrorLog:  log.New(io.Discard, "", 0), // пробы REALITY без ключа намеренно проваливают рукопожатие TLS
 	}
 	go func() { _ = server.ServeTLS(listener, "", "") }()
 	t.Cleanup(func() { _ = server.Close() })
@@ -265,9 +265,9 @@ func assertProxyResponse(t *testing.T, proxy, origin string) {
 	}
 }
 
-// The race-enabled CI runner can take several seconds to schedule the Xray
-// processes and complete their first REALITY connection after a TCP listener
-// appears. Keep the real HTTP assertion while allowing that startup latency.
+// Runner CI с детектором гонок может несколько секунд запускать процессы Xray и устанавливать
+// первое соединение REALITY после того, как открылся TCP-порт. Настоящая проверка HTTP
+// остаётся, но с запасом времени на этот запуск.
 const realTrafficTimeout = 10 * time.Second
 
 func fetchViaSOCKS(proxy, origin string) (string, error) {

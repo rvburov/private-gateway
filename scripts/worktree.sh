@@ -1,52 +1,52 @@
 #!/usr/bin/env bash
 #
-# Agent worktrees (git worktree): create, check, sync, merge into master, remove.
-# The rules are in AGENTS.md, section «Параллельная работа агентов».
+# Рабочие папки агентов (git worktree): создать, проверить, обновить, влить в master, убрать.
+# Правила — в AGENTS.md, раздел «Параллельная работа агентов».
 #
-#   scripts/worktree.sh                 # same as check
-#   scripts/worktree.sh check           # every folder and branch: uncommitted, not in master, not pushed
-#   scripts/worktree.sh new <name>      # (other AIs) new folder .agents/worktrees/<name>
-#                                       #   on branch <name> from the newest master
-#   scripts/worktree.sh sync            # (in a worktree) move its branch onto the newest master
-#   scripts/worktree.sh merge [<name>]  # fast-forward master to the branch; without a name, this folder's
-#   scripts/worktree.sh remove <name>   # remove the folder and its branch, only once all is in master
+#   scripts/worktree.sh                 # то же, что check
+#   scripts/worktree.sh check           # все папки и ветки: незакоммиченное, не влитое, не отправленное
+#   scripts/worktree.sh new <имя>       # (другие ИИ) новая папка .agents/worktrees/<имя>
+#                                       #   на ветке <имя> от свежего master
+#   scripts/worktree.sh sync            # (в рабочей папке) поставить её ветку на свежий master
+#   scripts/worktree.sh merge [<имя>]   # перемотать master на ветку; без имени — на ветку этой папки
+#   scripts/worktree.sh remove <имя>    # убрать папку и её ветку, только когда всё уже в master
 #
-# <name> in merge and remove is a folder or a branch. Claude Code names its branches worktree-<name>.
+# <имя> в merge и remove — папка или ветка. Claude Code называет свои ветки worktree-<имя>.
 #
-# Folders live inside the main one, in dot directories that .gitignore excludes:
-#   .claude/worktrees/<name>  - Claude Code's own place (EnterWorktree, claude --worktree);
-#   .agents/worktrees/<name>  - other AIs; this script creates them.
-# Paths are relative to the main folder, so the rule is the same on every machine and OS. Anywhere
-# else inside the project a worktree shows up as untracked files of the main folder and in the
-# Docker checks context.
+# Папки лежат внутри основной, в каталогах с точкой, которые исключает .gitignore:
+#   .claude/worktrees/<имя>   - место Claude Code (EnterWorktree, claude --worktree);
+#   .agents/worktrees/<имя>   - другие ИИ; эти папки создаёт этот скрипт.
+# Пути отсчитываются от основной папки, поэтому правило одно на любой машине и ОС. В любом другом
+# месте проекта рабочая папка видна как неотслеживаемые файлы основной папки и попадает в контекст
+# проверок Docker.
 #
-# "The newest master" is local master or origin/master, whichever already contains the other:
-# Codex Cloud and Codex CLI on the VPS push to GitHub, while merges here stay local until a push.
-# If the two have diverged, the script stops and the user decides.
+# «Свежий master» — локальный master или origin/master, смотря какой из них уже содержит другой:
+# облачные копии и VPS отправляют работу в GitHub, а вливания здесь остаются локальными до push.
+# Если они разошлись, скрипт останавливается, и решает пользователь.
 #
-# No command removes uncommitted work or commits that are not in master: the script names such
-# cases and stops. Pushing is not part of it: every push to master deploys to the servers, so it
-# happens only on the user's request. On Windows run it from Git Bash.
+# Ни одна команда не удаляет незакоммиченную работу или коммиты, которых нет в master: скрипт
+# называет такие случаи и останавливается. push сюда не входит: каждый push в master выкладывается
+# на серверы, поэтому он делается только по просьбе пользователя. На Windows запускать из Git Bash.
 set -euo pipefail
 
 BASE=master
 REMOTE=origin
 MAX_NAME=20
-LONGEST_INSIDE=120   # longest path inside a checkout (sources, local builds), with room to spare
+LONGEST_INSIDE=120   # самый длинный путь внутри копии (исходники, локальные сборки), с запасом
 
 die()  { echo "Error: $*" >&2; exit 1; }
 note() { echo "  $*"; }
 
 git rev-parse --git-dir > /dev/null 2>&1 || die "run inside the repository"
 
-# Paths as git writes them ("C:/..." on Windows), not as bash does ("/c/..."), so they compare.
+# Пути в том виде, как их пишет git («C:/...» на Windows), а не bash («/c/...»), — чтобы их можно было сравнивать.
 MAIN=$(git worktree list --porcelain | sed -n '1s/^worktree //p')
 CLAUDE_ROOT="$MAIN/.claude/worktrees"
 AGENTS_ROOT="$MAIN/.agents/worktrees"
 HERE=$(git rev-parse --show-toplevel)
 
-# Folder list: path, branch, flags (locked, prunable) separated by US (\037). A tab does not work:
-# read treats it as whitespace, and the empty branch of a detached folder would collapse.
+# Список папок: путь, ветка, флаги (locked, prunable) через разделитель US (\037). Табуляция не
+# годится: read считает её пробелом, и пустая ветка у папки без ветки бы схлопнулась.
 SEP=$'\037'
 worktrees() {
   git worktree list --porcelain | awk '
@@ -57,12 +57,12 @@ worktrees() {
     END          { if (p != "") print p "\037" br "\037" fl }'
 }
 
-# Path of the folder where a branch is checked out (empty: nowhere).
+# Путь папки, где выписана ветка (пусто — нигде).
 path_of_branch() {
   worktrees | awk -F '\037' -v b="$1" '$2 == b { print $1 }'
 }
 
-# Folder by branch name or by folder name: "path SEP branch SEP flags".
+# Папка по имени ветки или по имени папки: «путь SEP ветка SEP флаги».
 resolve() {
   local hit
   hit=$(worktrees | awk -F '\037' -v n="$1" '$2 == n')
@@ -75,7 +75,7 @@ resolve() {
   printf '%s' "$hit"
 }
 
-# Whose place: claude, agents, inside-plain, inside-dot, outside.
+# Чьё это место: claude, agents, inside-plain, inside-dot, outside.
 place_of() {
   case "$1/" in
     "$CLAUDE_ROOT/"*) echo claude ;;
@@ -86,7 +86,7 @@ place_of() {
   esac
 }
 
-# Number of changes in a folder: tracked counts edits of tracked files, all counts new files too.
+# Число изменений в папке: tracked — правки отслеживаемых файлов, all — ещё и новые файлы.
 changes() {
   if [[ "$2" == tracked ]]; then
     git -C "$1" status --porcelain --untracked-files=no | wc -l | tr -d ' '
@@ -95,20 +95,20 @@ changes() {
   fi
 }
 
-ahead()  { git rev-list --count "$BASE..$1"; }   # branch commits that master lacks
-behind() { git rev-list --count "$1..$BASE"; }   # master commits that the branch lacks
+ahead()  { git rev-list --count "$BASE..$1"; }   # коммиты ветки, которых нет в master
+behind() { git rev-list --count "$1..$BASE"; }   # коммиты master, которых нет в ветке
 
-# First lines of output, indented; sed reads the stream to the end, so git gets no SIGPIPE.
+# Первые строки вывода с отступом; sed дочитывает поток до конца, поэтому git не получает SIGPIPE.
 first() { sed -n "1,${1}s/^/      /p"; }
 
-# Refresh origin/master quietly; without network the last fetched state is used.
+# Тихо обновить origin/master; без сети используется последнее полученное состояние.
 fetch_origin() {
   if ! git fetch --quiet "$REMOTE" "$BASE" 2> /dev/null; then
     note "could not reach $REMOTE; using the last fetched $REMOTE/$BASE"
   fi
 }
 
-# Local master or origin/master, whichever already contains the other.
+# Локальный master или origin/master — смотря какой из них уже содержит другой.
 newest_base() {
   local remote="$REMOTE/$BASE"
   if ! git rev-parse -q --verify "$remote" > /dev/null; then
@@ -129,7 +129,7 @@ cmd_check() {
   echo "             other AIs   - $AGENTS_ROOT/<name>"
   echo
 
-  # The main folder stays on master and clean: agents do not work in it.
+  # Основная папка стоит на master и чиста: агенты в ней не работают.
   branch=$(git -C "$MAIN" branch --show-current)
   dirty=$(changes "$MAIN" all)
   echo "[main] branch ${branch:-(detached)}"
@@ -154,7 +154,7 @@ cmd_check() {
     fi
   fi
 
-  # Worktrees, wherever they are.
+  # Рабочие папки, где бы они ни были.
   while IFS="$SEP" read -r path branch flags; do
     [[ "$path" != "$MAIN" ]] || continue
     echo
@@ -204,7 +204,7 @@ cmd_check() {
     fi
   done < <(worktrees)
 
-  # Branches without a folder: their work is easy to forget.
+  # Ветки без папки: о их работе легко забыть.
   while read -r branch; do
     if [[ "$branch" == "$BASE" || -n "$(path_of_branch "$branch")" ]]; then continue; fi
     a=$(ahead "$branch")
@@ -275,7 +275,7 @@ cmd_merge() {
     if [[ -n "$hit" ]]; then
       IFS="$SEP" read -r path branch _ <<< "$hit"
     elif git show-ref -q --verify "refs/heads/$name"; then
-      path=""; branch="$name"   # a branch without a folder
+      path=""; branch="$name"   # ветка без папки
     else
       die "no folder or branch named $name"
     fi
@@ -331,7 +331,7 @@ cmd_remove() {
 
   git worktree remove "$path"
   if [[ -n "$branch" ]]; then
-    git branch -q -D "$branch"   # all its commits are in master, checked above
+    git branch -q -D "$branch"   # все её коммиты в master — проверено выше
   fi
   echo "Removed folder $path${branch:+ and branch $branch}."
 }

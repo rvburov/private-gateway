@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Exercise the first-deploy SSH stream and archive identity before touching a VPS.
+# Прогнать поток SSH первой выкладки и подлинность архива, прежде чем трогать VPS.
 set -euo pipefail
 
 archive=${1:?Pass the release.tar.gz path}
@@ -22,8 +22,8 @@ receive() {
     --entrypoint /bin/bash "$image" /receiver.sh
 }
 
-# The complete verified release must reach installer preflight. The test image
-# is Debian, so the Ubuntu-only installer stops before making any changes.
+# Полный проверенный релиз должен дойти до предварительных проверок установщика. Тестовый
+# образ — Debian, поэтому установщик только для Ubuntu останавливается, ничего не изменив.
 if output=$(receive "$version" 2>&1); then
   printf 'First-deploy preflight unexpectedly succeeded.\n' >&2
   exit 1

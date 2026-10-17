@@ -1,9 +1,10 @@
 name: private-gateway
 
-# Public images are pinned by digest: a deployment recreates postgres, caddy or edge only when
-# a commit changes the digest, not whenever Docker Hub publishes an update. Recreating edge
-# drops every VPN connection. The images built here carry content tags from image-tags.py, so a
-# deployment recreates api, xray or browser only when its Dockerfile or files change.
+# Публичные образы закреплены по digest: выкладка пересоздаёт postgres, caddy или edge, только
+# когда коммит меняет digest, а не всякий раз, когда Docker Hub выпускает обновление. Пересоздание
+# edge рвёт все VPN-подключения. Образы, собираемые здесь, получают теги по содержимому от
+# image-tags.py, поэтому выкладка пересоздаёт api, xray или browser, только когда изменились его
+# Dockerfile или файлы.
 services:
   postgres:
     image: postgres:18@sha256:74935e72241653ca55e0414067e6d8763aceb8a810eb51b452253ec3dcfc4336
@@ -41,8 +42,8 @@ services:
       GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:-www.cloudflare.com:443}
       GATEWAY_XRAY_CONFIG: /state/xray.json
       GATEWAY_XRAY_BINARY: /usr/local/bin/xray
-      # Through the interpreter, like the worker scripts: the GitHub runner refuses to exec the
-      # script through its #! line ("permission denied") while it runs ELF binaries.
+      # Через интерпретатор, как скрипты worker: runner GitHub отказывается запускать скрипт по
+      # строке #! («permission denied»), хотя ELF-программы запускает.
       GATEWAY_XRAY_RESTART: '["/usr/local/bin/python3", "/usr/local/bin/wait-xray.py"]'
       GATEWAY_XRAY_STATS_PORT: "10085"
       GATEWAY_LISTEN: 0.0.0.0:8080
@@ -52,8 +53,8 @@ services:
       GATEWAY_BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN}
       GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}/browser/vnc.html?autoconnect=true&resize=remote
       GATEWAY_XRAY_STATS_ADDRESS: xray:10085
-      # The panel's server checks: a real VLESS connection to Xray and the panel certificate
-      # from Caddy, both over the private Docker networks.
+      # Серверные проверки панели: настоящее VLESS-подключение к Xray и сертификат панели от Caddy —
+      # оба по закрытым сетям Docker.
       GATEWAY_XRAY_SERVER_ADDRESS: xray:443
       GATEWAY_PANEL_TLS_ADDRESS: caddy:443
       GATEWAY_PANEL_DOMAIN: ${PANEL_DOMAIN}

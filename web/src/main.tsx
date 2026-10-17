@@ -9,7 +9,7 @@ import App from "./App";
 import { applyTheme, readTheme } from "./theme";
 import "./style.css";
 
-// The chosen theme applies before the first paint, so the page does not flash the other one.
+// Выбранная тема применяется до первой отрисовки, чтобы страница не мелькала другой темой.
 applyTheme(readTheme());
 
 const queryClient = new QueryClient({

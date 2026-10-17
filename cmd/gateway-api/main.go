@@ -138,7 +138,7 @@ func administratorName() error {
 	return nil
 }
 
-// admin-set receives a precomputed password hash on stdin, never in argv or logs.
+// admin-set получает готовый хеш пароля через stdin — никогда в аргументах процесса или журналах.
 func setAdministrator() error {
 	input, err := io.ReadAll(io.LimitReader(os.Stdin, 4097))
 	if err != nil || len(input) > 4096 {

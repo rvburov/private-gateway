@@ -1,6 +1,7 @@
-# Toolchain for `bash scripts/dev.sh test`: the same Go, Node.js, Python, Xray and sqlc on a Windows PC,
-# a Linux host and in CI. scripts/dev.sh builds it from the content of the next commit, so ignored
-# local files such as .env never reach the image and Windows checkouts cannot leak CRLF into scripts.
+# Инструменты для `bash scripts/dev.sh test`: одни и те же Go, Node.js, Python, Xray и sqlc на ПК с
+# Windows, хосте с Linux и в CI. scripts/dev.sh собирает образ из содержимого следующего коммита,
+# поэтому игнорируемые локальные файлы вроде .env в образ не попадают, а копии на Windows не могут
+# занести CRLF в скрипты.
 FROM docker.io/library/node:22.23.3-trixie-slim@sha256:154ba2f4d6fec323d28e4f4bb86bba4677f1223391a1979cf521304e03a98dfa AS node
 
 FROM docker.io/library/golang:1.26.9-trixie@sha256:f06b7122f888680048afb247c4e5f49c0069eb6c4c1ccae0f3f4834527a8d22c
@@ -9,13 +10,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends python3 \
   && rm -rf /var/lib/apt/lists/*
 
-# Node.js 22 as in CI, from the official image built on the same Debian release.
+# Node.js 22, как в CI, из официального образа на той же версии Debian.
 COPY --from=node /usr/local/bin/node /usr/local/bin/node
 COPY --from=node /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/npm
 RUN ln -s ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
   && ln -s ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx
 
-# Pinned Xray, sqlc and actionlint releases, verified by SHA-256 like scripts/setup-cloud.sh.
+# Закреплённые выпуски Xray, sqlc и actionlint, сверенные по SHA-256, как в scripts/setup-cloud.sh.
 COPY scripts/install-xray.sh /usr/local/share/private-gateway/install-xray.sh
 RUN bash /usr/local/share/private-gateway/install-xray.sh /opt/xray
 ARG TARGETARCH
@@ -35,15 +36,15 @@ RUN case "$TARGETARCH" in \
   && tar -xzf /tmp/actionlint.tar.gz -C /usr/local/bin actionlint \
   && rm /tmp/sqlc.tar.gz /tmp/actionlint.tar.gz
 
-# CI runs the checks as an unprivileged user, and so does this image.
+# CI запускает проверки от непривилегированного пользователя, и этот образ тоже.
 RUN useradd --create-home --uid 10001 checks
 USER checks
 WORKDIR /home/checks/src
-# The Go build cache is a shared Docker volume (deploy/checks/compose.yml); this directory gives
-# a fresh volume the right owner.
+# Кеш сборки Go — общий том Docker (deploy/checks/compose.yml); этот каталог даёт новому тому
+# правильного владельца.
 RUN mkdir -p /home/checks/.cache/go-build
 
-# Dependency layers stay cached until go.sum or package-lock.json changes.
+# Слои зависимостей остаются в кеше, пока не изменятся go.sum или package-lock.json.
 COPY --chown=checks:checks go.mod go.sum ./
 RUN go mod download
 COPY --chown=checks:checks web/package.json web/package-lock.json web/

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the real HTTP -> WebSocket -> VNC path without external dependencies."""
+"""Проверить настоящий путь HTTP -> WebSocket -> VNC без внешних зависимостей."""
 import argparse
 import base64
 import hashlib
@@ -10,7 +10,7 @@ import urllib.request
 
 
 def check(port):
-    # A readiness check must not silently use an environment HTTP proxy.
+    # Проверка готовности не должна молча ходить через HTTP-прокси из окружения.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     with opener.open(f"http://127.0.0.1:{port}/vnc.html", timeout=5) as response:
         assert response.status == 200 and b"noVNC" in response.read(), "noVNC HTTP page missing"

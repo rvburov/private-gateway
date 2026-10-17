@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Every pre-commit check, run inside the image from deploy/checks/Dockerfile with PostgreSQL 18
-# next to it. Start it with `bash scripts/dev.sh test`; it is not meant to run on the host.
+# Все проверки перед коммитом; идут внутри образа из deploy/checks/Dockerfile, рядом с PostgreSQL 18.
+# Запускать через `bash scripts/dev.sh test`; на самом хосте скрипт запускать не нужно.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 : "${TEST_DATABASE_URL:?TEST_DATABASE_URL is required}"
@@ -15,8 +15,8 @@ step 'Go: vet'
 go vet ./...
 
 step 'Go: tests with the race detector, PostgreSQL 18 and real Xray'
-# -count=1: the build cache volume survives between runs, but cached test results would let the
-# PostgreSQL and Xray integration tests pass without running.
+# -count=1: том с кешем сборки переживает прогоны, но кешированные результаты тестов позволили бы
+# интеграционным тестам с PostgreSQL и Xray «пройти», не запускаясь.
 go test -race -count=1 -json ./... | python3 scripts/go-test-report.py
 
 step 'Go: build commands'

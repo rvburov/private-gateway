@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Servers that CI/CD deploys to: one public record per server in deploy/servers/NAME.conf.
+"""Серверы, на которые выкладывает CI/CD: по открытой записи на сервер в deploy/servers/NAME.conf.
 
-  servers.py list         every server name as `names=[...]` for $GITHUB_OUTPUT
-  servers.py show NAME    host, port, user, domain and the known_hosts line for $GITHUB_OUTPUT
+  servers.py list         имена всех серверов как `names=[...]` для $GITHUB_OUTPUT
+  servers.py show NAME    хост, порт, пользователь, домен и строка known_hosts для $GITHUB_OUTPUT
   servers.py check NAME --host IPV4 --port PORT --domain DOMAIN
-                          validate a new server before scripts/add-server.sh touches it
+                          проверить новый сервер, прежде чем scripts/add-server.sh его тронет
   servers.py add NAME --host IPV4 --port PORT --domain DOMAIN --host-key 'ssh-ed25519 KEY'
-                          write the record of a prepared server
+                          записать подготовленный сервер
 
-A record holds only public values: the SSH address, the restricted deploy account, the panel
-domain and the server's SSH host key. The private deploy key is the DEPLOY_SSH_KEY secret of the
-repository; deploy/servers/deploy-key.pub is its public half, which every server authorizes.
+Запись содержит только открытые значения: адрес SSH, ограниченную учётную запись выкладки, домен
+панели и ключ хоста SSH сервера. Закрытый ключ выкладки — секрет DEPLOY_SSH_KEY репозитория;
+deploy/servers/deploy-key.pub — его открытая половина, которую разрешает каждый сервер.
 """
 
 import argparse
@@ -26,7 +26,7 @@ DEPLOY_USER = "gateway-deploy"
 NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,19}")
 USER = re.compile(r"[a-z_][a-z0-9_-]{0,31}")
 LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
-# An ED25519 public key is 51 bytes, which base64 writes as exactly 68 characters.
+# Открытый ключ ED25519 — 51 байт, в base64 это ровно 68 символов.
 HOST_KEY = re.compile(r"ssh-ed25519 [A-Za-z0-9+/]{68}")
 PLACEHOLDER_KEY = "ssh-ed25519 " + "A" * 68
 
@@ -84,7 +84,7 @@ def load(directory, name):
 
 
 def names(directory):
-    """Every server name; one broken record fails the whole list instead of being skipped."""
+    """Имена всех серверов; одна испорченная запись проваливает весь список, а не пропускается."""
     found = sorted(path.stem for path in directory.glob("*.conf"))
     for name in found:
         load(directory, name)

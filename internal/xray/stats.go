@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Traffic contains byte counters since the running Xray process started.
+// Traffic содержит счётчики байтов с запуска работающего процесса Xray.
 type Traffic struct {
 	UplinkBytes   int64 `json:"uplink_bytes"`
 	DownlinkBytes int64 `json:"downlink_bytes"`

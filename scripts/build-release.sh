@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a native Linux release and the trusted first-install files for CI.
+# Собрать для CI релиз под Linux и доверенные файлы первой установки.
 set -euo pipefail
 
 repository=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
@@ -15,7 +15,7 @@ if [[ "${GOARCH:-$architecture}" != "$architecture" || "${GOOS:-linux}" != linux
   printf 'Cross-compilation is not supported: Xray must match the native architecture.\n' >&2
   exit 1
 fi
-# scripts/dev.sh release passes the commit SHA: the checks image it builds in has no .git.
+# scripts/dev.sh release передаёт SHA коммита: в образе проверок, где идёт сборка, нет .git.
 version=${GATEWAY_RELEASE_VERSION:-$(git rev-parse HEAD)}
 [[ "$version" =~ ^[0-9a-f]{40}$ ]] || { printf 'A full Git SHA is required.\n' >&2; exit 1; }
 temporary=$(mktemp -d)
@@ -103,7 +103,7 @@ with archive_path.open("wb") as raw, gzip.GzipFile(filename="", fileobj=raw, mod
             archive.addfile(member, io.BytesIO(content))
 checksum = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
-# Bootstrap files contain no generated keys or local environment files.
+# Файлы первой установки не содержат созданных ключей и локальных файлов окружения.
 install = temporary / "install"
 for source in (Path("deploy/docker/install.sh"), Path("scripts/verify-release.py")):
     if not stat.S_ISREG(source.lstat().st_mode):

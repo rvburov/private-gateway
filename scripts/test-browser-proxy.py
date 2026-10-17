@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the production Caddy noVNC authorization route with mock services."""
+"""Прогнать маршрут авторизации noVNC в production-Caddy с подставными службами."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -14,7 +14,7 @@ from urllib.request import Request, build_opener, ProxyHandler
 
 
 ROOT = Path(__file__).resolve().parents[1]
-# The same pinned image as the production stack.
+# Тот же закреплённый образ, что в production-стеке.
 CADDY = re.search(r"^ +image: (caddy:\S+)$", (ROOT / "deploy/docker/compose.yml").read_text(), re.M).group(1)
 opener = build_opener(ProxyHandler({}))
 seen = []
@@ -101,7 +101,7 @@ def main():
                 assert (status, body) == (200, b"noVNC test"), f"authorized noVNC returned {status}"
                 assert seen == [("/vnc.html", None, None)], f"browser received sensitive headers: {seen}"
                 print("Caddy noVNC authorization: anonymous 403, verified 200, credentials stripped")
-                # With the API down, Caddy logs the failed request, but not the link's secret path.
+                # Когда API лежит, Caddy пишет неудачный запрос в журнал, но без секретного пути ссылки.
                 auth.shutdown()
                 auth.server_close()
                 secret = "subscription-secret-" + "A" * 23

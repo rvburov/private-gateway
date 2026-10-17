@@ -20,9 +20,9 @@ import (
 	"github.com/rvburov/private-gateway/internal/model"
 )
 
-// TestTrafficProbeThroughRealXray runs the panel's server check against a real Xray gateway: a
-// known device reaches an HTTPS site through it, an unknown one does not, and the temporary
-// client configuration with the credential is removed every time.
+// TestTrafficProbeThroughRealXray прогоняет серверную проверку панели через настоящий Xray:
+// известное устройство открывает HTTPS-сайт через шлюз, неизвестное — нет, а временная
+// конфигурация клиента с секретом каждый раз удаляется.
 func TestTrafficProbeThroughRealXray(t *testing.T) {
 	binary := os.Getenv("PRIVATE_GATEWAY_REAL_XRAY_BINARY")
 	if binary == "" {

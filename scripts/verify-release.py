@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Read and validate an Actions release artifact without extracting arbitrary paths."""
+"""Прочитать и проверить артефакт релиза из Actions, не распаковывая произвольные пути."""
 
 import argparse
 import hashlib
@@ -108,7 +108,7 @@ def unpack_artifact(artifact, output, version, architecture="amd64"):
             raise ValueError("Archive checksum mismatch")
         output.mkdir(parents=True, exist_ok=True)
         target = output / "release.tar.gz"
-        # A private fresh Actions directory is expected; never overwrite a symlink.
+        # Ожидается новый закрытый каталог Actions; символическую ссылку никогда не перезаписывать.
         with target.open("xb") as destination:
             destination.write(content)
     verify_tar(target, version, architecture)

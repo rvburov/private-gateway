@@ -1,6 +1,6 @@
 {
-    # A subscription link carries its secret in the path, and a failed request is logged with
-    # its URI: the log keeps everything else. There is no access log at all.
+    # Секрет ссылки-подписки — в её пути, а неудачный запрос пишется в журнал вместе с URI:
+    # журнал хранит всё остальное. Журнала запросов нет вовсе.
     log default {
         format filter {
             wrap json

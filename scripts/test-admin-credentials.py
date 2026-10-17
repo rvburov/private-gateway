@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test terminal password setup and rollback without changing a VPS."""
+"""Проверить установку пароля в терминале и откат, не меняя VPS."""
 
 import importlib.util
 import json

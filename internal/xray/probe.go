@@ -20,25 +20,25 @@ import (
 	"github.com/rvburov/private-gateway/internal/model"
 )
 
-// TrafficProbe sends one HTTPS request through the gateway's Xray with a device's profile, the
-// way a client app would, and returns the response body. Xray runs as a temporary local client.
-// Its configuration holds the device credential, so it lives in a private temporary file that is
-// removed afterwards, and its output is discarded rather than logged.
+// TrafficProbe отправляет один HTTPS-запрос через Xray шлюза с профилем устройства — так, как это
+// делает приложение, — и возвращает тело ответа. Xray работает временным локальным клиентом.
+// Его конфигурация содержит секрет устройства, поэтому лежит в закрытом временном файле, который
+// потом удаляется, а вывод Xray отбрасывается, а не журналируется.
 type TrafficProbe struct {
 	Binary     string
-	Server     string // host:port of the Xray inbound as seen from here
+	Server     string // host:port входа Xray, каким его видно отсюда
 	Node       model.Node
 	Credential string
 	URL        string
-	RootCAs    *x509.CertPool // nil means the system roots
+	RootCAs    *x509.CertPool // nil — системные корневые сертификаты
 }
 
 const probeTimeout = 15 * time.Second
 
-// ErrProbeStart means the local Xray client of a probe did not start, so the gateway was not tried.
+// ErrProbeStart — локальный клиент Xray не запустился, поэтому до шлюза дело не дошло.
 var ErrProbeStart = errors.New("the Xray client did not start")
 
-// ProbeStatusError means traffic went through the gateway, but the site answered with an error.
+// ProbeStatusError — трафик прошёл через шлюз, но сайт ответил ошибкой.
 type ProbeStatusError struct{ Code int }
 
 func (e ProbeStatusError) Error() string {
@@ -171,7 +171,7 @@ func waitForListener(ctx context.Context, address string, exited <-chan struct{}
 	return ErrProbeStart
 }
 
-// unwrapURLError drops the method and URL, which the caller knows, from a client error.
+// unwrapURLError убирает из ошибки клиента метод и URL: вызывающий их и так знает.
 func unwrapURLError(err error) error {
 	var urlError *url.Error
 	if errors.As(err, &urlError) {

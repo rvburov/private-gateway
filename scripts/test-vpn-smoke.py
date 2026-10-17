@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise the release VPN smoke client against a real local Xray server."""
+"""Прогнать клиент проверки VPN из релиза против настоящего локального сервера Xray."""
 
 import importlib.util
 import json

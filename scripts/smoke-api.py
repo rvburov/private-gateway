@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Functional check of a local development API. Never prints credentials."""
+"""Функциональная проверка локального API для разработки. Секреты никогда не печатает."""
 import json
 import os
 import secrets

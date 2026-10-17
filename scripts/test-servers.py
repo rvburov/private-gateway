@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check the deploy/servers records that CI/CD reads and scripts/add-server.sh writes."""
+"""Проверить записи deploy/servers, которые читает CI/CD и пишет scripts/add-server.sh."""
 
 import contextlib
 import importlib.util

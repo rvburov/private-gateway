@@ -6,7 +6,7 @@ import { ErrorNotice, Modal, ProfileQRCode } from "./ui";
 type ProfileFormat = "subscription" | "uri" | "sing_box_json" | "mihomo_yaml";
 export type RevealedProfile = ProfileExport & { device: Device };
 
-// The profile and its links stay in component state only, never in a query cache.
+// Профиль и его ссылки живут только в состоянии компонента и никогда — в кеше запросов.
 export function ProfileDialog({
   token,
   profile,

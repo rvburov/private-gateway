@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-time VPS preparation from the small Actions bootstrap artifact.
+# Разовая подготовка VPS из небольшого артефакта первой установки Actions.
 set -Eeuo pipefail
 umask 077
 

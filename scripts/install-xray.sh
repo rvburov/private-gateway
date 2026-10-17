@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install the pinned official Xray release without changing system packages.
-# SHA-256 digests below come from the release's published .zip.dgst files.
+# Установить закреплённый официальный выпуск Xray, не меняя системные пакеты.
+# Хеши SHA-256 ниже взяты из опубликованных файлов .zip.dgst этого выпуска.
 set -euo pipefail
 
 version=26.3.27
@@ -36,7 +36,7 @@ curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
   "https://github.com/XTLS/Xray-core/releases/download/v${version}/${archive}" \
   --output "${temporary}/${archive}"
 printf '%s  %s\n' "$digest" "${temporary}/${archive}" | sha256sum --check --status
-# Extract the executable only; the generated configuration does not use geodata.
+# Распаковать только исполняемый файл: созданная конфигурация не использует geodata.
 python3 - "${temporary}/${archive}" "$temporary" <<'PY'
 import sys
 import zipfile

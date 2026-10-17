@@ -1,5 +1,5 @@
-# Keep LF in the repository and in every checkout, including Windows with core.autocrlf=true:
-# bash and Python scripts run in Linux containers and on the VPS, where CRLF breaks them.
+# LF в репозитории и в каждой копии, в том числе на Windows с core.autocrlf=true: скрипты bash и
+# Python работают в контейнерах Linux и на VPS, где CRLF их ломает.
 * text=auto eol=lf
 
 *.png binary

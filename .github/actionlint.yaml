@@ -1,5 +1,5 @@
-# actionlint 1.7.12, the latest release, predates the GitHub-hosted ubuntu-26.04 runner label.
-# Remove this list once an actionlint release knows the label.
+# actionlint 1.7.12, последний выпуск, старше метки runner ubuntu-26.04 у GitHub.
+# Убрать этот список, когда выпуск actionlint будет знать эту метку.
 self-hosted-runner:
   labels:
     - ubuntu-26.04

@@ -1,6 +1,6 @@
-# Throwaway stack for `bash scripts/dev.sh test`: PostgreSQL 18 in tmpfs and the checks container.
-# Nothing is published on the host. scripts/dev.sh names the project after the checkout folder,
-# so parallel worktrees get separate databases, and removes the project after the run.
+# Одноразовый стек для `bash scripts/dev.sh test`: PostgreSQL 18 в tmpfs и контейнер проверок.
+# На хосте ничего не публикуется. scripts/dev.sh называет проект по папке копии, поэтому у
+# параллельных рабочих папок отдельные базы, и удаляет проект после прогона.
 services:
   postgres:
     image: postgres:18
@@ -11,7 +11,7 @@ services:
     tmpfs:
       - /var/lib/postgresql
     healthcheck:
-      # TCP rather than the socket: during initialization the image runs a socket-only server.
+      # TCP, а не сокет: во время инициализации образ запускает сервер, доступный только через сокет.
       test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U gateway_test -d gateway_test"]
       interval: 2s
       timeout: 5s
@@ -28,7 +28,7 @@ services:
       - go-build-cache:/home/checks/.cache/go-build
 
 volumes:
-  # Shared by all checkouts and kept between runs; Go's build cache is safe for concurrent use.
+  # Общий для всех копий и сохраняется между прогонами; кеш сборки Go безопасен при одновременной работе.
   go-build-cache:
     external: true
     name: private-gateway-checks-go-build

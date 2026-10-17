@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Restart Xray when the API atomically replaces its shared config file."""
+"""Перезапускать Xray, когда API атомарно заменяет общий файл конфигурации."""
 
 import hashlib
 import json
@@ -87,7 +87,7 @@ while running:
             elif not start_child(state):
                 write_status(state, False, "Xray failed to listen on TCP 443")
                 stop_child()
-                # An invalid config must not cause a tight restart loop.
+                # Неверная конфигурация не должна вызывать частый цикл перезапусков.
                 time.sleep(2)
         time.sleep(0.25)
     except (OSError, ValueError) as error:

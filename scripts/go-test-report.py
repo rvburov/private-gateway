@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Summarize `go test -json` for scripts/checks.sh.
+"""Свести вывод `go test -json` для scripts/checks.sh.
 
-Prints one line per package, the totals, every skipped test with its reason and the output of
-failed tests. Inside the checks container TEST_DATABASE_URL and PRIVATE_GATEWAY_REAL_XRAY_BINARY
-are always set, so a test skipped for lack of either means an integration path silently did not
-run: the report fails instead of passing quietly.
+Печатает строку на пакет, итоги, каждый пропущенный тест с причиной и вывод упавших тестов.
+В контейнере проверок TEST_DATABASE_URL и PRIVATE_GATEWAY_REAL_XRAY_BINARY заданы всегда, поэтому
+тест, пропущенный из-за отсутствия одной из них, значит, что интеграционный путь молча не прошёл:
+отчёт проваливается, а не проходит тихо.
 """
 
 import json
@@ -19,7 +19,7 @@ def short(package):
 
 
 def messages(lines):
-    """The t.Skip and t.Error text without go test's own === and --- framing."""
+    """Текст t.Skip и t.Error без собственных рамок go test: === и ---."""
     return [line.strip() for line in lines
             if line.strip() and not line.lstrip().startswith(("=== ", "--- "))]
 
@@ -57,7 +57,7 @@ def main():
 
     failed_packages = []
     for package in order:
-        # A package without a final result was interrupted, which go test reports as a failure.
+        # Пакет без итогового результата был прерван, и go test считает это сбоем.
         action, elapsed = package_result.get(package, ("fail", None))
         timing = f" ({elapsed:.1f}s)" if isinstance(elapsed, (int, float)) and action != "skip" else ""
         label = {"pass": "ok     ", "fail": "FAIL   ", "skip": "no test"}[action]
@@ -85,7 +85,7 @@ def main():
     failed_tests_by_package = {package for package, _ in failed}
     for package in failed_packages:
         if package not in failed_tests_by_package:
-            # Panics, timeouts and build failures are package output, not test output.
+            # Паники, тайм-ауты и ошибки сборки — вывод пакета, а не теста.
             print(f"\n--- FAIL {short(package)}")
             print("".join(package_output[package]), end="")
     if build_output:

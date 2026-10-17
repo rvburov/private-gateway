@@ -15,15 +15,15 @@ import (
 )
 
 var (
-	// A token is 32 bytes of unpadded base64url; nothing else is looked up.
+	// Токен — 32 байта в base64url без выравнивания; ничего другого не ищется.
 	subscriptionToken = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 	requestHost       = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
 	subscriptionPage  = template.Must(template.New("subscription").Parse(subscriptionHTML))
 )
 
-// subscription serves a device profile to whoever holds its link, without a session: the link
-// itself is the secret. Neither the token nor the path is logged, and a revoked device or a
-// replaced link answers exactly like a link that never existed.
+// subscription выдаёт профиль устройства любому, у кого есть его ссылка, без сеанса: секрет —
+// сама ссылка. Ни токен, ни путь не журналируются, а отозванное устройство и заменённая ссылка
+// отвечают в точности как ссылка, которой никогда не было.
 func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	token := chi.URLParam(r, "token")
@@ -63,14 +63,14 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Disposition", attachment(name, "yaml"))
 		_, _ = w.Write([]byte(profile.MihomoYAML))
 	default:
-		// The list of share links that v2rayN, v2rayNG, Hiddify, Streisand and Shadowrocket read.
+		// Список ссылок, который читают v2rayN, v2rayNG, Hiddify, Streisand и Shadowrocket.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(base64.StdEncoding.EncodeToString([]byte(profile.URI + "\n"))))
 	}
 }
 
-// subscriptionFormat follows an explicit ?format= first, then the client's User-Agent, then a
-// browser's Accept header. Everything else gets the base64 list of share links.
+// subscriptionFormat смотрит сначала на явный ?format=, затем на User-Agent клиента, затем на
+// заголовок Accept браузера. Все остальные получают список ссылок в base64.
 func subscriptionFormat(r *http.Request) (string, bool) {
 	switch format := strings.ToLower(r.URL.Query().Get("format")); format {
 	case "":
@@ -86,7 +86,7 @@ func subscriptionFormat(r *http.Request) (string, bool) {
 	agent := strings.ToLower(r.UserAgent())
 	switch {
 	case strings.Contains(agent, "hiddify"):
-		// Hiddify names Clash and sing-box in its User-Agent but reads share links best.
+		// Hiddify называет в User-Agent Clash и sing-box, но лучше всего читает ссылки.
 		return "base64", true
 	case strings.Contains(agent, "clash"), strings.Contains(agent, "mihomo"), strings.Contains(agent, "stash"):
 		return "mihomo", true
@@ -103,7 +103,7 @@ func attachment(name, extension string) string {
 		url.PathEscape(name+"."+extension)
 }
 
-// subscriptionPage helps a person who opened the link in a phone browser to import it.
+// subscriptionPage помогает импортировать ссылку тому, кто открыл её в браузере телефона.
 func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token, name string) {
 	if !requestHost.MatchString(r.Host) {
 		fail(w, 400, "invalid host")

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Check one active production profile through the running Docker Xray gateway.
+"""Проверить один активный профиль production через работающий шлюз Xray в Docker.
 
-The profile is fetched inside the API container and never printed. The client
-connects through the host's loopback publication of the Xray container.
+Профиль берётся внутри контейнера API и никогда не печатается. Клиент подключается
+через публикацию контейнера Xray на loopback хоста.
 """
 
 import argparse
@@ -241,7 +241,7 @@ def start_isolated_server(directory, port, target=None):
 
 
 def isolated_result(log):
-    # Xray logs can contain client IDs and IPs. Report only a fixed category.
+    # В журналах Xray могут быть идентификаторы клиентов и IP. Сообщать только заданную категорию.
     try:
         content = log.read_text(errors="replace")
     except OSError:
@@ -260,7 +260,7 @@ def isolated_result(log):
             continue
         cause = line.partition(marker)[2].partition(": ")[2].strip()
         if cause == "failed to read client hello":
-            continue  # Readiness probe connects without sending any TLS bytes.
+            continue  # проверка готовности подключается, не отправляя ни байта TLS
         if (re.fullmatch(r"[A-Za-z][A-Za-z .,_'()-]{0,119}", cause)
                 and all(len(word) <= 20 for word in re.findall(r"[A-Za-z]+", cause))):
             return "REALITY rejected: " + cause
@@ -271,7 +271,7 @@ def isolated_result(log):
 
 
 def check_reality_public_key(profile):
-    # OpenSSL receives the private key on stdin, never in argv or terminal output.
+    # OpenSSL получает закрытый ключ через stdin — никогда в аргументах или выводе терминала.
     try:
         config = json.loads(SERVER_CONFIG.read_text())
         private_key = config["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"]

@@ -47,7 +47,8 @@ func TestServerChecksPostgreSQL(t *testing.T) {
 	roots := x509.NewCertPool()
 	reality := startCheckedTLS(t, roots, "reality.example", tls.VersionTLS13, time.Now().Add(90*24*time.Hour))
 	panel := startCheckedTLS(t, roots, "panel.example", tls.VersionTLS12, time.Now().Add(10*24*time.Hour))
-	// A client that exits at once: the traffic check must report it, not hang or pass.
+	// Клиент, который сразу завершается: проверка трафика должна сообщить об этом, а не зависнуть
+	// или пройти.
 	failingXray := filepath.Join(t.TempDir(), "xray")
 	if err = os.WriteFile(failingXray, []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
 		t.Fatal(err)
@@ -62,7 +63,7 @@ func TestServerChecksPostgreSQL(t *testing.T) {
 	run := func(auth string) (int, map[string]checkResult, []byte) {
 		t.Helper()
 		request := httptest.NewRequest(http.MethodGet, "/api/v1/checks", nil)
-		request.RemoteAddr = "127.0.0.1:40000" // the CLI token is accepted from loopback only
+		request.RemoteAddr = "127.0.0.1:40000" // токен CLI принимается только с loopback
 		if auth != "" {
 			request.Header.Set("Authorization", "Bearer "+auth)
 		}
@@ -98,7 +99,7 @@ func TestServerChecksPostgreSQL(t *testing.T) {
 	if code, _, _ := run(""); code != 401 {
 		t.Fatalf("checks without a session answered %d", code)
 	}
-	// A new node has never been applied; apply it the way the panel does.
+	// Новый узел ещё ни разу не применялся; применяем его, как это делает панель.
 	if err = store.Configure(context.Background(), true, func(context.Context, []xray.Client) error { return nil }); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +120,7 @@ func TestServerChecksPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The device is not applied yet, and its credential stays out of the answer.
+	// Устройство ещё не применено, а его секрета в ответе нет.
 	_, results, data := run(token)
 	expect(results, map[string]string{
 		"database": "ok", "configuration": "warn", "xray": "ok", "reality": "ok", "certificate": "warn", "traffic": "fail",
@@ -128,7 +129,7 @@ func TestServerChecksPostgreSQL(t *testing.T) {
 		t.Fatal("the checks expose the device credential")
 	}
 
-	// A configuration Xray has not loaded yet and a TLS 1.2 masking site are reported.
+	// Конфигурация, которую Xray ещё не загрузил, и сайт маскировки с TLS 1.2 видны в ответе.
 	if err = os.WriteFile(configPath, []byte(`{"inbounds":[{}]}`), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -165,8 +166,8 @@ func TestServerAddressComparesTheProfileHost(t *testing.T) {
 	}
 }
 
-// startCheckedTLS serves a self-signed certificate for name, trusted through roots, with at most
-// the given TLS version.
+// startCheckedTLS отдаёт самоподписанный сертификат для name, которому доверяют через roots, с
+// версией TLS не выше заданной.
 func startCheckedTLS(t *testing.T, roots *x509.CertPool, name string, maxVersion uint16, notAfter time.Time) string {
 	t.Helper()
 	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Restricted SSH receiver used only until the first Docker installation succeeds.
+# Ограниченный приёмник SSH; нужен только до первой успешной установки Docker-стека.
 set -Eeuo pipefail
 umask 077
 
@@ -28,7 +28,7 @@ tar -xOf "$archive" docker/verify-release.py > "$temporary/install/verify-releas
 chmod 0600 "$temporary/install/install.sh" "$temporary/install/verify-release.py"
 (cd "$temporary" && sha256sum release.tar.gz > release.tar.gz.sha256)
 
-# Values in this root-owned file were validated by bootstrap.sh.
+# Значения в этом файле, принадлежащем root, проверил bootstrap.sh.
 # shellcheck disable=SC1090
 source "$config"
 args=(--host "$BOOTSTRAP_HOST" --domain "$BOOTSTRAP_DOMAIN"

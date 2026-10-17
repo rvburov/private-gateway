@@ -76,7 +76,7 @@ func TestSubscriptionLinkPostgreSQL(t *testing.T) {
 		t.Fatal("showing the profile again changed the link")
 	}
 
-	// The link works without the administrator session, in the format the client asks for.
+	// Ссылка работает без сеанса администратора, в формате, который просит клиент.
 	response, data = call("GET", link, "", nil)
 	decoded, err := base64.StdEncoding.DecodeString(string(data))
 	if response.StatusCode != 200 || err != nil || string(decoded) != profile.URI+"\n" {
@@ -130,7 +130,7 @@ func TestSubscriptionLinkPostgreSQL(t *testing.T) {
 		}
 	}
 
-	// A new link replaces the old one at once.
+	// Новая ссылка сразу заменяет прежнюю.
 	if response, _ = call("POST", "/api/v1/devices/"+device.ID+"/subscription", "", nil); response.StatusCode != 401 {
 		t.Fatalf("rotation without a session=%d", response.StatusCode)
 	}
@@ -156,7 +156,7 @@ func TestSubscriptionLinkPostgreSQL(t *testing.T) {
 		t.Fatal("rotation must be audited without the link")
 	}
 
-	// Revoking the device turns its link off before Xray is even reconfigured.
+	// Отзыв устройства отключает его ссылку ещё до того, как Xray получит новую конфигурацию.
 	if _, err = store.Revoke(context.Background(), device.ID); err != nil {
 		t.Fatal(err)
 	}

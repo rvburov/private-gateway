@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check that the production TCP router sends panel SNI to Caddy and VPN SNI to Xray."""
+"""Проверить, что production-маршрутизатор TCP отправляет SNI панели в Caddy, а SNI VPN — в Xray."""
 
 from pathlib import Path
 import re
@@ -12,7 +12,7 @@ import time
 
 
 ROOT = Path(__file__).resolve().parents[1]
-# The same pinned image as the production stack.
+# Тот же закреплённый образ, что в production-стеке.
 HAPROXY = re.search(r"^ +image: (haproxy:\S+)$", (ROOT / "deploy/docker/compose.yml").read_text(), re.M).group(1)
 
 

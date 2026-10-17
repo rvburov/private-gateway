@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Install, update and roll back the production stack on this machine the way a VPS gets it:
-# bootstrap.sh, then CI deliveries through the forced command of the deploy account.
-# It takes ports 80, 443 and 8443 and writes to /etc, /opt and /var: disposable CI runners only.
+# Установка, обновление и откат production-стека на этой машине так, как их получает VPS:
+# bootstrap.sh, затем доставки CI через принудительную команду учётной записи выкладки.
+# Занимает порты 80, 443 и 8443 и пишет в /etc, /opt и /var: только для одноразовых runner'ов CI.
 set -Eeuo pipefail
 
 fail() { printf 'Installation test failed: %s\n' "$*" >&2; exit 1; }
@@ -17,12 +17,12 @@ collector=''
 compose() {
   sudo docker compose --env-file "$env_file" -f /opt/private-gateway-docker/current/docker/compose.yml "$@"
 }
-# A failed installation removes its containers and an update replaces them: keep every
-# container's log as it runs, one file per container.
+# Неудачная установка удаляет свои контейнеры, а обновление заменяет их: журнал каждого
+# контейнера сохраняется по ходу работы, по файлу на контейнер.
 watch_xray_status() {
   local status last=''
   while :; do
-    # The Xray worker's status (config hash, running, error) holds no secrets.
+    # Состояние Xray worker (хеш конфигурации, running, error) секретов не содержит.
     status=$(sudo cat /var/lib/private-gateway-docker/xray/xray.status.json 2>/dev/null) || status=''
     if [[ -n $status && $status != "$last" ]]; then
       printf '%s %s\n' "$(date -u +%T.%3N)" "$status" >> "$work/logs/xray-status.log"
@@ -34,7 +34,7 @@ watch_xray_status() {
 collect_logs() {
   local id service
   while :; do
-    # Running containers only: following a container that has not started yet ends at once.
+    # Только запущенные контейнеры: слежение за ещё не запущенным контейнером сразу заканчивается.
     for id in $(docker ps --quiet --filter label=com.docker.compose.project=private-gateway); do
       [[ ! -e $work/logs/$id ]] || continue
       service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$id") || continue
@@ -67,7 +67,7 @@ collect_logs &
 collector=$!
 watch_xray_status &
 collector+=" $!"
-# CI's deploy step sends the SHA and the archive over SSH to this forced command of gateway-deploy.
+# Шаг выкладки CI отправляет SHA и архив по SSH этой принудительной команде gateway-deploy.
 deliver() {
   (cd / && { printf '%s\n' "$1"; cat "$2"; } \
     | sudo -u gateway-deploy sudo -n /usr/local/sbin/private-gateway-docker-deploy)
@@ -78,7 +78,7 @@ panel_ready() {
   curl --fail --silent --show-error --max-time 10 --output /dev/null \
     --resolve "$domain:443:127.0.0.1" "https://$domain/readyz"
 }
-# A recreated Xray gets a new address; HAProxy picks it up from Docker DNS within seconds.
+# Пересозданный Xray получает новый адрес; HAProxy узнаёт его из DNS Docker за секунды.
 vless_works() {
   local attempt
   for attempt in 1 2 3; do
@@ -92,10 +92,11 @@ version_a=$(python3 "$repository/scripts/verify-release.py" --tar "$archive")
 version_b=$(printf 'b%.0s' {1..40})
 version_c=$(printf 'c%.0s' {1..40})
 version_d=$(printf 'd%.0s' {1..40})
-# B is the same build with one more panel file, so only the API image gets a new content tag.
-# C sends the panel name to Xray instead of Caddy: the panel check fails only if the updater
-# really restarts HAProxy, and then it must roll back. D sends every other name, VPN clients
-# included, to Caddy: the panel still works, so only the VLESS check can catch it.
+# B — та же сборка с ещё одним файлом панели, поэтому новый тег по содержимому получает только
+# образ API. C отправляет имя панели в Xray вместо Caddy: проверка панели проваливается, только
+# если обновление действительно перезапускает HAProxy, и тогда оно должно откатиться. D отправляет
+# в Caddy все остальные имена, включая VPN-клиентов: панель работает, и поймать это может только
+# проверка VLESS.
 python3 - "$archive" "$work" "$version_b" "$version_c" "$version_d" <<'PY'
 import gzip
 import hashlib
@@ -140,8 +141,9 @@ write(sys.argv[5], {"docker/haproxy.cfg.template":
                     template.replace(default, "default_backend panel_https").encode()})
 PY
 
-# Caddy signs .localhost names with its local CA. The test gives Caddy a CA this runner trusts,
-# so the installer and the updater check the panel with full TLS verification, as on a VPS.
+# Имена .localhost Caddy подписывает своим локальным центром сертификации. Тест выдаёт Caddy центр,
+# которому доверяет этот runner, поэтому установщик и обновление проверяют панель с полной
+# проверкой TLS, как на VPS.
 cat > "$work/ca.cnf" <<'EOF'
 [req]
 distinguished_name = name
@@ -166,7 +168,7 @@ docker run --rm --network none --entrypoint sh -v private-gateway_caddy-data:/da
 printf '127.0.0.1 %s\n' "$domain" | sudo tee -a /etc/hosts >/dev/null
 
 printf '\n== Bootstrap and first deployment of %s ==\n' "$version_a"
-# The same bundle scripts/add-server.sh uploads.
+# Тот же комплект, который загружает scripts/add-server.sh.
 bundle=$work/bundle
 mkdir "$bundle"
 cp "$repository/deploy/docker/bootstrap.sh" "$repository/deploy/docker/bootstrap-receiver.sh" \
@@ -223,7 +225,7 @@ sudo cmp -s /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg" \
   || fail 'the rollback did not restore the HAProxy configuration.'
 [[ -n $(container edge) ]] || fail 'HAProxy is not running after the rollback.'
 panel_ready || fail 'the panel does not answer after the rollback.'
-# Read whole: grep -q exits at its match, and pipefail would count the writer's SIGPIPE as a failure.
+# Читается целиком: grep -q выходит на первом совпадении, и pipefail счёл бы SIGPIPE пишущего сбоем.
 gateway_status=$(compose exec -T api /usr/local/bin/gatewayctl status)
 grep -Eq '^ACTIVE DEVICES +1$' <<< "$gateway_status" \
   || fail "the device did not survive the rollback: $gateway_status"

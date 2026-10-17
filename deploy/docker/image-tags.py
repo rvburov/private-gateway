@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Print a content tag for each image a release builds, as NAME=TAG lines for stack.env.
+"""Напечатать тег по содержимому для каждого образа, который собирает релиз, строками NAME=TAG для stack.env.
 
-A tag hashes the Dockerfile and every release file its COPY instructions take. An image keeps
-its tag while none of that changes, so a deployment leaves its container running.
+Тег — хеш Dockerfile и всех файлов релиза, которые берут его инструкции COPY. Пока ничего из этого
+не меняется, образ сохраняет тег, и выкладка оставляет его контейнер работать.
 """
 
 import hashlib

@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
-# Prepare a new VPS for CI/CD and add it to deploy/servers. Run it in the main project folder on
-# your PC (Git Bash on Windows) with SSH access to the new server as a user who may use sudo:
+# Подготовить новый VPS для CI/CD и добавить его в deploy/servers. Запускать в основной папке
+# проекта на компьютере (на Windows — в Git Bash) с доступом по SSH к новому серверу под
+# пользователем, которому разрешён sudo:
 #
 #   bash scripts/add-server.sh NAME SERVER_IPV4 PANEL_DOMAIN SSH_USER [SSH_PORT]
 #
-# The server needs Ubuntu 26.04 amd64, a DNS A record of PANEL_DOMAIN pointing to it and open TCP
-# 22, 80 and 443. The script shows the server's SSH host key for you to compare with the provider's
-# console, uploads the restricted deployment receiver from the current commit over SSH (sudo asks
-# for your password on the server) and commits deploy/servers/NAME.conf to master. The next push
-# to master makes CI/CD install the program there; later pushes update it with every other server.
-# Nothing is changed on the server before you confirm its host key.
+# Серверу нужны Ubuntu 26.04 amd64, DNS-запись A для PANEL_DOMAIN, указывающая на него, и открытые
+# TCP 22, 80 и 443. Скрипт показывает ключ хоста SSH сервера, чтобы сверить его с консолью
+# провайдера, загружает по SSH ограниченный приёмник выкладки из текущего коммита (sudo спросит ваш
+# пароль на сервере) и коммитит deploy/servers/NAME.conf в master. Следующий push в master заставит
+# CI/CD установить туда программу; следующие push обновляют её вместе с остальными серверами.
+# Пока вы не подтвердите ключ хоста, на сервере ничего не меняется.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -21,7 +22,7 @@ for tool in git ssh ssh-keyscan ssh-keygen scp python3 sha256sum; do
   command -v "$tool" > /dev/null || fail "required command is missing: $tool"
 done
 
-# The record lands on master, so start from the newest master in a clean main folder.
+# Запись попадает в master, поэтому начинать надо со свежего master в чистой основной папке.
 [[ $(git branch --show-current) == master ]] || fail 'run it in the main project folder, which is on master'
 [[ -z $(git status --porcelain) ]] || fail 'the main folder has uncommitted changes; sort them out first'
 git fetch --quiet origin master || fail 'could not reach GitHub'
@@ -31,7 +32,7 @@ if ! git merge-base --is-ancestor origin/master master; then
 fi
 python3 scripts/servers.py check "$name" --host "$host" --port "$port" --domain "$domain" \
   || fail 'fix the values above; nothing was changed'
-# Caddy obtains the panel certificate for this name, so DNS must already point to the server.
+# Caddy получает сертификат панели для этого имени, поэтому DNS уже должен указывать на сервер.
 resolved=$(python3 -c 'import socket, sys; print(socket.gethostbyname(sys.argv[1]))' "$domain" 2> /dev/null || true)
 [[ $resolved == "$host" ]] || fail "$domain resolves to ${resolved:-nothing}, not $host; create its DNS A record first"
 
@@ -49,7 +50,7 @@ EOF
 read -r -p 'Type yes if the fingerprints match: ' answer
 [[ $answer == yes ]] || fail 'the host key was not confirmed; nothing was changed'
 
-# Every SSH call trusts exactly the confirmed key and leaves ~/.ssh/known_hosts alone.
+# Каждый вызов SSH доверяет ровно подтверждённому ключу и не трогает ~/.ssh/known_hosts.
 work=$(mktemp -d)
 trap 'rm -rf -- "$work"' EXIT
 if [[ $port == 22 ]]; then known_name=$host; else known_name="[$host]:$port"; fi
@@ -57,7 +58,7 @@ printf '%s %s\n' "$known_name" "$scanned" > "$work/known_hosts"
 ssh_options=(-o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$work/known_hosts" -o LogLevel=ERROR)
 destination="$ssh_user@$host"
 
-# The bootstrap bundle comes from the current commit, the same files CI verifies.
+# Комплект для первой установки берётся из текущего коммита — те же файлы, что проверяет CI.
 commit=$(git rev-parse HEAD)
 bundle="$work/bundle"
 mkdir "$bundle"

@@ -25,7 +25,7 @@ export interface ProfileExport {
   uri: string;
   sing_box_json: string;
   mihomo_yaml: string;
-  // /sub/ and the secret token of the device's subscription link on the panel's own domain.
+  // /sub/ и секретный токен ссылки-подписки устройства на домене самой панели.
   subscription_path: string;
 }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Read-only local resource audit. Never prints environment or credentials.
+# Проверка локальных ресурсов только на чтение. Окружение и секреты никогда не печатает.
 set -euo pipefail
 uname -srm
 getconf _NPROCESSORS_ONLN

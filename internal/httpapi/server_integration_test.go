@@ -388,7 +388,7 @@ func TestApplyCommitsAfterVPNCallerDisconnects(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Xray apply did not start")
 	}
-	cancel() // Xray restarting may disconnect the administrator's own VPN.
+	cancel() // перезапуск Xray может оборвать собственный VPN администратора
 	close(engine.release)
 	select {
 	case <-engine.finished:

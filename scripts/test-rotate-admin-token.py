@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test internal CLI token rotation and rollback without browser credentials."""
+"""Проверить смену внутреннего токена CLI и откат без учётных данных браузера."""
 
 import importlib.util
 from pathlib import Path

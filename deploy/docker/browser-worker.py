@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Control one disposable browser without granting the API a Docker socket."""
+"""Управлять одним одноразовым браузером, не давая API сокет Docker."""
 
 import hmac
 import json
@@ -62,7 +62,7 @@ def start_browser():
     if healthy():
         return
     stop_browser()
-    # Scripts run through their interpreter: some hosts refuse to exec them through the #! line.
+    # Скрипты запускаются через интерпретатор: некоторые хосты отказываются запускать их по строке #!.
     browser = subprocess.Popen(["/bin/sh", "/usr/local/bin/start.sh"], start_new_session=True)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
@@ -78,7 +78,7 @@ def start_browser():
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, _format, *_args):
-        # No profile, token or browser traffic belongs in the worker log.
+        # Профилям, токенам и трафику браузера не место в журнале worker.
         pass
 
     def reply(self, status, data):

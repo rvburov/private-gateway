@@ -28,8 +28,8 @@ export PATH="$toolchain_root/go/bin:$toolchain_root/bin:$toolchain_root/xray:$PA
 export GOCACHE=/workspace/.cache/go-build GOPATH=/workspace/.cache/go GOMODCACHE=/workspace/.cache/go-mod
 mkdir -p "$GOCACHE" "$GOPATH" "$GOMODCACHE"
 cd "$(dirname "$0")/.."
-# This large module's proxy redirect is blocked in some cloud policies. Native
-# Git uses the official source, and Go still checks the public checksum database.
+# Перенаправление прокси для этого большого модуля запрещено политиками некоторых облаков.
+# Обычный Git берёт официальный источник, а Go всё равно сверяется с открытой базой контрольных сумм.
 GOPROXY=direct go mod download github.com/klauspost/compress@v1.20.1
 go mod download
 (cd web && npm ci)
