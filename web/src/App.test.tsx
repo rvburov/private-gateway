@@ -5,6 +5,7 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toDataURL } from "qrcode";
@@ -33,6 +34,8 @@ let adminSetup = true;
 let browserRunning = false;
 
 beforeEach(() => {
+  window.localStorage.clear();
+  document.documentElement.removeAttribute("data-theme");
   revoked = false;
   deleted = false;
   revision = 1;
@@ -166,6 +169,39 @@ async function login() {
 }
 
 describe("administrator panel", () => {
+  it("switches between the system, light and dark themes and remembers only the choice", async () => {
+    await login();
+    const themes = screen.getByRole("group", { name: "Тема оформления" });
+    expect(within(themes).getByRole("button", { name: "Авто" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(themes).getByRole("button", { name: "Тёмная" }));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("dark");
+    expect(window.localStorage.getItem("private-gateway-theme")).toBe("dark");
+    fireEvent.click(within(themes).getByRole("button", { name: "Светлая" }));
+    expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+    fireEvent.click(within(themes).getByRole("button", { name: "Авто" }));
+    expect(document.documentElement.hasAttribute("data-theme")).toBe(false);
+    expect(window.localStorage.getItem("private-gateway-theme")).toBeNull();
+  });
+
+  it("navigates with the phone tabs and the More sheet", async () => {
+    await login();
+    const tabs = screen.getByRole("navigation", { name: "Нижнее меню" });
+    fireEvent.click(within(tabs).getByRole("button", { name: "Устройства" }));
+    expect(await screen.findByText("Профили устройств")).toBeTruthy();
+    expect(within(tabs).getByRole("button", { name: "Устройства" }).getAttribute("aria-current")).toBe("page");
+    fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
+    const sheet = screen.getByRole("dialog", { name: "Ещё" });
+    fireEvent.click(within(sheet).getByRole("button", { name: "Сервер" }));
+    expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
+    expect(await screen.findByText("Сервер подключения")).toBeTruthy();
+    expect(screen.getByText("gateway.example:443")).toBeTruthy();
+    fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
+    fireEvent.click(within(tabs).getByRole("button", { name: "Добавить" }));
+    expect(await screen.findByRole("dialog", { name: "Добавить устройство" })).toBeTruthy();
+  });
+
   it("shows separate Xray traffic counters for the device", async () => {
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Все устройства" }));
