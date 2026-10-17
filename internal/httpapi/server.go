@@ -42,12 +42,14 @@ type Options struct {
 	XrayConfigured bool
 	StatsAddress   string
 	StatsBinary    string
+	Checks         ServerChecks
 }
 type Server struct {
 	store          *storage.Store
 	xray           Xray
 	browser        Browser
 	options        Options
+	checksMu       sync.Mutex
 	loginMu        sync.Mutex
 	sessions       map[string]adminSession
 	browserTickets map[string]string
@@ -100,6 +102,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Post("/devices/{id}/revoke", s.revoke)
 			r.Delete("/devices/{id}", s.deleteDevice)
 			r.Get("/audit", s.audit)
+			r.Get("/checks", s.serverChecks)
 			r.Post("/config/validate", s.validate)
 			r.Post("/config/apply", s.apply)
 			r.Get("/browser", s.browserStatus)
@@ -135,7 +138,9 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		// The panel's "Проверка" asks these services, on a button press only, which address and
+		// location sites see.
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' "+strings.Join(checkServices, " ")+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }

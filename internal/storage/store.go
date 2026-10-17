@@ -253,6 +253,34 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 	return result, err
 }
 
+// ProbeCredential returns the node and the credential of one active device for the server's own
+// traffic check: the oldest one, which Xray has most likely received already. It returns
+// ErrNotFound when no device is active.
+func (s *Store) ProbeCredential(ctx context.Context) (model.Node, string, error) {
+	rows, err := s.queries.ActiveClients(ctx, uid(LocalNodeID))
+	if err != nil {
+		return model.Node{}, "", err
+	}
+	if len(rows) == 0 {
+		return model.Node{}, "", ErrNotFound
+	}
+	oldest := rows[0]
+	for _, row := range rows[1:] {
+		if row.CreatedAt.Time.Before(oldest.CreatedAt.Time) {
+			oldest = row
+		}
+	}
+	node, err := s.queries.GetNode(ctx, uid(LocalNodeID))
+	if err != nil {
+		return model.Node{}, "", classify(err)
+	}
+	credential, err := s.cipher.Decrypt(oldest.CredentialCiphertext, id(oldest.ID))
+	if err != nil {
+		return model.Node{}, "", err
+	}
+	return nodeModel(node), credential, nil
+}
+
 // SubscriptionPathPrefix is where the public subscription endpoint serves profiles.
 const SubscriptionPathPrefix = "/sub/"
 

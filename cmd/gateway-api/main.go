@@ -217,6 +217,13 @@ func serve() error {
 	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{
 		Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
 		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
+		Checks: httpapi.ServerChecks{
+			XrayBinary: cfg.Xray.Binary, XrayConfigPath: cfg.Xray.ConfigPath,
+			XrayServer:    os.Getenv("GATEWAY_XRAY_SERVER_ADDRESS"),
+			RealityTarget: cfg.Xray.Settings.Target, RealityServerName: cfg.Xray.Settings.ServerName,
+			PanelAddress: os.Getenv("GATEWAY_PANEL_TLS_ADDRESS"), PanelDomain: os.Getenv("GATEWAY_PANEL_DOMAIN"),
+			TrafficURL: "https://www.cloudflare.com/cdn-cgi/trace",
+		},
 	})
 	server := &http.Server{Addr: cfg.Listen, Handler: handler, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 90 * time.Second, IdleTimeout: 60 * time.Second, MaxHeaderBytes: 8192}
 	listener, err := net.Listen("tcp", cfg.Listen)

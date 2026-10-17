@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Icon, type IconName } from "./icons";
 import type { ThemePreference } from "./theme";
 
-export type Page = "overview" | "devices" | "nodes" | "audit" | "guide";
+export type Page = "overview" | "devices" | "nodes" | "audit" | "guide" | "checks";
 type NavItem = { page: Page; label: string; short: string; icon: IconName };
 
 const items: Record<Page, NavItem> = {
@@ -11,16 +11,17 @@ const items: Record<Page, NavItem> = {
   nodes: { page: "nodes", label: "Сервер", short: "Сервер", icon: "server" },
   audit: { page: "audit", label: "Журнал действий", short: "Журнал", icon: "history" },
   guide: { page: "guide", label: "Инструкции", short: "Инструкции", icon: "book" },
+  checks: { page: "checks", label: "Проверка", short: "Проверка", icon: "shield" },
 };
 const sidebarGroups = [
   { label: "Управление", items: [items.overview, items.devices, items.nodes, items.audit] },
-  { label: "Подключение", items: [items.guide] },
+  { label: "Подключение", items: [items.guide, items.checks] },
 ];
 // Bottom tabs on a phone, as in ai_agent_capper: the round button in the middle adds a device,
 // sections that do not fit go to the "More" sheet.
 const tabItems = [items.overview, items.devices];
-const tabItemsAfterAdd = [items.audit];
-const moreItems = [items.guide, items.nodes];
+const tabItemsAfterAdd = [items.checks];
+const moreItems = [items.guide, items.audit, items.nodes];
 const themes: { value: ThemePreference; label: string; icon: IconName }[] = [
   { value: "system", label: "Авто", icon: "monitor" },
   { value: "light", label: "Светлая", icon: "sun" },

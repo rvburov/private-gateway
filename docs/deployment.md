@@ -88,6 +88,8 @@ sudo python3 /opt/private-gateway-docker/current/docker/admin-credentials.py
 
 ## Проверка и диагностика
 
+Без SSH сервер проверяет себя из панели: раздел «Проверка» → «Проверить». Он показывает состояние PostgreSQL, применённой конфигурации и процесса Xray, сайта маскировки REALITY и сертификата панели и отправляет настоящий VLESS-запрос через Xray сервера ([подробнее](privacy-checks.md#раздел-проверка-в-панели)). Для этого API обращается к Xray и Caddy по внутренним сетям Docker: `GATEWAY_XRAY_SERVER_ADDRESS=xray:443`, `GATEWAY_PANEL_TLS_ADDRESS=caddy:443` и `GATEWAY_PANEL_DOMAIN` задаёт `compose.yml`, менять их не нужно.
+
 Эти команды не выводят URI устройств:
 
 ```bash

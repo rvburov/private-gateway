@@ -52,6 +52,11 @@ services:
       GATEWAY_BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN}
       GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}/browser/vnc.html?autoconnect=true&resize=remote
       GATEWAY_XRAY_STATS_ADDRESS: xray:10085
+      # The panel's server checks: a real VLESS connection to Xray and the panel certificate
+      # from Caddy, both over the private Docker networks.
+      GATEWAY_XRAY_SERVER_ADDRESS: xray:443
+      GATEWAY_PANEL_TLS_ADDRESS: caddy:443
+      GATEWAY_PANEL_DOMAIN: ${PANEL_DOMAIN}
     volumes:
       - ${GATEWAY_STATE_DIR:?Set GATEWAY_STATE_DIR}:/state
     networks: [database, control, web, telemetry]

@@ -32,6 +32,9 @@ let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
 let browserRunning = false;
+// What the outside services of the "Проверка" section answer.
+let visibleIP = "203.0.113.7";
+let visibleIPv6: string | null = null;
 
 beforeEach(() => {
   window.localStorage.clear();
@@ -46,6 +49,8 @@ beforeEach(() => {
   rotations = 0;
   adminSetup = true;
   browserRunning = false;
+  visibleIP = "203.0.113.7";
+  visibleIPv6 = null;
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -57,6 +62,19 @@ beforeEach(() => {
     this.removeAttribute("open");
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
+    if (path === "https://api.ipify.org?format=json") return Response.json({ ip: visibleIP });
+    if (path === "https://api6.ipify.org?format=json") {
+      if (!visibleIPv6) throw new TypeError("Failed to fetch");
+      return Response.json({ ip: visibleIPv6 });
+    }
+    if (path === "https://ipinfo.io/json")
+      return Response.json({
+        ip: visibleIP,
+        city: "Amsterdam",
+        country: "NL",
+        org: "AS14061 DigitalOcean, LLC",
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      });
     if (path === "/api/v1/auth/login") {
       const input = JSON.parse(options.body as string) as { username: string; password: string };
       return input.username === "admin" && input.password === "long-password"
@@ -112,6 +130,19 @@ beforeEach(() => {
       });
     if (path === "/api/v1/devices/traffic")
       return Response.json({ devices: { d1: { uplink_bytes: 2048, downlink_bytes: 1048576 } }, period: "since_xray_restart" });
+    if (path === "/api/v1/checks")
+      return Response.json({
+        checks: [
+          { id: "database", title: "База данных", status: "ok", detail: "PostgreSQL отвечает." },
+          {
+            id: "traffic",
+            title: "VLESS-трафик через сервер",
+            status: "ok",
+            detail: "Настоящий VLESS-трафик проходит через сервер; сайты видят IP 203.0.113.7 (NL) — адрес сервера.",
+            ip: "203.0.113.7",
+          },
+        ],
+      });
     if (path === "/api/v1/browser")
       return Response.json({ running: browserRunning, url: browserRunning ? "https://gateway.example/browser/vnc.html" : "" });
     if (path === "/api/v1/devices/d1/profile") {
@@ -196,10 +227,58 @@ describe("administrator panel", () => {
     expect(await screen.findByText("Сервер подключения")).toBeTruthy();
     expect(screen.getByText("gateway.example:443")).toBeTruthy();
     fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Ещё" })).getByRole("button", { name: "Журнал действий" }));
+    expect(await screen.findByText("История действий")).toBeTruthy();
+    fireEvent.click(within(tabs).getByRole("button", { name: "Проверка" }));
+    expect(await screen.findByText("Проверка подключения")).toBeTruthy();
+    fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
     fireEvent.keyDown(document, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
     fireEvent.click(within(tabs).getByRole("button", { name: "Добавить" }));
     expect(await screen.findByRole("dialog", { name: "Добавить устройство" })).toBeTruthy();
+  });
+
+  it("checks what sites see and the server only when the button is pressed", async () => {
+    await login();
+    const menu = screen.getByRole("navigation", { name: "Главное меню" });
+    fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
+    expect(await screen.findByText("Проверка подключения")).toBeTruthy();
+    const asked = () => fetchMock.mock.calls.map(([path]) => String(path));
+    expect(asked().filter((path) => path.startsWith("https://") || path === "/api/v1/checks")).toEqual([]);
+    expect(screen.getByRole("link", { name: "ipleak.net" }).getAttribute("href")).toBe("https://ipleak.net/");
+
+    fireEvent.click(screen.getByRole("button", { name: "Проверить" }));
+    expect(await screen.findByText(/Всё в порядке: сайты видят IP сервера, утечек не найдено/)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — это IP сервера/)).toBeTruthy();
+    expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
+    expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();
+    // The outside services get no cookies and no address of the panel.
+    for (const service of ["https://api.ipify.org?format=json", "https://api6.ipify.org?format=json", "https://ipinfo.io/json"])
+      expect(fetchMock).toHaveBeenCalledWith(
+        service,
+        expect.objectContaining({ credentials: "omit", referrerPolicy: "no-referrer" }),
+      );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/v1/checks",
+      expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer admin-token" }) }),
+    );
+
+    // Results stay while the owner looks at other sections.
+    fireEvent.click(within(menu).getByRole("button", { name: "Инструкции" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Перейти к проверке" }));
+    expect(await screen.findByText(/Всё в порядке/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Проверить снова" })).toBeTruthy();
+  });
+
+  it("reports a browser outside the tunnel and a visible IPv6 address", async () => {
+    visibleIP = "198.51.100.20";
+    visibleIPv6 = "2001:db8::20";
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить" }));
+    expect(await screen.findByText(/Найдено проблем: 2\./)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят 198\.51\.100\.20, а IP сервера — 203\.0\.113\.7/)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят IPv6-адрес 2001:db8::20/)).toBeTruthy();
   });
 
   it("shows setup instructions for each system and opens them from a profile", async () => {

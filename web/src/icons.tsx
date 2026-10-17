@@ -18,7 +18,11 @@ export type IconName =
   | "moon"
   | "monitor"
   | "book"
-  | "external";
+  | "external"
+  | "shield"
+  | "alert"
+  | "info"
+  | "minus";
 
 const icons: Record<IconName, ReactNode> = {
   grid: (
@@ -99,6 +103,15 @@ const icons: Record<IconName, ReactNode> = {
     </>
   ),
   external: <path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6" />,
+  shield: (
+    <>
+      <path d="M12 3 4.5 6v5.5c0 4.6 3.1 8.3 7.5 9.5 4.4-1.2 7.5-4.9 7.5-9.5V6L12 3Z" />
+      <path d="m9 12 2 2 4-4" />
+    </>
+  ),
+  alert: <path d="M12 6v8M12 18v.01" />,
+  info: <path d="M12 11v6M12 7v.01" />,
+  minus: <path d="M6 12h12" />,
 };
 
 export function Icon({ name, size = 20 }: { name: IconName; size?: number }) {

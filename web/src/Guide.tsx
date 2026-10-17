@@ -15,7 +15,7 @@ const linkStep = {
 };
 const checkStep = {
   title: "Проверьте подключение",
-  text: "Включите VPN и откройте ipleak.net: сайты должны видеть IP сервера, IPv6 — не ваш или никакой, WebRTC — без вашего адреса, DNS — не вашего провайдера.",
+  text: "Включите VPN, откройте на этом устройстве панель, раздел «Проверка», и нажмите «Проверить»: сайты должны видеть IP сервера, а IPv6 и WebRTC — не выдавать ваш адрес. DNS проверьте на одном из сайтов в том же разделе.",
 };
 const hiddify = "https://github.com/hiddify/hiddify-app/releases";
 
@@ -226,7 +226,7 @@ export function detectPlatform(agent = navigator.userAgent, touchPoints = naviga
   return "windows";
 }
 
-export function Guide() {
+export function Guide({ onCheck }: { onCheck?: () => void }) {
   const [platformId, setPlatformId] = useState<PlatformId>(() => detectPlatform());
   const platform = platforms.find((item) => item.id === platformId) ?? platforms[0];
   return (
@@ -297,6 +297,14 @@ export function Guide() {
               </li>
             ))}
           </ol>
+          {onCheck && (
+            <div className="button-group">
+              <button type="button" className="button secondary-button" onClick={onCheck}>
+                <Icon name="shield" size={18} />
+                Перейти к проверке
+              </button>
+            </div>
+          )}
         </div>
       </section>
       <section className="card">

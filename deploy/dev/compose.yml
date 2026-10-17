@@ -18,8 +18,10 @@ services:
     ports:
       - "127.0.0.1:8080:8080"
     environment:
-      # Without Caddy noVNC is unreachable, so the browser worker is not started either.
+      # Without Caddy noVNC is unreachable, so the browser worker is not started either, and
+      # the panel has no certificate to check.
       GATEWAY_BROWSER_WORKER_URL: ""
+      GATEWAY_PANEL_TLS_ADDRESS: ""
     volumes:
       - state:/state
 

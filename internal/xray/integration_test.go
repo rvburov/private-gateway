@@ -11,8 +11,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
-	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -276,7 +274,7 @@ func fetchViaSOCKS(proxy, origin string) (string, error) {
 	transport := &http.Transport{
 		DisableKeepAlives: true,
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
-			return dialSOCKS(ctx, proxy, address)
+			return dialSOCKS5(ctx, proxy, address)
 		},
 	}
 	defer transport.CloseIdleConnections()
@@ -290,63 +288,3 @@ func fetchViaSOCKS(proxy, origin string) (string, error) {
 	return string(body), err
 }
 
-func dialSOCKS(ctx context.Context, proxy, address string) (_ net.Conn, err error) {
-	connection, err := (&net.Dialer{}).DialContext(ctx, "tcp", proxy)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err != nil {
-			_ = connection.Close()
-		}
-	}()
-	_ = connection.SetDeadline(time.Now().Add(realTrafficTimeout))
-	if _, err = connection.Write([]byte{5, 1, 0}); err != nil {
-		return nil, err
-	}
-	greeting := make([]byte, 2)
-	if _, err = io.ReadFull(connection, greeting); err != nil || greeting[0] != 5 || greeting[1] != 0 {
-		return nil, errors.New("SOCKS authentication negotiation failed")
-	}
-	host, portText, err := net.SplitHostPort(address)
-	if err != nil {
-		return nil, err
-	}
-	port, err := strconv.Atoi(portText)
-	if err != nil {
-		return nil, err
-	}
-	request := []byte{5, 1, 0, 3, byte(len(host))}
-	request = append(request, []byte(host)...)
-	request = append(request, byte(port>>8), byte(port))
-	if _, err = connection.Write(request); err != nil {
-		return nil, err
-	}
-	header := make([]byte, 4)
-	if _, err = io.ReadFull(connection, header); err != nil {
-		return nil, err
-	}
-	if header[1] != 0 {
-		return nil, fmt.Errorf("SOCKS connect failed with code %d", header[1])
-	}
-	var remainder int
-	switch header[3] {
-	case 1:
-		remainder = 4 + 2
-	case 4:
-		remainder = 16 + 2
-	case 3:
-		length := make([]byte, 1)
-		if _, err = io.ReadFull(connection, length); err != nil {
-			return nil, err
-		}
-		remainder = int(length[0]) + 2
-	default:
-		return nil, errors.New("invalid SOCKS reply address")
-	}
-	if _, err = io.ReadFull(connection, make([]byte, remainder)); err != nil {
-		return nil, err
-	}
-	_ = connection.SetDeadline(time.Time{})
-	return connection, nil
-}

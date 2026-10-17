@@ -10,6 +10,7 @@ import {
   type Status,
   type TrafficUsage,
 } from "./api";
+import { Checks } from "./Checks";
 import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
@@ -31,6 +32,10 @@ const intros: Record<Page, [string, string]> = {
   guide: [
     "Как подключить устройство",
     "Пошагово для вашей системы: приложение, ссылка-подписка, режимы и проверка. А ещё — как настроить браузер и что может выдать вас и с VPN.",
+  ],
+  checks: [
+    "Проверка подключения",
+    "Что видят сайты, когда вы подключены, и всё ли в порядке на сервере. Проверка идёт только по кнопке, с того устройства, где открыта панель.",
   ],
 };
 
@@ -455,12 +460,20 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
               </span>
               <div>
                 <h2 className="guide-subtitle">Как подключить телефон или компьютер</h2>
-                <p>Пошагово для Android, iPhone, Windows, macOS и Linux, и как не выдать себя в браузере.</p>
+                <p>
+                  Пошагово для Android, iPhone, Windows, macOS и Linux, и как не выдать себя в браузере. А
+                  потом — проверка одной кнопкой.
+                </p>
               </div>
             </div>
-            <button className="button secondary-button" onClick={() => navigate("guide")}>
-              Открыть инструкции
-            </button>
+            <div className="button-group">
+              <button className="button secondary-button" onClick={() => navigate("guide")}>
+                Открыть инструкции
+              </button>
+              <button className="button secondary-button" onClick={() => navigate("checks")}>
+                Проверить подключение
+              </button>
+            </div>
           </section>
           <section className="card">
             <div className="card-heading">
@@ -576,7 +589,8 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
           )}
         </div>
       )}
-      {page === "guide" && <Guide />}
+      {page === "guide" && <Guide onCheck={() => navigate("checks")} />}
+      {page === "checks" && <Checks token={token} nodeHost={nodeList[0]?.host} />}
       {page === "audit" && (
         <section className="card">
           <div className="card-heading">

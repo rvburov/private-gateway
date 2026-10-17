@@ -223,14 +223,72 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [uri, sing_box_json, mihomo_yaml]
+                required: [uri, sing_box_json, mihomo_yaml, subscription_path]
                 properties:
                   uri: {type: string, format: uri}
                   sing_box_json: {type: string, description: Complete sing-box JSON configuration}
                   mihomo_yaml: {type: string, description: Complete Mihomo YAML configuration}
+                  subscription_path: {type: string, description: '/sub/ and the secret token of the device subscription link on the panel domain'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
+  /api/v1/devices/{id}/subscription:
+    parameters:
+      - {$ref: '#/components/parameters/DeviceID'}
+    post:
+      operationId: rotateSubscription
+      description: Give an active device a new subscription link. The previous link stops working at once.
+      responses:
+        '200':
+          description: The new link path, Cache-Control no-store
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [subscription_path]
+                properties:
+                  subscription_path: {type: string}
+        '404': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/devices/traffic:
+    get:
+      operationId: deviceTraffic
+      responses:
+        '200':
+          description: Bytes per active device since Xray last restarted, keyed by device ID
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [devices, period]
+                properties:
+                  devices:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      required: [uplink_bytes, downlink_bytes]
+                      properties:
+                        uplink_bytes: {type: integer, minimum: 0}
+                        downlink_bytes: {type: integer, minimum: 0}
+                  period: {type: string, enum: [since_xray_restart]}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /sub/{token}:
+    parameters:
+      - {name: token, in: path, required: true, schema: {type: string}}
+      - {name: format, in: query, required: false, schema: {type: string, enum: [base64, uri, sing-box, mihomo, html]}}
+    get:
+      operationId: subscription
+      security: []
+      description: >-
+        Public subscription link of an active device: the secret is the token in the path.
+        Without format the client's User-Agent chooses it; a browser gets an HTML page.
+        Revoked devices and replaced links answer 404. Reads are not logged or audited.
+      responses:
+        '200': {description: The device profile in the requested format}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
   /api/v1/devices/{id}/revoke:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
@@ -256,6 +314,36 @@ paths:
                   events:
                     type: array
                     items: {$ref: '#/components/schemas/AuditEvent'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/checks:
+    get:
+      operationId: serverChecks
+      description: >-
+        Server checks for the panel: PostgreSQL, the applied configuration revision, the running
+        Xray process, the REALITY target over TLS 1.3, the panel certificate, and a real VLESS
+        request through Xray with the oldest active device. Takes up to about 20 seconds; one
+        run at a time.
+      responses:
+        '200':
+          description: Results in a fixed order, without credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [checks]
+                properties:
+                  checks:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, title, status, detail]
+                      properties:
+                        id: {type: string, enum: [database, configuration, xray, reality, certificate, traffic]}
+                        title: {type: string}
+                        status: {type: string, enum: [ok, warn, fail, skip]}
+                        detail: {type: string}
+                        ip: {type: string, description: 'traffic only: the address sites see behind the gateway'}
+        '409': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
   /api/v1/config/validate:
     post:
