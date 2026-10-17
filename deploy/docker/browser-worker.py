@@ -37,7 +37,8 @@ def healthy():
         return False
     try:
         return subprocess.run(
-            ["/usr/local/bin/healthcheck.sh"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4
+            ["/bin/sh", "/usr/local/bin/healthcheck.sh"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=4
         ).returncode == 0
     except subprocess.TimeoutExpired:
         return False
@@ -61,7 +62,8 @@ def start_browser():
     if healthy():
         return
     stop_browser()
-    browser = subprocess.Popen(["/usr/local/bin/start.sh"], start_new_session=True)
+    # Scripts run through their interpreter: some hosts refuse to exec them through the #! line.
+    browser = subprocess.Popen(["/bin/sh", "/usr/local/bin/start.sh"], start_new_session=True)
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if browser.poll() is not None:
