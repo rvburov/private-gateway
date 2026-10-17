@@ -111,7 +111,7 @@ if ! command -v docker >/dev/null || ! docker compose version >/dev/null 2>&1; t
 fi
 systemctl enable --now docker.service
 docker info >/dev/null || fail 'Docker daemon is not ready.'
-if docker ps --all --quiet --filter label=com.docker.compose.project=private-gateway | grep -q . \
+if [[ -n $(docker ps --all --quiet --filter label=com.docker.compose.project=private-gateway) ]] \
     || docker volume inspect private-gateway_postgres-data >/dev/null 2>&1; then
   fail 'A private-gateway Docker project or database volume already exists; inspect it before installing.'
 fi

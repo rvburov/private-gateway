@@ -223,8 +223,10 @@ sudo cmp -s /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg" \
   || fail 'the rollback did not restore the HAProxy configuration.'
 [[ -n $(container edge) ]] || fail 'HAProxy is not running after the rollback.'
 panel_ready || fail 'the panel does not answer after the rollback.'
-compose exec -T api /usr/local/bin/gatewayctl status | grep -Eq '^ACTIVE DEVICES +1$' \
-  || fail 'the device did not survive the rollback.'
+# Read whole: grep -q exits at its match, and pipefail would count the writer's SIGPIPE as a failure.
+gateway_status=$(compose exec -T api /usr/local/bin/gatewayctl status)
+grep -Eq '^ACTIVE DEVICES +1$' <<< "$gateway_status" \
+  || fail "the device did not survive the rollback: $gateway_status"
 vless_works || fail 'VLESS traffic does not pass after the rollback.'
 
 printf '\n== Update to %s, which sends VPN clients to Caddy ==\n' "$version_d"

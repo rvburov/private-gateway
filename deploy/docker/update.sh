@@ -103,11 +103,14 @@ old_edge=false
 panel_port=8443
 services=(postgres api browser xray caddy)
 old_services=(api browser xray caddy)
-if compose_old config --services | grep -qx edge; then
+# Lists are read whole: grep -q exits at its match, and pipefail would turn the writer's SIGPIPE into "no".
+old_service_list=$(compose_old config --services)
+new_service_list=$(compose_new config --services)
+if grep -qx edge <<< "$old_service_list"; then
   old_edge=true
   old_services+=(edge)
 fi
-if compose_new config --services | grep -qx edge; then
+if grep -qx edge <<< "$new_service_list"; then
   edge_enabled=true
   panel_port=443
   services+=(edge)
