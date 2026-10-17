@@ -51,12 +51,12 @@ class Browser(BaseHTTPRequestHandler):
         pass
 
 
-def request(port, cookie=None):
+def request(port, cookie=None, path="/browser/vnc.html"):
     headers = {"Authorization": "Bearer should-not-reach-browser"}
     if cookie:
         headers["Cookie"] = cookie
     try:
-        with opener.open(Request(f"http://127.0.0.1:{port}/browser/vnc.html", headers=headers), timeout=2) as reply:
+        with opener.open(Request(f"http://127.0.0.1:{port}{path}", headers=headers), timeout=2) as reply:
             return reply.status, reply.read()
     except HTTPError as error:
         return error.code, error.read()
@@ -101,15 +101,25 @@ def main():
                 assert (status, body) == (200, b"noVNC test"), f"authorized noVNC returned {status}"
                 assert seen == [("/vnc.html", None, None)], f"browser received sensitive headers: {seen}"
                 print("Caddy noVNC authorization: anonymous 403, verified 200, credentials stripped")
+                # With the API down, Caddy logs the failed request, but not the link's secret path.
+                auth.shutdown()
+                auth.server_close()
+                secret = "subscription-secret-" + "A" * 23
+                status, _ = request(port, path="/sub/" + secret)
+                assert status == 502, f"a request to the stopped API returned {status}"
             finally:
                 process.terminate()
                 try:
-                    process.communicate(timeout=5)
+                    _, log = process.communicate(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
-                    process.communicate()
+                    _, log = process.communicate()
+            assert '"logger":"http.log.error"' in log, "Caddy did not log the failed request"
+            assert secret not in log and "/sub/" not in log, "Caddy logged the subscription path"
+            print("Caddy error log: the failed request is logged without its URI")
     finally:
         auth.shutdown()
+        auth.server_close()
         browser.shutdown()
 
 

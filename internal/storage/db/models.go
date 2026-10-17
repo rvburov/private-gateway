@@ -26,12 +26,14 @@ type AuditEvent struct {
 }
 
 type Device struct {
-	ID                   pgtype.UUID
-	NodeID               pgtype.UUID
-	Name                 string
-	CredentialCiphertext []byte
-	CreatedAt            pgtype.Timestamptz
-	RevokedAt            pgtype.Timestamptz
+	ID                     pgtype.UUID
+	NodeID                 pgtype.UUID
+	Name                   string
+	CredentialCiphertext   []byte
+	CreatedAt              pgtype.Timestamptz
+	RevokedAt              pgtype.Timestamptz
+	SubscriptionGeneration int64
+	SubscriptionHash       []byte
 }
 
 type Node struct {

@@ -795,6 +795,24 @@ textarea:focus {
 .profile-qr-toggle {
   margin-top: 14px;
 }
+.subscription-help {
+  display: grid;
+  justify-items: start;
+  gap: 12px;
+  margin-top: 4px;
+}
+.subscription-help .notice {
+  margin: 0;
+}
+.subscription-rotate {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  box-sizing: border-box;
+}
+.subscription-rotate p {
+  margin: 0;
+}
 .profile-qr {
   display: grid;
   justify-items: center;

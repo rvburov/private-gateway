@@ -1,3 +1,16 @@
+{
+    # A subscription link carries its secret in the path, and a failed request is logged with
+    # its URI: the log keeps everything else. There is no access log at all.
+    log default {
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+            }
+        }
+    }
+}
+
 https://__PANEL_DOMAIN__ {
     handle_path /browser/* {
         forward_auth api:8080 {

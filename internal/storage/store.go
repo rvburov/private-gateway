@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"regexp"
@@ -239,9 +240,71 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 		if err != nil {
 			return err
 		}
+		// The link is computed again on every export; only its hash is stored, once shown.
+		token := s.cipher.SubscriptionToken(id(row.ID), row.SubscriptionGeneration)
+		if hash := secure.SubscriptionHash(token); !bytes.Equal(row.SubscriptionHash, hash) {
+			if err = q.SetSubscriptionHash(ctx, db.SetSubscriptionHashParams{ID: row.ID, SubscriptionHash: hash}); err != nil {
+				return err
+			}
+		}
+		result.SubscriptionPath = SubscriptionPathPrefix + token
 		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.export", DeviceID: row.ID})
 	})
 	return result, err
+}
+
+// SubscriptionPathPrefix is where the public subscription endpoint serves profiles.
+const SubscriptionPathPrefix = "/sub/"
+
+// RotateSubscription gives an active device a new subscription link; the previous one stops
+// working at once.
+func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string, error) {
+	if _, err := uuid.Parse(deviceID); err != nil {
+		return "", ErrNotFound
+	}
+	var path string
+	err := s.transaction(ctx, func(q *db.Queries) error {
+		row, err := q.GetDevice(ctx, uid(deviceID))
+		if err != nil {
+			return err
+		}
+		if row.RevokedAt.Valid {
+			return ErrRevoked
+		}
+		if row, err = q.AdvanceSubscription(ctx, row.ID); err != nil {
+			return err
+		}
+		token := s.cipher.SubscriptionToken(id(row.ID), row.SubscriptionGeneration)
+		if err = q.SetSubscriptionHash(ctx, db.SetSubscriptionHashParams{ID: row.ID, SubscriptionHash: secure.SubscriptionHash(token)}); err != nil {
+			return err
+		}
+		path = SubscriptionPathPrefix + token
+		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.subscription_rotate", DeviceID: row.ID})
+	})
+	return path, err
+}
+
+// Subscription returns the profile and name of the active device whose link carries this token.
+// A revoked device and a replaced link are not found. Clients poll their links, so reads are
+// not audited.
+func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, string, error) {
+	row, err := s.queries.GetActiveDeviceBySubscription(ctx, secure.SubscriptionHash(token))
+	if err != nil {
+		return model.Profile{}, "", classify(err)
+	}
+	node, err := s.queries.GetNode(ctx, row.NodeID)
+	if err != nil {
+		return model.Profile{}, "", classify(err)
+	}
+	credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
+	if err != nil {
+		return model.Profile{}, "", err
+	}
+	profile, err := xray.ClientProfiles(nodeModel(node), credential, row.Name)
+	if err != nil {
+		return model.Profile{}, "", err
+	}
+	return profile, row.Name, nil
 }
 
 type Status struct {

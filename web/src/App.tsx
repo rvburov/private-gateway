@@ -19,6 +19,7 @@ import {
 } from "./api";
 
 type Page = "overview" | "devices" | "nodes" | "audit";
+type ProfileFormat = "subscription" | "uri" | "sing_box_json" | "mihomo_yaml";
 type IconName =
   | "grid"
   | "devices"
@@ -421,9 +422,12 @@ function Dashboard({
   const [revoking, setRevoking] = useState<Device | null>(null);
   const [deleting, setDeleting] = useState<Device | null>(null);
   const [profile, setProfile] = useState<(ProfileExport & { device: Device }) | null>(null);
-  const [profileFormat, setProfileFormat] = useState<keyof ProfileExport>("uri");
+  const [profileFormat, setProfileFormat] = useState<ProfileFormat>("subscription");
   const [profilePending, setProfilePending] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<unknown>(null);
+  const [confirmRotate, setConfirmRotate] = useState(false);
+  const [rotating, setRotating] = useState(false);
+  const [rotated, setRotated] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copyError, setCopyError] = useState<unknown>(null);
   const [showQR, setShowQR] = useState(false);
@@ -545,7 +549,9 @@ function Dashboard({
     setCopyError(null);
     setCopied(false);
     setShowQR(false);
-    setProfileFormat("uri");
+    setProfileFormat("subscription");
+    setConfirmRotate(false);
+    setRotated(false);
     try {
       const result = await request<ProfileExport>(
         token,
@@ -558,10 +564,46 @@ function Dashboard({
       setProfilePending(null);
     }
   }
+  // Like the profile, the new link stays in component state only, never in a query cache.
+  async function rotateSubscription() {
+    if (!profile) return;
+    const deviceID = profile.device.id;
+    setRotating(true);
+    setCopyError(null);
+    try {
+      const result = await request<{ subscription_path: string }>(
+        token,
+        `/devices/${encodeURIComponent(deviceID)}/subscription`,
+        { method: "POST" },
+      );
+      setProfile((current) =>
+        current && current.device.id === deviceID
+          ? { ...current, subscription_path: result.subscription_path }
+          : current,
+      );
+      setConfirmRotate(false);
+      setRotated(true);
+      setCopied(false);
+      setShowQR(false);
+    } catch (err) {
+      setCopyError(err);
+    } finally {
+      setRotating(false);
+    }
+  }
+  const subscriptionLink = profile
+    ? new URL(profile.subscription_path, window.location.origin).toString()
+    : "";
+  const profileText = !profile
+    ? ""
+    : profileFormat === "subscription"
+      ? subscriptionLink
+      : profile[profileFormat];
+  const linkFormat = profileFormat === "subscription" || profileFormat === "uri";
   async function copyProfile() {
     if (!profile) return;
     try {
-      await navigator.clipboard.writeText(profile[profileFormat]);
+      await navigator.clipboard.writeText(profileText);
       setCopied(true);
       setCopyError(null);
     } catch {
@@ -573,7 +615,7 @@ function Dashboard({
     }
   }
   function downloadProfile() {
-    if (!profile || profileFormat === "uri") return;
+    if (!profile || profileFormat === "subscription" || profileFormat === "uri") return;
     try {
       const file = new Blob([profile[profileFormat]], {
         type: profileFormat === "sing_box_json" ? "application/json" : "application/yaml",
@@ -1275,6 +1317,8 @@ function Dashboard({
             setCopyError(null);
             setCopied(false);
             setShowQR(false);
+            setConfirmRotate(false);
+            setRotated(false);
           }}
         >
           <div className="notice warning-notice">
@@ -1283,9 +1327,11 @@ function Dashboard({
             устройства.
           </div>
           <p className="modal-description">
-            Для клиента с импортом ссылок выберите VLESS URI. sing-box и Mihomo
-            могут использовать собственный файл конфигурации. Для нового
-            устройства сначала примените конфигурацию.
+            Ссылку-подписку добавляют в приложение VPN на любом устройстве:
+            приложение само получит профиль и будет его обновлять. VLESS URI
+            вставляют или сканируют вручную; sing-box и Mihomo могут
+            использовать собственный файл конфигурации. Для нового устройства
+            сначала примените конфигурацию.
           </p>
           <label htmlFor="profile-format">Формат профиля</label>
           <select
@@ -1293,28 +1339,33 @@ function Dashboard({
             className="profile-format-picker"
             value={profileFormat}
             onChange={(event) => {
-              setProfileFormat(event.target.value as keyof ProfileExport);
+              setProfileFormat(event.target.value as ProfileFormat);
               setCopied(false);
               setShowQR(false);
             }}
           >
+            <option value="subscription">Ссылка-подписка — для приложения на любом устройстве</option>
             <option value="uri">VLESS URI — вставить ссылку или сканировать QR</option>
             <option value="sing_box_json">sing-box — JSON-файл</option>
             <option value="mihomo_yaml">Mihomo — YAML-файл</option>
           </select>
           <label htmlFor="profile-content">
-            {profileFormat === "uri" ? "Ссылка подключения" : "Конфигурация клиента"}
+            {profileFormat === "subscription"
+              ? "Ссылка-подписка"
+              : profileFormat === "uri"
+                ? "Ссылка подключения"
+                : "Конфигурация клиента"}
           </label>
           <textarea
             id="profile-content"
             className="profile-uri mono"
-            value={profile[profileFormat]}
+            value={profileText}
             readOnly
-            rows={profileFormat === "uri" ? 5 : 12}
+            rows={profileFormat === "subscription" ? 3 : profileFormat === "uri" ? 5 : 12}
             spellCheck={false}
             onFocus={(event) => event.target.select()}
           />
-          {profileFormat === "uri" ? (
+          {linkFormat ? (
             <button
               className="button secondary-button profile-qr-toggle"
               onClick={() => setShowQR((visible) => !visible)}
@@ -1328,7 +1379,62 @@ function Dashboard({
               Файл содержит ключ устройства. После импорта удалите его из папки загрузок.
             </p>
           )}
+          {showQR && profileFormat === "subscription" && (
+            <ProfileQRCode
+              uri={subscriptionLink}
+              alt="QR-код ссылки-подписки"
+              caption="Отсканируйте в приложении VPN или камерой телефона: в браузере ссылка откроет страницу с кнопками импорта."
+              failure="Не удалось создать QR-код. Скопируйте ссылку вручную."
+            />
+          )}
           {showQR && profileFormat === "uri" && <ProfileQRCode uri={profile.uri} />}
+          {profileFormat === "subscription" && (
+            <div className="subscription-help">
+              <p className="profile-format-help">
+                Ссылку можно передать человеку, который будет подключаться.
+                «Отозвать» отключает и ссылку, и доступ.
+              </p>
+              {rotated && (
+                <p className="notice" role="status">
+                  Ссылка заменена: прежняя больше не работает.
+                </p>
+              )}
+              {confirmRotate ? (
+                <div className="notice warning-notice subscription-rotate">
+                  <p>
+                    Прежняя ссылка сразу перестанет работать: в приложениях,
+                    где она добавлена, подписку придётся заменить.
+                  </p>
+                  <div className="modal-actions">
+                    <button
+                      className="button secondary-button"
+                      onClick={() => setConfirmRotate(false)}
+                      disabled={rotating}
+                    >
+                      Отмена
+                    </button>
+                    <button
+                      className="button danger"
+                      onClick={() => void rotateSubscription()}
+                      disabled={rotating}
+                    >
+                      {rotating ? "Заменяем…" : "Заменить ссылку"}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  className="button secondary-button"
+                  onClick={() => {
+                    setConfirmRotate(true);
+                    setRotated(false);
+                  }}
+                >
+                  Новая ссылка
+                </button>
+              )}
+            </div>
+          )}
           <ErrorNotice error={copyError} />
           <div className="modal-actions">
             <button
@@ -1336,11 +1442,13 @@ function Dashboard({
               onClick={() => {
                 setProfile(null);
                 setShowQR(false);
+                setConfirmRotate(false);
+                setRotated(false);
               }}
             >
               Скрыть профиль
             </button>
-            {profileFormat !== "uri" && (
+            {!linkFormat && (
               <button className="button secondary-button" onClick={downloadProfile}>
                 Скачать файл
               </button>
@@ -1350,7 +1458,7 @@ function Dashboard({
               onClick={() => void copyProfile()}
             >
               <Icon name={copied ? "check" : "copy"} size={17} />
-              {copied ? "Скопировано" : profileFormat === "uri" ? "Скопировать ссылку" : "Скопировать конфигурацию"}
+              {copied ? "Скопировано" : linkFormat ? "Скопировать ссылку" : "Скопировать конфигурацию"}
             </button>
           </div>
         </Modal>
@@ -1368,6 +1476,7 @@ function actionLabel(action: string) {
     "device.revoked": "Доступ отозван",
     "device.profile": "Профиль выдан",
     "device.export": "Профиль выдан",
+    "device.subscription_rotate": "Ссылка-подписка заменена",
     "profile.export": "Профиль выдан",
     "config.validate": "Конфигурация проверена",
     "config.apply": "Конфигурация применена",

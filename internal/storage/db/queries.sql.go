@@ -12,7 +12,7 @@ import (
 )
 
 const activeClients = `-- name: ActiveClients :many
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Device, error) {
@@ -31,6 +31,8 @@ func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Devi
 			&i.CredentialCiphertext,
 			&i.CreatedAt,
 			&i.RevokedAt,
+			&i.SubscriptionGeneration,
+			&i.SubscriptionHash,
 		); err != nil {
 			return nil, err
 		}
@@ -49,6 +51,27 @@ UPDATE nodes SET revision=revision+1 WHERE id=$1
 func (q *Queries) AdvanceRevision(ctx context.Context, id pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, advanceRevision, id)
 	return err
+}
+
+const advanceSubscription = `-- name: AdvanceSubscription :one
+UPDATE devices SET subscription_generation=subscription_generation+1, subscription_hash=NULL
+WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash
+`
+
+func (q *Queries) AdvanceSubscription(ctx context.Context, id pgtype.UUID) (Device, error) {
+	row := q.db.QueryRow(ctx, advanceSubscription, id)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.NodeID,
+		&i.Name,
+		&i.CredentialCiphertext,
+		&i.CreatedAt,
+		&i.RevokedAt,
+		&i.SubscriptionGeneration,
+		&i.SubscriptionHash,
+	)
+	return i, err
 }
 
 const countDevices = `-- name: CountDevices :one
@@ -110,6 +133,26 @@ func (q *Queries) EnableAdministratorTOTP(ctx context.Context, arg EnableAdminis
 	return result.RowsAffected(), nil
 }
 
+const getActiveDeviceBySubscription = `-- name: GetActiveDeviceBySubscription :one
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices WHERE subscription_hash=$1 AND revoked_at IS NULL
+`
+
+func (q *Queries) GetActiveDeviceBySubscription(ctx context.Context, subscriptionHash []byte) (Device, error) {
+	row := q.db.QueryRow(ctx, getActiveDeviceBySubscription, subscriptionHash)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.NodeID,
+		&i.Name,
+		&i.CredentialCiphertext,
+		&i.CreatedAt,
+		&i.RevokedAt,
+		&i.SubscriptionGeneration,
+		&i.SubscriptionHash,
+	)
+	return i, err
+}
+
 const getAdministrator = `-- name: GetAdministrator :one
 SELECT id, username, password_hash, totp_secret_ciphertext, totp_last_step, generation, updated_at FROM administrator_credentials WHERE id=1
 `
@@ -130,7 +173,7 @@ func (q *Queries) GetAdministrator(ctx context.Context) (AdministratorCredential
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at FROM devices WHERE id=$1
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices WHERE id=$1
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -143,6 +186,8 @@ func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 		&i.CredentialCiphertext,
 		&i.CreatedAt,
 		&i.RevokedAt,
+		&i.SubscriptionGeneration,
+		&i.SubscriptionHash,
 	)
 	return i, err
 }
@@ -199,7 +244,7 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 }
 
 const insertDevice = `-- name: InsertDevice :one
-INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at
+INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash
 `
 
 type InsertDeviceParams struct {
@@ -224,6 +269,8 @@ func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Dev
 		&i.CredentialCiphertext,
 		&i.CreatedAt,
 		&i.RevokedAt,
+		&i.SubscriptionGeneration,
+		&i.SubscriptionHash,
 	)
 	return i, err
 }
@@ -258,7 +305,7 @@ func (q *Queries) ListAudit(ctx context.Context) ([]AuditEvent, error) {
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at FROM devices ORDER BY created_at, id
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices ORDER BY created_at, id
 `
 
 func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
@@ -277,6 +324,8 @@ func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
 			&i.CredentialCiphertext,
 			&i.CreatedAt,
 			&i.RevokedAt,
+			&i.SubscriptionGeneration,
+			&i.SubscriptionHash,
 		); err != nil {
 			return nil, err
 		}
@@ -361,7 +410,7 @@ func (q *Queries) RestoreAdministrator(ctx context.Context, arg RestoreAdministr
 }
 
 const revokeDevice = `-- name: RevokeDevice :one
-UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at
+UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash
 `
 
 func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -374,6 +423,8 @@ func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, err
 		&i.CredentialCiphertext,
 		&i.CreatedAt,
 		&i.RevokedAt,
+		&i.SubscriptionGeneration,
+		&i.SubscriptionHash,
 	)
 	return i, err
 }
@@ -394,6 +445,20 @@ type SetAdministratorParams struct {
 
 func (q *Queries) SetAdministrator(ctx context.Context, arg SetAdministratorParams) error {
 	_, err := q.db.Exec(ctx, setAdministrator, arg.Username, arg.PasswordHash)
+	return err
+}
+
+const setSubscriptionHash = `-- name: SetSubscriptionHash :exec
+UPDATE devices SET subscription_hash=$2 WHERE id=$1
+`
+
+type SetSubscriptionHashParams struct {
+	ID               pgtype.UUID
+	SubscriptionHash []byte
+}
+
+func (q *Queries) SetSubscriptionHash(ctx context.Context, arg SetSubscriptionHashParams) error {
+	_, err := q.db.Exec(ctx, setSubscriptionHash, arg.ID, arg.SubscriptionHash)
 	return err
 }
 

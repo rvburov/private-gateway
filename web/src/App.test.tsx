@@ -18,6 +18,9 @@ const profileURI =
   "vless://sensitive-device-credential@gateway.example:443?security=reality#Phone";
 const profileJSON = '{"outbounds":[{"type":"vless","uuid":"sensitive-device-credential"}]}';
 const profileYAML = 'proxies:\n  - type: vless\n    uuid: sensitive-device-credential\n';
+let subscriptionPath = "/sub/sensitive-subscription-token-1";
+let rotations = 0;
+const subscriptionLink = () => `${window.location.origin}${subscriptionPath}`;
 let revoked = false;
 let deleted = false;
 let revision = 1;
@@ -36,6 +39,8 @@ beforeEach(() => {
   appliedRevision = 1;
   interruptApply = false;
   profileRequests = 0;
+  subscriptionPath = "/sub/sensitive-subscription-token-1";
+  rotations = 0;
   adminSetup = true;
   browserRunning = false;
   queryClient = new QueryClient({
@@ -108,7 +113,12 @@ beforeEach(() => {
       return Response.json({ running: browserRunning, url: browserRunning ? "https://gateway.example/browser/vnc.html" : "" });
     if (path === "/api/v1/devices/d1/profile") {
       profileRequests++;
-      return Response.json({ uri: profileURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML });
+      return Response.json({ uri: profileURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML, subscription_path: subscriptionPath });
+    }
+    if (path === "/api/v1/devices/d1/subscription" && options.method === "POST") {
+      rotations++;
+      subscriptionPath = `/sub/sensitive-subscription-token-${rotations + 1}`;
+      return Response.json({ subscription_path: subscriptionPath });
     }
     if (path === "/api/v1/devices/d1/revoke" && options.method === "POST") {
       revoked = true;
@@ -249,38 +259,57 @@ describe("administrator panel", () => {
     });
     await login();
     expect(profileRequests).toBe(0);
-    expect(screen.queryByDisplayValue(profileURI)).toBeNull();
+    expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(profileURI);
+    await screen.findByDisplayValue(subscriptionLink());
     expect(profileRequests).toBe(1);
-    expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
+    expect(screen.queryByRole("img", { name: "QR-код ссылки-подписки" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Показать QR-код" }));
-    const qr = await screen.findByRole("img", { name: "QR-код профиля подключения" });
+    const qr = await screen.findByRole("img", { name: "QR-код ссылки-подписки" });
     expect(qr.getAttribute("src")).toBe("data:image/png;base64,cXJjb2Rl");
-    expect(toDataURL).toHaveBeenCalledWith(profileURI, expect.any(Object));
+    expect(toDataURL).toHaveBeenCalledWith(subscriptionLink(), expect.any(Object));
     fireEvent.click(screen.getByRole("button", { name: "Скопировать ссылку" }));
     await screen.findByRole("button", { name: "Скопировано" });
-    expect(clipboard.writeText).toHaveBeenCalledWith(profileURI);
+    expect(clipboard.writeText).toHaveBeenCalledWith(subscriptionLink());
     fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
     await waitFor(() =>
-      expect(screen.queryByDisplayValue(profileURI)).toBeNull(),
+      expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull(),
     );
-    expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
-    expect(
-      JSON.stringify(
-        queryClient
-          .getQueryCache()
-          .getAll()
-          .map((item) => item.state.data),
-      ),
-    ).not.toContain("sensitive-device-credential");
+    expect(screen.queryByRole("img", { name: "QR-код ссылки-подписки" })).toBeNull();
+    const cached = JSON.stringify(
+      queryClient
+        .getQueryCache()
+        .getAll()
+        .map((item) => item.state.data),
+    );
+    expect(cached).not.toContain("sensitive-device-credential");
+    expect(cached).not.toContain("sensitive-subscription-token");
     expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
     fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(profileURI);
+    await screen.findByDisplayValue(subscriptionLink());
     expect(profileRequests).toBe(2);
     fireEvent.click(screen.getByRole("button", { name: "Выйти из панели" }));
     await screen.findByText("Вход в панель");
-    expect(screen.queryByDisplayValue(profileURI)).toBeNull();
+    expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
+  });
+
+  it("replaces the subscription link only after confirmation", async () => {
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
+    const oldLink = subscriptionLink();
+    await screen.findByDisplayValue(oldLink);
+    fireEvent.click(screen.getByRole("button", { name: "Новая ссылка" }));
+    expect(screen.getByText(/Прежняя ссылка сразу перестанет работать/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    expect(rotations).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Новая ссылка" }));
+    fireEvent.click(screen.getByRole("button", { name: "Заменить ссылку" }));
+    await screen.findByDisplayValue(subscriptionLink());
+    expect(subscriptionLink()).not.toBe(oldLink);
+    expect(rotations).toBe(1);
+    expect(screen.getByText("Ссылка заменена: прежняя больше не работает.")).toBeTruthy();
+    expect(screen.queryByDisplayValue(oldLink)).toBeNull();
+    expect(queryClient.getMutationCache().getAll()).toHaveLength(0);
   });
 
   it("copies a VLESS link or client configuration without a new secret request", async () => {
@@ -288,8 +317,16 @@ describe("administrator panel", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: clipboard });
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(profileURI);
+    await screen.findByDisplayValue(subscriptionLink());
+    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "uri" } });
+    expect(screen.getByDisplayValue(profileURI)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Новая ссылка" })).toBeNull();
     fireEvent.click(await screen.findByRole("button", { name: "Показать QR-код" }));
+    const qr = await screen.findByRole("img", { name: "QR-код профиля подключения" });
+    expect(qr.getAttribute("src")).toBe("data:image/png;base64,cXJjb2Rl");
+    expect(toDataURL).toHaveBeenCalledWith(profileURI, expect.any(Object));
+    fireEvent.click(screen.getByRole("button", { name: "Скопировать ссылку" }));
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith(profileURI));
     fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "sing_box_json" } });
     expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
     expect(screen.getByDisplayValue(profileJSON)).toBeTruthy();

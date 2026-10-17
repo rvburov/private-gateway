@@ -76,6 +76,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 		respond(w, 200, map[string]string{"status": "ready"})
 	})
 	r.Get("/browser-authorization", s.browserAuthorization)
+	r.Get(storage.SubscriptionPathPrefix+"{token}", s.subscription)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_http_requests_total", Help: "HTTP requests by method and status class."}, []string{"method", "status_class"})
@@ -95,6 +96,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Get("/devices/traffic", s.deviceTraffic)
 			r.Post("/devices", s.create)
 			r.Get("/devices/{id}/profile", s.export)
+			r.Post("/devices/{id}/subscription", s.rotateSubscription)
 			r.Post("/devices/{id}/revoke", s.revoke)
 			r.Delete("/devices/{id}", s.deleteDevice)
 			r.Get("/audit", s.audit)
@@ -257,6 +259,14 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	respond(w, 200, result)
+}
+func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
+	path, err := s.store.RotateSubscription(r.Context(), chi.URLParam(r, "id"))
+	if err != nil {
+		s.error(w, err)
+		return
+	}
+	respond(w, 200, map[string]string{"subscription_path": path})
 }
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.Audit(r.Context())

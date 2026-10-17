@@ -30,6 +30,16 @@ UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING
 -- name: DeleteRevokedDevice :execrows
 DELETE FROM devices WHERE id=$1 AND revoked_at IS NOT NULL;
 
+-- name: SetSubscriptionHash :exec
+UPDATE devices SET subscription_hash=$2 WHERE id=$1;
+
+-- name: AdvanceSubscription :one
+UPDATE devices SET subscription_generation=subscription_generation+1, subscription_hash=NULL
+WHERE id=$1 AND revoked_at IS NULL RETURNING *;
+
+-- name: GetActiveDeviceBySubscription :one
+SELECT * FROM devices WHERE subscription_hash=$1 AND revoked_at IS NULL;
+
 -- name: ActiveClients :many
 SELECT * FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id;
 
