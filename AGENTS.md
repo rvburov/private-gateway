@@ -74,7 +74,7 @@ bash scripts/dev.sh release DIR   # релиз закоммиченной вер
 - Входят `sqlc diff`, `go vet`, `go test -race` с PostgreSQL и Xray, сборка программ, тесты и сборка панели, `actionlint` для workflow, синтаксис и тесты скриптов выпуска, развёртывания и списка серверов. Внутри Docker интеграционные тесты не пропускаются молча: пропуск из-за `TEST_DATABASE_URL` или `PRIVATE_GATEWAY_REAL_XRAY_BINARY` проваливает прогон.
 - Сборку production-образов, проверки Caddy и HAProxy (`test-browser-proxy.py`, `test-edge-router.py`, `test-first-deploy.sh`) и тест установки, обновления и отката (`test-install-update.sh`, только на runner Ubuntu 26.04) выполняет GitHub Actions при push любой ветки; локально они не идут, так и писать в отчёте. Для релизных и деплойных изменений проверять связанные скрипты и Docker-конфигурацию.
 - Первый прогон скачивает около 2 ГБ образов; повторные переиспользуют слои и кеш сборки Go.
-- Локальный запуск API и панели (`bash scripts/dev.sh prepare|start|stop`) пока требует Linux с Go и Xray.
+- Локальный стек тоже в Docker: `bash scripts/dev.sh start|admin|ctl|smoke|stop` — PostgreSQL, API с панелью на `http://127.0.0.1:8080/` и Xray из образов, собранных из рабочей папки; секреты в `.local/dev/stack.env`. У каждой рабочей папки свой проект Compose и свои данные, но порт 8080 один: одновременно работает стек одной папки.
 
 ## Выпуск: CI/CD
 

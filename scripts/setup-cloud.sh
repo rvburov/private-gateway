@@ -32,4 +32,5 @@ cd "$(dirname "$0")/.."
 # Git uses the official source, and Go still checks the public checksum database.
 GOPROXY=direct go mod download github.com/klauspost/compress@v1.20.1
 go mod download
-bash scripts/dev.sh prepare
+(cd web && npm ci)
+echo 'Go, sqlc, Xray and the module and npm caches are ready. Checks and the local stack run in Docker: bash scripts/dev.sh test, bash scripts/dev.sh start.'

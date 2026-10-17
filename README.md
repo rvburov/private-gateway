@@ -31,53 +31,41 @@ bash scripts/dev.sh test
 
 Образ [deploy/checks](deploy/checks/Dockerfile) содержит Go 1.26.9, Node.js 22, Python, настоящий Xray 26.3.27 и sqlc 1.30.0; загрузки сверяются по SHA-256. Рядом во временном контейнере без открытых портов работает PostgreSQL 18. Образ собирается из содержимого будущего коммита, поэтому `.env` и другие игнорируемые файлы в него не попадают, а переводы строк совпадают с репозиторием на любой ОС. Первый запуск скачивает около 2 ГБ образов, повторные идут быстрее. В конце выводятся числа тестов Go и каждый пропущенный тест с причиной. После изменения SQL-запросов или миграций код `internal/storage/db` обновляет `bash scripts/dev.sh sqlc`. Релиз закоммиченной версии собирает `bash scripts/dev.sh release ПАПКА` в том же образе, как и CI.
 
-**Локальный запуск API и панели** пока требует Linux, Docker с Compose, Node.js 22.12+ или 24, Go 1.26.9, `curl`, `python3`, `sha256sum`. В подготовленной облачной среде:
+**Локальный запуск API и панели** тоже идёт в Docker, на любой ОС с Docker (на Windows — из Git Bash):
 
 ```bash
-bash scripts/setup-cloud.sh
-bash scripts/dev.sh start
+bash scripts/dev.sh start   # собрать из рабочей папки и запустить PostgreSQL, API с панелью и Xray
+bash scripts/dev.sh admin   # задать логин и пароль администратора; 2FA подключается в браузере
+bash scripts/dev.sh stop    # остановить, сохранив базу и состояние Xray
 ```
 
-`setup-cloud.sh` устанавливает проверенные Go, sqlc и Xray в `/workspace/.toolchains`, собирает приложения и панель, запускает PostgreSQL 18 и выполняет миграции. `prepare` создаёт `.env` со случайными локальными секретами, только если файла ещё нет. Существующий `.env` сохраняется. Данные PostgreSQL остаются в Docker volume.
+`start` собирает релиз из текущей рабочей папки вместе с незакоммиченными правками в том же образе, что и проверки, и запускает production-образы api и xray с PostgreSQL 18 по `deploy/docker/compose.yml` и дополнению `deploy/dev/compose.yml`. Панель открывается на `http://127.0.0.1:8080/`; Caddy, HAProxy и удалённый браузер локально не запускаются, Xray наружу не публикуется. При первом запуске создаётся `.local/dev/stack.env` со случайными локальными секретами (значения не выводятся); повторный `start` пересобирает образы и сохраняет данные. Production-учётные данные создаются [на VPS через терминал](docs/deployment.md#учётная-запись-администратора). Не отправляйте секреты в переписку или журналы.
 
-На другом Linux-хосте с установленными Go и Xray можно выполнить `bash scripts/dev.sh prepare`. Если требуется установщик инструментов, задайте `GATEWAY_TOOLCHAIN_ROOT` в доступный каталог. Go cache по умолчанию рассчитан на `/workspace`; вне облака используйте обычный Go из `PATH`.
-
-Панель находится на loopback-порту 8080. В локальной среде без настроенной учётной записи пока действует `GATEWAY_API_TOKEN` из `.env`; production-учётные данные создаются [на VPS через терминал](docs/deployment.md#учётная-запись-администратора). Не отправляйте секреты в переписку или журналы. API и панель имеют один origin. Для CLI:
+`bash scripts/dev.sh smoke` проверяет работающий стек целиком: создаёт устройство, выдаёт профиль, применяет конфигурацию настоящим Xray, отзывает устройство и применяет снова. CLI `gatewayctl` работает внутри контейнера API:
 
 ```bash
-set -a
-source .env
-set +a
-bin/gatewayctl status
-bin/gatewayctl node list
-bin/gatewayctl device add macbook --node NODE_ID
-bin/gatewayctl device list
-bin/gatewayctl config validate
-bin/gatewayctl config apply
-bin/gatewayctl device export DEVICE_ID
-bin/gatewayctl device revoke DEVICE_ID
-bin/gatewayctl config apply
-bin/gatewayctl device delete DEVICE_ID
+bash scripts/dev.sh ctl status
+bash scripts/dev.sh ctl node list
+bash scripts/dev.sh ctl device add macbook --node NODE_ID
+bash scripts/dev.sh ctl device list
+bash scripts/dev.sh ctl config apply
+bash scripts/dev.sh ctl device export DEVICE_ID
+bash scripts/dev.sh ctl device revoke DEVICE_ID
+bash scripts/dev.sh ctl device delete DEVICE_ID
 ```
 
-Экспорт выводит действующий секретный URI. UUID устройства из `device list` — идентификатор записи, отличный от UUID доступа внутри профиля.
+Экспорт выводит действующий секретный URI. UUID устройства из `device list` — идентификатор записи, отличный от UUID доступа внутри профиля. Профиль локального стека указывает на `127.0.0.1:443` и служит для разработки, а не для подключения устройств.
 
-Локальные параметры используют `127.0.0.1:8443` для Xray: это проверка разработки, а не общедоступный VPN. Перед развёртыванием задайте реальный `GATEWAY_HOST`, порт, SNI/target REALITY и постоянные секреты согласно [инструкции](docs/deployment.md).
-
-Остановка процессов и PostgreSQL с сохранением данных:
-
-```bash
-bash scripts/dev.sh stop
-```
+`bash scripts/setup-cloud.sh` готовит облачную среду без Docker-образа проверок: ставит проверенные Go, sqlc и Xray в `/workspace/.toolchains` и скачивает зависимости Go и панели.
 
 ## Удалённый браузер
 
-На VPS он входит в Docker Compose по [docs/browser.md](docs/browser.md). Браузер работает, но удалённая графическая сессия noVNC сейчас реагирует на ввод и прокрутку с задержкой около 1–3 секунд. Для обычного просмотра сайтов удобнее локальный браузер с совместимым VLESS + REALITY клиентом. Управление через панель или:
+На VPS он входит в Docker Compose по [docs/browser.md](docs/browser.md). Браузер работает, но удалённая графическая сессия noVNC сейчас реагирует на ввод и прокрутку с задержкой около 1–3 секунд. Для обычного просмотра сайтов удобнее локальный браузер с совместимым VLESS + REALITY клиентом. Управление через панель или в SSH на VPS:
 
 ```bash
-bin/gatewayctl browser start
-bin/gatewayctl browser status
-bin/gatewayctl browser stop
+sudo docker exec private-gateway-api-1 /usr/local/bin/gatewayctl browser start
+sudo docker exec private-gateway-api-1 /usr/local/bin/gatewayctl browser status
+sudo docker exec private-gateway-api-1 /usr/local/bin/gatewayctl browser stop
 ```
 
 Сессия временная: после остановки данные браузера удаляются. Контейнер не получает секретов шлюза и не монтирует каталоги хоста. noVNC доступен через HTTPS Caddy после входа в панель по логину, паролю и коду 2FA; отдельного пароля нет.

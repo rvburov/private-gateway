@@ -2,34 +2,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 repo_dir="$PWD"
-toolchain_root="${GATEWAY_TOOLCHAIN_ROOT:-/workspace/.toolchains}"
-export npm_config_cache="${npm_config_cache:-/workspace/.cache/npm}"
-if test -x "$toolchain_root/go/bin/go"; then
-  export PATH="$toolchain_root/go/bin:$toolchain_root/bin:$toolchain_root/xray:$PATH"
-  export GOCACHE=/workspace/.cache/go-build GOPATH=/workspace/.cache/go GOMODCACHE=/workspace/.cache/go-mod
-fi
 umask 077
-mkdir -p .local bin
-load_env() {
-  if ! test -f .env; then echo 'Run scripts/dev.sh prepare first' >&2; exit 1; fi
-  set -a
-  source .env
-  set +a
-}
-stop_api() {
-  if test -f .local/api.pid; then
-    pid=$(cat .local/api.pid)
-    if python3 scripts/owns-process.py "$pid" "$repo_dir/bin/gateway-api"; then
-      kill "$pid"
-      for attempt in $(seq 1 150); do
-        if ! kill -0 "$pid" 2>/dev/null || [[ "$(ps -o stat= -p "$pid" 2>/dev/null || true)" == Z* ]]; then break; fi
-        sleep 0.1
-      done
-      if kill -0 "$pid" 2>/dev/null && [[ "$(ps -o stat= -p "$pid" 2>/dev/null || true)" != Z* ]]; then echo 'API did not stop; PID retained' >&2; exit 1; fi
-    fi
-    rm -f .local/api.pid
-  fi
-}
+mkdir -p .local
+# One checks image and one set of compose projects per checkout, so parallel agent worktrees do
+# not collide.
+checkout_name=$(basename "$repo_dir" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-')
 # Build context for the checks image: tracked files with their current edits plus new files that
 # are not ignored, which is what the next commit would store, with the repository's LF line endings
 # whatever core.autocrlf says. A temporary index leaves the real one untouched, and ignored files
@@ -48,73 +25,114 @@ build_checks_image() {
     echo 'Docker is required: Docker Desktop on Windows or macOS, Docker Engine on Linux' >&2
     exit 1
   fi
-  # One image and compose project per checkout, so parallel agent worktrees do not collide.
-  checks_name=$(basename "$repo_dir" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9\n' '-')
-  export CHECKS_IMAGE="private-gateway-checks:$checks_name"
+  export CHECKS_IMAGE="private-gateway-checks:$checkout_name"
   checks_context | docker build --file deploy/checks/Dockerfile --tag "$CHECKS_IMAGE" -
 }
-case "${1:-}" in
-  prepare)
-    stop_api
-    go build -o bin/gateway-api ./cmd/gateway-api
-    go build -o bin/gatewayctl ./cmd/gatewayctl
-    if ! test -e .env; then
-      python3 - "$repo_dir" "$(command -v xray || true)" <<'PY'
-import json,os,pathlib,secrets,shlex,subprocess,sys
-repo=pathlib.Path(sys.argv[1])
-keys=json.loads(subprocess.check_output([str(repo/'bin/gateway-api'),'keygen']))
-password=secrets.token_hex(24)
-values={
- 'POSTGRES_PASSWORD':password,
- 'GATEWAY_DATABASE_URL':f'postgres://gateway:{password}@127.0.0.1:5432/gateway?sslmode=disable',
- 'GATEWAY_API_TOKEN':keys['api_token'],'GATEWAY_MASTER_KEY':keys['master_key'],
- 'GATEWAY_REALITY_PRIVATE_KEY':keys['reality_private_key'],'GATEWAY_SHORT_ID':keys['short_id'],
- 'GATEWAY_LISTEN':'127.0.0.1:8080','GATEWAY_HOST':'127.0.0.1','GATEWAY_PORT':'8443',
- 'GATEWAY_SERVER_NAME':'www.cloudflare.com','GATEWAY_REALITY_TARGET':'www.cloudflare.com:443',
- 'GATEWAY_XRAY_LISTEN':'127.0.0.1','GATEWAY_XRAY_CONFIG':str(repo/'.local/xray.json'),
- 'GATEWAY_XRAY_BINARY':sys.argv[2] or 'xray',
- 'GATEWAY_XRAY_RESTART':json.dumps(['bash',str(repo/'scripts/xray-service.sh'),'restart']),
- 'GATEWAY_WEB_DIR':str(repo/'web/dist')}
-with open(repo/'.env','x') as f:
- for k,v in values.items(): f.write(k+'='+shlex.quote(v)+'\n')
-os.chmod(repo/'.env',0o600)
-print('Created local .env with random development credentials (values hidden).')
-PY
-    fi
-    load_env
-    docker compose --env-file .env -f compose.dev.yml up -d --wait postgres
-    bin/gateway-api migrate
-    (cd web && npm ci && npm run build)
-    ;;
-  start)
-    load_env
-    docker compose --env-file .env -f compose.dev.yml up -d --wait postgres
-    bin/gateway-api migrate
-    if test -f .local/api.pid; then
-      pid=$(cat .local/api.pid)
-      if python3 scripts/owns-process.py "$pid" "$repo_dir/bin/gateway-api" && kill -0 "$pid" 2>/dev/null; then
-        curl -fsS --noproxy '*' "http://$GATEWAY_LISTEN/readyz"
-        exit 0
-      fi
-    fi
-    nohup "$repo_dir/bin/gateway-api" serve >.local/api.log 2>&1 &
-    pid=$!
-    printf '%s\n' "$pid" >.local/api.pid
-    for attempt in $(seq 1 100); do
-      if curl -fsS --noproxy '*' "http://$GATEWAY_LISTEN/readyz" >/dev/null 2>&1; then
-        if kill -0 "$pid" 2>/dev/null && rg -q 'gateway API listening' .local/api.log; then echo 'Gateway API and web panel are ready on loopback.'; exit 0; fi
-      fi
-      if ! kill -0 "$pid" 2>/dev/null; then echo 'API startup failed; inspect .local/api.log' >&2; exit 1; fi
-      sleep 0.1
-    done
-    echo 'API readiness timed out; inspect .local/api.log' >&2
+# The local stack: the production compose file of a release built from this checkout, with
+# deploy/dev/compose.yml on top. Its secrets, release and data stay in .local/dev and in Docker
+# volumes of this checkout's project; port 8080 serves one checkout's stack at a time.
+dev=.local/dev
+dev_compose() {
+  docker compose --project-name "private-gateway-dev-$checkout_name" --env-file "$dev/stack.env" \
+    --file "$dev/release/docker/compose.yml" --file deploy/dev/compose.yml "$@"
+}
+require_dev_stack() {
+  if [[ ! -f $dev/stack.env || ! -f $dev/release/docker/compose.yml ]]; then
+    echo 'Start the local stack first: bash scripts/dev.sh start' >&2
     exit 1
+  fi
+}
+random_hex() { od -An -vtx1 -N"$1" /dev/urandom | tr -d ' \n'; }
+random_base64() { head -c "$1" /dev/urandom | base64 | tr -d '\n'; }
+# Runs in the API container: the password arrives on stdin and is stored as PBKDF2 only.
+admin_python=$(cat <<'PY'
+import hashlib, json, os, subprocess, sys
+login, password = sys.stdin.read().split("\n")[:2]
+if not 14 <= len(password) <= 128:
+    raise SystemExit("The password must have 14 to 128 characters.")
+salt = os.urandom(16)
+digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 600000)
+request = {"username": login, "password_hash": f"pbkdf2_sha256:600000:{salt.hex()}:{digest.hex()}"}
+subprocess.run(["/usr/local/bin/gateway-api", "admin-set"], input=json.dumps(request).encode(), check=True)
+PY
+)
+case "${1:-}" in
+  start)
+    # The API with the panel, PostgreSQL and the Xray worker in Docker, built from this checkout
+    # with its uncommitted edits. A repeated start rebuilds them and keeps the data.
+    build_checks_image
+    docker volume create private-gateway-checks-go-build >/dev/null
+    mkdir -p "$dev"
+    rm -rf "$dev/release.next"
+    mkdir "$dev/release.next"
+    MSYS_NO_PATHCONV=1 docker run --rm --env GATEWAY_RELEASE_VERSION="$(printf '0%.0s' {1..40})" \
+      --mount type=volume,src=private-gateway-checks-go-build,dst=/home/checks/.cache/go-build \
+      --entrypoint bash "$CHECKS_IMAGE" -c 'bash scripts/build-release.sh /tmp/release >&2 &&
+        mkdir /tmp/payload && tar -xzf /tmp/release/release.tar.gz -C /tmp/payload && tar -C /tmp/payload -c .' \
+      | tar -x -C "$dev/release.next"
+    rm -rf "$dev/release"
+    mv "$dev/release.next" "$dev/release"
+    if [[ ! -f $dev/stack.env ]]; then
+      {
+        printf 'PG_RELEASE_SHA=%s\n' "$(printf '0%.0s' {1..40})"
+        printf 'PG_API_IMAGE=dev\nPG_XRAY_IMAGE=dev\nPG_BROWSER_IMAGE=dev\n'
+        printf 'POSTGRES_PASSWORD=%s\n' "$(random_hex 32)"
+        printf 'GATEWAY_API_TOKEN=%s\n' "$(random_hex 32)"
+        printf 'GATEWAY_MASTER_KEY=%s\n' "$(random_base64 32)"
+        printf 'GATEWAY_REALITY_PRIVATE_KEY=%s\n' "$(random_base64 32 | tr '+/' '-_' | tr -d '=')"
+        printf 'GATEWAY_SHORT_ID=%s\n' "$(random_hex 8)"
+        printf 'BROWSER_WORKER_TOKEN=%s\n' "$(random_hex 32)"
+        printf 'GATEWAY_HOST=127.0.0.1\nPANEL_DOMAIN=localhost\n'
+        # The production compose file requires them; deploy/dev/compose.yml replaces their use.
+        printf 'GATEWAY_STATE_DIR=/unused\nGATEWAY_CADDYFILE=/unused\n'
+      } > "$dev/stack.env"
+      echo 'Created .local/dev/stack.env with random local secrets (values hidden).'
+    fi
+    dev_compose build api xray
+    dev_compose run --rm --no-deps state
+    dev_compose up --detach --wait postgres
+    dev_compose run --rm --no-deps api migrate
+    dev_compose up --detach --wait api xray
+    curl --fail --silent --show-error --noproxy '*' --max-time 5 --output /dev/null http://127.0.0.1:8080/readyz
+    echo 'The panel is on http://127.0.0.1:8080/. Set its login and password: bash scripts/dev.sh admin'
+    ;;
+  admin)
+    # The administrator of the local stack; 2FA is enrolled in the browser at the first login,
+    # as in production. The password reaches the container on stdin only.
+    require_dev_stack
+    read -r -p 'Administrator login [admin]: ' login
+    read -r -s -p 'Password, 14 to 128 characters: ' password
+    echo
+    read -r -s -p 'Repeat the password: ' repeat
+    echo
+    [[ $password == "$repeat" ]] || { echo 'The passwords differ.' >&2; exit 1; }
+    printf '%s\n%s\n' "${login:-admin}" "$password" | dev_compose exec -T api python3 -c "$admin_python"
+    # New credentials end the sessions of the previous ones.
+    dev_compose up --detach --no-deps --force-recreate --wait api
+    echo 'Open http://127.0.0.1:8080/ and enroll the authenticator.'
+    ;;
+  ctl)
+    # gatewayctl inside the API container, where its token works over loopback.
+    require_dev_stack
+    shift
+    # MSYS_NO_PATHCONV keeps Git Bash on Windows from rewriting the container path.
+    MSYS_NO_PATHCONV=1 dev_compose exec -T api /usr/local/bin/gatewayctl "$@"
+    ;;
+  smoke)
+    # Creates, applies, revokes and applies a device through the API with the real Xray worker.
+    require_dev_stack
+    dev_compose exec -T api python3 - < scripts/smoke-api.py
+    ;;
+  stop)
+    # Stops the local stack and keeps its database and Xray state.
+    require_dev_stack
+    dev_compose stop
     ;;
   test)
     # Every check in Docker, so a Windows PC, a Linux host and CI run the same toolchain.
     build_checks_image
     docker volume create private-gateway-checks-go-build >/dev/null
-    project="private-gateway-checks-$checks_name"
+    project="private-gateway-checks-$checkout_name"
     # The stack is throwaway: --volumes only drops its own tmpfs database, never the dev or production one.
     trap "docker compose --project-name $project --file deploy/checks/compose.yml down --volumes --remove-orphans >/dev/null 2>&1" EXIT
     docker compose --project-name "$project" --file deploy/checks/compose.yml run --rm checks
@@ -145,11 +163,5 @@ PY
       -c 'bash scripts/build-release.sh /tmp/release >&2 && tar -C /tmp/release -c .' | tar -x -C "$output"
     echo "Release $version is in $output."
     ;;
-  stop)
-    load_env
-    stop_api
-    bash scripts/xray-service.sh stop
-    docker compose --env-file .env -f compose.dev.yml stop postgres
-    ;;
-  *) echo 'usage: scripts/dev.sh prepare|start|test|sqlc|release|stop' >&2; exit 1 ;;
+  *) echo 'usage: scripts/dev.sh test|sqlc|release DIR|start|admin|ctl ARGS|smoke|stop' >&2; exit 1 ;;
 esac
