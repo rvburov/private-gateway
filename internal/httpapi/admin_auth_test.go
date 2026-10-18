@@ -210,3 +210,129 @@ func TestCLITokenOnlyWorksOnLoopbackBeforeSetup(t *testing.T) {
 		t.Fatalf("local CLI token access: %d", w.Code)
 	}
 }
+
+func TestRememberedLoginCookieUsesSecureNameOutsideLocalHTTP(t *testing.T) {
+	local := httptest.NewRequest(http.MethodGet, "http://127.0.0.1:8080/", nil)
+	if name, secure := rememberedLoginCookie(local); name != localRememberedLoginCookieName || secure {
+		t.Fatal("local HTTP cookie requires a usable name without Secure")
+	}
+	public := httptest.NewRequest(http.MethodGet, "https://gateway.example/", nil)
+	if name, secure := rememberedLoginCookie(public); name != rememberedLoginCookieName || !secure {
+		t.Fatal("public cookie must be Secure and host-scoped")
+	}
+}
+
+func TestRememberedAdministratorLoginRestoresAndRevokes(t *testing.T) {
+	store, pool, _, _ := integrationStore(t)
+	salt := []byte("0123456789abcdef")
+	hash, err := pbkdf2.Key(sha256.New, "a sufficiently long password", salt, 600000, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	passwordHash := "pbkdf2_sha256:600000:" + hex.EncodeToString(salt) + ":" + hex.EncodeToString(hash)
+	if err := store.SetAdministrator(t.Context(), "admin@example.com", passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	handler := New(store, nil, &testBrowser{}, Options{})
+	call := func(path, body, bearer string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		t.Helper()
+		method := http.MethodPost
+		if path == "/api/v1/auth/restore" || path == "/api/v1/metrics" {
+			method = http.MethodGet
+		}
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		req.RemoteAddr = "192.0.2.1:1234"
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if bearer != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		return w
+	}
+	login := call("/api/v1/auth/login", `{"username":"admin@example.com","password":"a sufficiently long password"}`, "", nil)
+	var pending struct{ Pending string }
+	if login.Code != 200 || json.Unmarshal(login.Body.Bytes(), &pending) != nil {
+		t.Fatal("password step failed", login.Code)
+	}
+	setup := call("/api/v1/auth/2fa/setup", "", pending.Pending, nil)
+	var details struct{ Secret string }
+	if setup.Code != 200 || json.Unmarshal(setup.Body.Bytes(), &details) != nil {
+		t.Fatal("TOTP setup failed", setup.Code)
+	}
+	secret, err := base32.StdEncoding.WithPadding(base32.NoPadding).DecodeString(details.Secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	code := adminauth.Code(secret, time.Now().Unix()/30)
+	confirmed := call("/api/v1/auth/2fa/setup/confirm", `{"code":"`+code+`","remember":true}`, pending.Pending, nil)
+	if confirmed.Code != 200 {
+		t.Fatal("TOTP confirmation failed", confirmed.Code, confirmed.Body.String())
+	}
+	var remembered *http.Cookie
+	for _, cookie := range confirmed.Result().Cookies() {
+		if cookie.Name == rememberedLoginCookieName {
+			remembered = cookie
+		}
+	}
+	if remembered == nil || !remembered.HttpOnly || !remembered.Secure || remembered.Path != "/" ||
+		remembered.SameSite != http.SameSiteStrictMode || time.Until(remembered.Expires) < 29*24*time.Hour {
+		t.Fatal("remembered cookie is missing or unprotected")
+	}
+	var storedHash []byte
+	if err := pool.QueryRow(t.Context(), "SELECT token_hash FROM administrator_remembered_logins").Scan(&storedHash); err != nil {
+		t.Fatal(err)
+	}
+	if string(storedHash) == remembered.Value || len(storedHash) != sha256.Size {
+		t.Fatal("raw remembered token was stored")
+	}
+	handler = New(store, nil, &testBrowser{}, Options{})
+	if got := call("/api/v1/auth/restore", "", "", nil).Code; got != 401 {
+		t.Fatalf("restored without cookie: %d", got)
+	}
+	restored := call("/api/v1/auth/restore", "", "", remembered)
+	var session struct{ Session string }
+	if restored.Code != 200 || json.Unmarshal(restored.Body.Bytes(), &session) != nil || session.Session == "" {
+		t.Fatal("remembered login was not restored", restored.Code, restored.Body.String())
+	}
+	if got := call("/api/v1/metrics", "", session.Session, nil).Code; got != 200 {
+		t.Fatalf("restored session rejected: %d", got)
+	}
+	secondRestored := call("/api/v1/auth/restore", "", "", remembered)
+	var secondSession struct{ Session string }
+	if secondRestored.Code != 200 || json.Unmarshal(secondRestored.Body.Bytes(), &secondSession) != nil {
+		t.Fatal("second tab was not restored")
+	}
+	if got := call("/api/v1/auth/logout", "", session.Session, remembered).Code; got != 200 {
+		t.Fatalf("logout failed: %d", got)
+	}
+	if got := call("/api/v1/metrics", "", secondSession.Session, nil).Code; got != 401 {
+		t.Fatalf("another session survived logout: %d", got)
+	}
+	if got := call("/api/v1/auth/restore", "", "", remembered).Code; got != 401 {
+		t.Fatalf("remembered login survived logout: %d", got)
+	}
+	admin, err := store.Administrator(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	const oldKey = "another-random-test-token-that-is-long-enough"
+	if err := store.RememberAdministratorLogin(t.Context(), oldKey, admin.Generation, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	remembered.Value = oldKey
+	if got := call("/api/v1/auth/restore", "", "", remembered).Code; got != 200 {
+		t.Fatalf("new remembered login rejected: %d", got)
+	}
+	if err := store.SetAdministrator(t.Context(), "admin@example.com", passwordHash); err != nil {
+		t.Fatal(err)
+	}
+	if got := call("/api/v1/auth/restore", "", "", remembered).Code; got != 401 {
+		t.Fatalf("remembered login survived password reset: %d", got)
+	}
+}

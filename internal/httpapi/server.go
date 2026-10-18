@@ -85,6 +85,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 	registry.MustRegister(requests)
 	r.Route("/api/v1", func(r chi.Router) {
 		r.Post("/auth/login", s.login)
+		r.Get("/auth/restore", s.restoreSession)
 		r.Post("/auth/2fa", s.secondFactor)
 		r.Post("/auth/2fa/setup", s.startTOTPSetup)
 		r.Post("/auth/2fa/setup/confirm", s.confirmTOTPSetup)

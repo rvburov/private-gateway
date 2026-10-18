@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base32"
 	"net"
 	"net/http"
@@ -15,11 +16,27 @@ import (
 )
 
 type adminSession struct {
-	expires    time.Time
-	generation int64
+	expires       time.Time
+	generation    int64
+	rememberedKey [32]byte
 }
 
 const browserCookieName = "__Secure-private-gateway-browser"
+const rememberedLoginCookieName = "__Host-private-gateway-login"
+const localRememberedLoginCookieName = "private-gateway-login"
+const rememberedLoginDuration = 30 * 24 * time.Hour
+
+func rememberedLoginCookie(r *http.Request) (string, bool) {
+	host := r.Host
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	local := host == "localhost" || host == "127.0.0.1" || host == "[::1]" || host == "::1"
+	if local && r.TLS == nil && r.Header.Get("X-Forwarded-Proto") != "https" {
+		return localRememberedLoginCookieName, false
+	}
+	return rememberedLoginCookieName, true
+}
 
 type pendingLogin struct {
 	username   string
@@ -159,7 +176,8 @@ func (s *Server) startTOTPSetup(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Code string `json:"code"`
+		Code     string `json:"code"`
+		Remember bool   `json:"remember"`
 	}
 	if !decode(w, r, &input) {
 		return
@@ -182,12 +200,13 @@ func (s *Server) secondFactor(w http.ResponseWriter, r *http.Request) {
 		s.codeFailure(w, token)
 		return
 	}
-	s.finishLogin(w, token, pending)
+	s.finishLogin(w, r, token, pending, input.Remember)
 }
 
 func (s *Server) confirmTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Code string `json:"code"`
+		Code     string `json:"code"`
+		Remember bool   `json:"remember"`
 	}
 	if !decode(w, r, &input) {
 		return
@@ -217,7 +236,7 @@ func (s *Server) confirmTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		fail(w, 401, "login expired; enter username and password again")
 		return
 	}
-	s.finishLogin(w, token, pending)
+	s.finishLogin(w, r, token, pending, input.Remember)
 }
 
 func (s *Server) codeFailure(w http.ResponseWriter, token string) {
@@ -232,14 +251,49 @@ func (s *Server) codeFailure(w http.ResponseWriter, token string) {
 	fail(w, 401, "invalid authentication code")
 }
 
-func (s *Server) finishLogin(w http.ResponseWriter, pendingToken string, pending *pendingLogin) {
+func (s *Server) finishLogin(w http.ResponseWriter, r *http.Request, pendingToken string, pending *pendingLogin, remember bool) {
 	session, err := adminauth.NewSessionToken()
 	if err != nil {
 		fail(w, 503, "authentication unavailable")
 		return
 	}
+	var rememberedKey [32]byte
+	var oldRememberedKey [32]byte
+	if remember {
+		remembered, err := adminauth.NewSessionToken()
+		if err != nil {
+			fail(w, 503, "authentication unavailable")
+			return
+		}
+		expires := time.Now().Add(rememberedLoginDuration)
+		if err := s.store.RememberAdministratorLogin(r.Context(), remembered, pending.generation, expires); err != nil {
+			fail(w, 503, "authentication unavailable")
+			return
+		}
+		rememberedKey = sha256.Sum256([]byte(remembered))
+		name, secure := rememberedLoginCookie(r)
+		http.SetCookie(w, &http.Cookie{Name: name, Value: remembered, Path: "/",
+			Expires: expires, Secure: secure, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	} else {
+		name, _ := rememberedLoginCookie(r)
+		if cookie, err := r.Cookie(name); err == nil {
+			oldRememberedKey = sha256.Sum256([]byte(cookie.Value))
+		}
+		if err := s.forgetRememberedLogin(r.Context(), r); err != nil {
+			fail(w, 503, "authentication unavailable")
+			return
+		}
+		clearRememberedLoginCookie(w, r)
+	}
 	s.loginMu.Lock()
 	defer s.loginMu.Unlock()
+	if oldRememberedKey != ([32]byte{}) {
+		for id, current := range s.sessions {
+			if current.rememberedKey == oldRememberedKey {
+				delete(s.sessions, id)
+			}
+		}
+	}
 	delete(s.pending, pendingToken)
 	now := time.Now()
 	for id, current := range s.sessions {
@@ -247,7 +301,58 @@ func (s *Server) finishLogin(w http.ResponseWriter, pendingToken string, pending
 			delete(s.sessions, id)
 		}
 	}
-	s.sessions[session] = adminSession{expires: now.Add(8 * time.Hour), generation: pending.generation}
+	s.sessions[session] = adminSession{expires: now.Add(8 * time.Hour), generation: pending.generation, rememberedKey: rememberedKey}
+	respond(w, 200, map[string]string{"session": session})
+}
+
+func clearRememberedLoginCookie(w http.ResponseWriter, r *http.Request) {
+	name, secure := rememberedLoginCookie(r)
+	http.SetCookie(w, &http.Cookie{Name: name, Path: "/", MaxAge: -1,
+		Secure: secure, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+}
+
+func (s *Server) forgetRememberedLogin(ctx context.Context, r *http.Request) error {
+	name, _ := rememberedLoginCookie(r)
+	cookie, err := r.Cookie(name)
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	return s.store.ForgetAdministratorLogin(ctx, cookie.Value)
+}
+
+// restoreSession восстанавливает короткий сеанс только по действующему ключу браузера.
+func (s *Server) restoreSession(w http.ResponseWriter, r *http.Request) {
+	name, _ := rememberedLoginCookie(r)
+	cookie, err := r.Cookie(name)
+	if err != nil || cookie.Value == "" {
+		fail(w, 401, "unauthorized")
+		return
+	}
+	generation, valid, err := s.store.AdministratorRememberedLogin(r.Context(), cookie.Value)
+	if err != nil {
+		fail(w, 503, "authentication unavailable")
+		return
+	}
+	if !valid {
+		clearRememberedLoginCookie(w, r)
+		fail(w, 401, "unauthorized")
+		return
+	}
+	session, err := adminauth.NewSessionToken()
+	if err != nil {
+		fail(w, 503, "authentication unavailable")
+		return
+	}
+	s.loginMu.Lock()
+	now := time.Now()
+	for id, current := range s.sessions {
+		if now.After(current.expires) || len(s.sessions) >= 32 {
+			delete(s.sessions, id)
+		}
+	}
+	s.sessions[session] = adminSession{expires: now.Add(8 * time.Hour), generation: generation,
+		rememberedKey: sha256.Sum256([]byte(cookie.Value))}
+	s.loginMu.Unlock()
 	respond(w, 200, map[string]string{"session": session})
 }
 
@@ -281,9 +386,25 @@ func (s *Server) validSession(token string, generation int64) bool {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	if err := s.forgetRememberedLogin(r.Context(), r); err != nil {
+		fail(w, 503, "authentication unavailable")
+		return
+	}
 	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	var rememberedKey [32]byte
+	name, _ := rememberedLoginCookie(r)
+	if cookie, err := r.Cookie(name); err == nil {
+		rememberedKey = sha256.Sum256([]byte(cookie.Value))
+	}
 	s.loginMu.Lock()
 	delete(s.sessions, value)
+	if rememberedKey != ([32]byte{}) {
+		for id, session := range s.sessions {
+			if session.rememberedKey == rememberedKey {
+				delete(s.sessions, id)
+			}
+		}
+	}
 	for ticket, session := range s.browserTickets {
 		if session == value {
 			delete(s.browserTickets, ticket)
@@ -292,6 +413,7 @@ func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
 	s.loginMu.Unlock()
 	http.SetCookie(w, &http.Cookie{Name: browserCookieName, Path: "/browser", MaxAge: -1,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode})
+	clearRememberedLoginCookie(w, r)
 	respond(w, 200, map[string]string{"status": "logged out"})
 }
 

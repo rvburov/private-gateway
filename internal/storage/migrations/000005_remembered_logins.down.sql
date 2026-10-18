@@ -1,0 +1,1 @@
+DROP TABLE administrator_remembered_logins;

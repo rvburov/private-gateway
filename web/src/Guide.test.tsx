@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { clientSteps } from "./GuideDetails";
 import { Guide, detectPlatform, platforms } from "./Guide";
 
@@ -68,5 +68,16 @@ describe("setup instructions", () => {
     expect(screen.getByRole("link", { name: "Скачать выключение прокси" }).getAttribute("href")).toBe("/downloads/hiddify-proxy-off.bat");
     fireEvent.click(screen.getByRole("button", { name: /Все приложения для Windows/ }));
     expect(screen.getByRole("button", { name: "Clash Verge Rev" })).toBeTruthy();
+  });
+
+  it("explains the Chrome incognito proxy and WebRTC checks without listing unwanted browsers", () => {
+    const { container } = render(<Guide />);
+    const chrome = within(container).getByText("Chrome").closest("details");
+    expect(chrome).not.toBeNull();
+    fireEvent.click(within(container).getByText("Chrome"));
+    expect(within(container).getByText(/SOCKS5 → 127\.0\.0\.1 → 2334/)).toBeTruthy();
+    expect(within(container).getByText(/WebRTC Control → «Сведения»/)).toBeTruthy();
+    expect(within(container).getByText(/откройте новое и повторите проверку IP, DNS и WebRTC/)).toBeTruthy();
+    expect(within(container).queryByText(/Chrome, Edge, Яндекс Браузер/)).toBeNull();
   });
 });

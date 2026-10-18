@@ -1420,6 +1420,20 @@ textarea:focus {
   margin-top: 20px;
   min-height: 46px;
 }
+.login-form .remember-login {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 16px;
+  cursor: pointer;
+}
+.login-form .remember-login input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  margin: 0;
+  accent-color: var(--accent);
+}
 .login-identity {
   margin-top: 14px;
   padding: 10px 12px;

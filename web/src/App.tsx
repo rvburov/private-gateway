@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { request, type Status } from "./api";
 import { Dashboard } from "./Dashboard";
@@ -8,6 +8,8 @@ import { ErrorNotice, ProfileQRCode } from "./ui";
 export default function App() {
   const queryClient = useQueryClient();
   const [token, setToken] = useState("");
+  const [restoring, setRestoring] = useState(true);
+  const [remember, setRemember] = useState(false);
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [code, setCode] = useState("");
@@ -17,6 +19,20 @@ export default function App() {
   const [setupURI, setSetupURI] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  useEffect(() => {
+    let active = true;
+    void fetch("/api/v1/auth/restore", { credentials: "same-origin" })
+      .then(async (response) => {
+        if (response.status === 401) return;
+        if (!response.ok) throw new Error("Не удалось проверить сохранённый вход. Повторите позже.");
+        const credential = ((await response.json()) as { session: string }).session;
+        await request<Status>(credential, "/status");
+        if (active) setToken(credential);
+      })
+      .catch((err: unknown) => { if (active) setError(err); })
+      .finally(() => { if (active) setRestoring(false); });
+    return () => { active = false; };
+  }, []);
   async function login(event: FormEvent) {
     event.preventDefault();
     setError(null);
@@ -63,7 +79,7 @@ export default function App() {
           method: "POST",
           credentials: "same-origin",
           headers: { "Content-Type": "application/json", Authorization: `Bearer ${pendingToken}` },
-          body: JSON.stringify({ code: code.trim() }),
+          body: JSON.stringify({ code: code.trim(), remember }),
         },
       );
       if (!response.ok)
@@ -88,12 +104,19 @@ export default function App() {
       setPending(false);
     }
   }
-  function logout() {
-    if (token) {
-      void fetch("/api/v1/auth/logout", {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
-      }).catch(() => undefined);
+  async function logout() {
+    try {
+      if (token) {
+        const response = await fetch("/api/v1/auth/logout", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+        if (!response.ok) throw new Error("Не удалось завершить вход. Повторите попытку.");
+      }
+    } catch {
+      setError(new Error("Не удалось завершить вход. Повторите попытку."));
+      return;
     }
     queryClient.clear();
     setToken("");
@@ -107,7 +130,8 @@ export default function App() {
     setLoginStep("password");
     setError(null);
   }
-  if (token) return <Dashboard token={token} onLogout={logout} />;
+  if (restoring) return <div className="login-page"><p>Проверяем сохранённый вход…</p></div>;
+  if (token) return <><ErrorNotice error={error} /><Dashboard token={token} onLogout={() => { void logout(); }} /></>;
   return (
     <div className="login-page">
       <div className="login-intro">
@@ -170,6 +194,11 @@ export default function App() {
                 onChange={(event) => setPassword(event.target.value)}
                 required
               />
+              <label className="remember-login" htmlFor="remember-login">
+                <input id="remember-login" type="checkbox" checked={remember}
+                  onChange={(event) => setRemember(event.target.checked)} />
+                Запомнить вход на этом устройстве на 30 дней
+              </label>
             </>
           ) : (
             <>
@@ -230,7 +259,9 @@ export default function App() {
           <div className="privacy-note">
             <Icon name="lock" size={14} />
             <span>
-              Сеанс хранится только в памяти этой вкладки. После перезагрузки потребуется войти снова.
+              {remember
+                ? "На этом устройстве вход восстановится после закрытия браузера. На чужом компьютере снимите галочку."
+                : "Без сохранения входа сеанс хранится только в памяти вкладки."}
             </span>
           </div>
         </form>

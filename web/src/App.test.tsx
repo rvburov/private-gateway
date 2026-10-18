@@ -32,6 +32,7 @@ let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
 let browserRunning = false;
+let rememberedSession = false;
 // Что отвечает ipleak.net, внешний сервис раздела «Проверка».
 let visibleIP = "203.0.113.7";
 let visibleIPv6: string | null = null;
@@ -58,6 +59,7 @@ beforeEach(() => {
   rotations = 0;
   adminSetup = true;
   browserRunning = false;
+  rememberedSession = false;
   visibleIP = "203.0.113.7";
   visibleIPv6 = null;
   dnsResolvers = ["162.158.1.10"];
@@ -73,6 +75,8 @@ beforeEach(() => {
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
     const about = (ip: string) => Response.json({ ip, ...networks[ip] });
+    if (path === "/api/v1/auth/restore")
+      return rememberedSession ? Response.json({ session: "admin-token" }) : Response.json({ error: "unauthorized" }, { status: 401 });
     if (path === "https://ipv4.ipleak.net/json/") return about(visibleIP);
     if (path === "https://ipv6.ipleak.net/json/") {
       if (!visibleIPv6) throw new TypeError("Failed to fetch");
@@ -89,12 +93,16 @@ beforeEach(() => {
     }
     if (path === "/api/v1/auth/2fa/setup") return Response.json({ secret: "TESTONLY1234567890", otpauth_uri: "otpauth://totp/Private%20Gateway:admin?secret=TESTONLY1234567890" });
     if (path === "/api/v1/auth/2fa" || path === "/api/v1/auth/2fa/setup/confirm") {
-      const input = JSON.parse(options.body as string) as { code: string };
+      const input = JSON.parse(options.body as string) as { code: string; remember: boolean };
+      if (input.code === "123456" && input.remember) rememberedSession = true;
       return options.headers && (options.headers as Record<string, string>).Authorization === "Bearer pending-token" && input.code === "123456"
         ? Response.json({ session: "admin-token" })
         : Response.json({ error: "unauthorized" }, { status: 401 });
     }
-    if (path === "/api/v1/auth/logout") return Response.json({ status: "logged out" });
+    if (path === "/api/v1/auth/logout") {
+      rememberedSession = false;
+      return Response.json({ status: "logged out" });
+    }
     const token = (options.headers as Record<string, string>)?.Authorization;
     if (token !== "Bearer admin-token")
       return Response.json({ error: "unauthorized" }, { status: 401 });
@@ -326,7 +334,7 @@ describe("administrator panel", () => {
     expect(screen.queryByLabelText("Токен доступа")).toBeNull();
     expect(screen.queryByText(/admin-credentials\.py/)).toBeNull();
     expect(screen.queryByText(/не настроена/)).toBeNull();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/auth/restore", { credentials: "same-origin" });
   });
 
   it("requires password before the authenticator code when configured", async () => {
@@ -380,7 +388,7 @@ describe("administrator panel", () => {
     await screen.findByRole("alert");
     expect(screen.queryByText("Ваш приватный шлюз")).toBeNull();
     expect(screen.getByRole("alert").textContent).toContain("Неверный логин или пароль");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
   });
 
@@ -396,6 +404,30 @@ describe("administrator panel", () => {
     expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
     expect(screen.queryByText("Phone")).toBeNull();
     expect(store).not.toHaveBeenCalled();
+  });
+
+  it("restores a remembered login after remount and forgets it on logout", async () => {
+    const store = vi.spyOn(Storage.prototype, "setItem");
+    const view = render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    fireEvent.change(await screen.findByLabelText("Логин"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "long-password" } });
+    fireEvent.click(screen.getByLabelText("Запомнить вход на этом устройстве на 30 дней"));
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
+    fireEvent.change(await screen.findByLabelText("Код аутентификации"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    await screen.findByText("Ваш приватный шлюз");
+    expect(rememberedSession).toBe(true);
+    expect(store).not.toHaveBeenCalled();
+
+    view.unmount();
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    await screen.findByText("Ваш приватный шлюз");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/auth/restore", { credentials: "same-origin" });
+    fireEvent.click(screen.getByRole("button", { name: "Выйти из панели" }));
+    await screen.findByLabelText("Логин");
+    expect(rememberedSession).toBe(false);
+    expect(store).not.toHaveBeenCalled();
+    store.mockRestore();
   });
 
   it("fetches a sensitive profile only on demand and removes it when hidden", async () => {
