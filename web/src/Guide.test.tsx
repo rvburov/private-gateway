@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { detectPlatform, platforms } from "./Guide";
+import { fireEvent, render, screen } from "@testing-library/react";
+import { clientSteps } from "./GuideDetails";
+import { Guide, detectPlatform, platforms } from "./Guide";
 
 describe("setup instructions", () => {
   it("opens the instructions for the system the panel is viewed on", () => {
@@ -27,7 +29,7 @@ describe("setup instructions", () => {
       expect(platform.steps.at(-1)?.title).toBe("Проверьте подключение");
     }
     // Проверенным помечено только то, что пробовали на настоящем устройстве.
-    expect(platforms.filter((platform) => platform.checked).map((platform) => platform.id)).toEqual(["ios"]);
+    expect(platforms.filter((platform) => platform.checked).map((platform) => platform.id)).toEqual(["ios", "windows"]);
   });
 
   it("ranks three clients for every system and keeps the steps general", () => {
@@ -39,8 +41,32 @@ describe("setup instructions", () => {
       for (const app of [...platform.top, ...platform.others]) {
         if (app.link) expect(app.link).toMatch(/^https:\/\//);
       }
-      // Шаги подходят любому клиенту: ни одно приложение в них не главное.
-      for (const step of platform.steps) expect(`${step.title} ${step.text}`).not.toMatch(/hiddify|happ|v2ray|streisand/i);
+      // Подробные шаги зависят от выбранного клиента.
+      expect(clientSteps(platform.id, platform.top[0].name, platform.top[0].source)).not.toHaveLength(0);
     }
+  });
+
+  it("gives every listed client installation, import, connection and verification steps", () => {
+    for (const platform of platforms) {
+      for (const app of [...platform.top, ...platform.others]) {
+        const titles = clientSteps(platform.id, app.name, app.source).map((step) => step.title).join(" | ");
+        expect(titles).toContain("Установите");
+        expect(titles).toMatch(/профиль|подписку/);
+        expect(titles).toMatch(/Подключитесь|Подключение/);
+        expect(titles).toContain("Проверьте");
+      }
+    }
+  });
+
+  it("opens Windows Hiddify details and offers both BAT files", () => {
+    render(<Guide />);
+    fireEvent.click(screen.getByRole("button", { name: "Windows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Hiddify → Инструкция" }));
+    expect(screen.getByText(/Windows → Hiddify/)).toBeTruthy();
+    expect(screen.getByText(/На проверенном ПК именно этот режим/)).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Скачать включение прокси" }).getAttribute("href")).toBe("/downloads/hiddify-proxy-on.bat");
+    expect(screen.getByRole("link", { name: "Скачать выключение прокси" }).getAttribute("href")).toBe("/downloads/hiddify-proxy-off.bat");
+    fireEvent.click(screen.getByRole("button", { name: /Все приложения для Windows/ }));
+    expect(screen.getByRole("button", { name: "Clash Verge Rev" })).toBeTruthy();
   });
 });

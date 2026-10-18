@@ -1,11 +1,12 @@
 import { Fragment, useState } from "react";
 import { Icon } from "./icons";
+import { clientSteps } from "./GuideDetails";
 
 // Инструкции для каждой системы владельца. Названия пунктов меню отличаются от версии к версии и
 // от приложения к приложению, поэтому шаги называют настройку и её обычные имена. Проверенным
 // помечено только то, что пробовали на настоящем устройстве; остальное следует возможностям приложений.
 export type PlatformId = "android" | "ios" | "windows" | "macos" | "linux";
-type ClientApp = { name: string; note: string; source: string; link?: string };
+export type ClientApp = { name: string; note: string; source: string; link?: string };
 type Step = { title: string; text: string };
 type Platform = {
   id: PlatformId;
@@ -127,6 +128,7 @@ export const platforms: Platform[] = [
   {
     id: "windows",
     label: "Windows",
+    checked: "Проверено на Windows с Hiddify 4.1.1 и Chrome по Wi-Fi: в режиме системного прокси сайты видели IP шлюза. Режим VPN на этом ПК показал домашний IP.",
     top: [
       { name: "v2rayN", note: "Самый популярный клиент для Windows: ядро Xray или sing-box, режим TUN. Бесплатный, открытый код.", source: "GitHub", link: links.v2rayN },
       { name: "Happ", note: "Простой, ядро Xray. Бесплатный, код закрыт.", source: "GitHub", link: links.happDesktop },
@@ -142,8 +144,8 @@ export const platforms: Platform[] = [
       { title: "Установите приложение", text: "Скачайте одно из трёх приложений выше со страницы выпусков на GitHub." },
       desktopSubscriptionStep,
       {
-        title: "Режим VPN (TUN)",
-        text: "Включите режим TUN — в разных приложениях он называется «TUN», «Режим TUN» или «VPN»; Windows попросит права администратора. В режиме системного прокси через сервер идут только программы, которые используют прокси.",
+        title: "Режим подключения",
+        text: "Выберите режим, описанный в инструкции конкретного клиента, и проверьте внешний IP. На проверенном Windows-компьютере Hiddify работал в режиме системного прокси; режим VPN показал домашний IP.",
       },
       allTrafficStep,
       ipv6Step,
@@ -296,7 +298,9 @@ function Source({ app }: { app: ClientApp }) {
 
 export function Guide({ onCheck }: { onCheck?: () => void }) {
   const [platformId, setPlatformId] = useState<PlatformId>(() => detectPlatform());
+  const [clientName, setClientName] = useState<string | null>(null);
   const platform = platforms.find((item) => item.id === platformId) ?? platforms[0];
+  const selectedClient = [...platform.top, ...platform.others].find((app) => app.name === clientName);
   return (
     <>
       <section className="card">
@@ -331,7 +335,7 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
                 key={item.id}
                 type="button"
                 aria-pressed={item.id === platform.id}
-                onClick={() => setPlatformId(item.id)}
+                onClick={() => { setPlatformId(item.id); setClientName(null); }}
               >
                 {item.label}
               </button>
@@ -341,6 +345,39 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
             <Icon name={platform.checked ? "check" : "lock"} size={17} />
             {platform.checked ?? `На ${platform.label} с этим сервером ещё не проверяли: шаги основаны на возможностях приложений.`}
           </div>
+          {selectedClient ? (
+            <div className="guide-client-detail">
+              <button type="button" className="text-button" onClick={() => setClientName(null)}>
+                ← Все приложения для {platform.label}
+              </button>
+              <h3 className="guide-subtitle">{platform.label} → {selectedClient.name}</h3>
+              <p>{selectedClient.note}</p>
+              <Source app={selectedClient} />
+              <ol className="guide-steps">
+                {clientSteps(platform.id, selectedClient.name, selectedClient.source).map((step) => (
+                  <li key={step.title}>
+                    <strong>{step.title}</strong>
+                    <p>{step.text}</p>
+                  </li>
+                ))}
+              </ol>
+              {platform.id === "windows" && selectedClient.name === "Hiddify" && (
+                <div className="guide-bat">
+                  <h4>Программы вне браузера</h4>
+                  <p>При подключённом Hiddify эти файлы задают локальный прокси 127.0.0.1:2334 для программ, которые поддерживают HTTP_PROXY и HTTPS_PROXY. После изменения постоянных переменных откройте новое окно программы. Это не системный VPN и не kill switch.</p>
+                  <a className="button secondary-button" href="/downloads/hiddify-proxy-on.bat" download="hiddify-proxy-on.bat">Скачать включение прокси</a>{" "}
+                  <a className="button secondary-button" href="/downloads/hiddify-proxy-off.bat" download="hiddify-proxy-off.bat">Скачать выключение прокси</a>
+                  <details><summary>Показать содержимое BAT-файлов</summary>
+                    <h5>hiddify-proxy-on.bat</h5>
+                    <pre>{`@echo off\nchcp 65001 >nul\nset "HTTP_PROXY=http://127.0.0.1:2334"\nset "HTTPS_PROXY=http://127.0.0.1:2334"\nsetx HTTP_PROXY "%HTTP_PROXY%" >nul\nsetx HTTPS_PROXY "%HTTPS_PROXY%" >nul\necho Прокси включён. IP в этом окне:\ncurl.exe -4 -sS --max-time 15 https://ipinfo.io\necho(\npause`}</pre>
+                    <h5>hiddify-proxy-off.bat</h5>
+                    <pre>{`@echo off\nchcp 65001 >nul\nset "HTTP_PROXY="\nset "HTTPS_PROXY="\nsetx HTTP_PROXY "" >nul\nsetx HTTPS_PROXY "" >nul\necho Переменные прокси очищены. Для других программ откройте новое окно.\npause`}</pre>
+                  </details>
+                </div>
+              )}
+            </div>
+          ) : (
+          <>
           <h3 className="guide-subtitle">Приложения: тройка по популярности и надёжности</h3>
           <ol className="guide-apps" aria-label={`Приложения для ${platform.label}`}>
             {platform.top.map((app, index) => (
@@ -349,7 +386,7 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
                   {index + 1}
                 </span>
                 <div>
-                  <strong>{app.name}</strong>
+                  <button type="button" className="guide-client-button" onClick={() => setClientName(app.name)}>{app.name} → Инструкция</button>
                   <span>{app.note}</span>
                 </div>
                 <Source app={app} />
@@ -361,27 +398,15 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
             {platform.others.map((app, index) => (
               <Fragment key={app.name}>
                 {index > 0 && ", "}
-                {app.link ? (
-                  <a href={app.link} target="_blank" rel="noopener noreferrer">
-                    {app.name}
-                  </a>
-                ) : (
-                  app.name
-                )}{" "}
+                <button type="button" className="guide-client-button" onClick={() => setClientName(app.name)}>{app.name}</button>{" "}
                 ({app.note})
+                {app.link && <> · <Source app={app} /></>}
               </Fragment>
             ))}
             .
           </p>
-          <h3 className="guide-subtitle">Шаги</h3>
-          <ol className="guide-steps">
-            {platform.steps.map((step) => (
-              <li key={step.title}>
-                <strong>{step.title}</strong>
-                <p>{step.text}</p>
-              </li>
-            ))}
-          </ol>
+          </>
+          )}
           {onCheck && (
             <div className="button-group">
               <button type="button" className="button secondary-button" onClick={onCheck}>

@@ -320,8 +320,8 @@ export function browserVerdicts(facts: BrowserFacts, serverIP: string | null, no
       foreign.length
         ? {
             ...dns,
-            status: "fail",
-            detail: `Ваши DNS-запросы видит ${owners(foreign)}: это не сеть, через которую вы выходите, и не публичный DNS. Если это ваш провайдер, он знает, какие сайты вы открываете. Направьте DNS через туннель в настройках приложения VPN.`,
+            status: "warn",
+            detail: `Среди DNS-серверов обнаружены ${owners(foreign)}. Они отличаются от сети выхода; по одному списку нельзя установить, шли ли запросы мимо прокси или VPN. Если здесь ваш домашний провайдер, проверьте маршрут DNS в настройках клиента.`,
           }
         : { ...dns, status: "ok", detail: `Ваши DNS-запросы видит ${owners(facts.dns)}, а не ваш провайдер.` },
     );

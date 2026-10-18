@@ -57,7 +57,7 @@ describe("connection checks in the browser", () => {
       dns: [net("192.0.2.54", 8359, "MTS PJSC", "RU"), cloudflareDNS],
       timeZone: "Europe/Moscow",
     };
-    expect(statuses(leaking)).toEqual({ exit: "warn", ipv6: "fail", webrtc: "fail", dns: "fail", timezone: "warn" });
+    expect(statuses(leaking)).toEqual({ exit: "warn", ipv6: "fail", webrtc: "fail", dns: "warn", timezone: "warn" });
     expect(detail(leaking, "ipv6")).toContain("MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL, Германия");
     expect(detail(leaking, "webrtc")).toContain("198.51.100.20 (MTS PJSC, Россия)");
     expect(detail(leaking, "dns")).toContain("MTS PJSC, Россия");

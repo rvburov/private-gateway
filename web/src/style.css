@@ -966,6 +966,26 @@ textarea:focus {
 .guide-others a:hover {
   text-decoration: underline;
 }
+.guide-client-button {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent-ink);
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+.guide-client-button:hover { text-decoration: underline; }
+.guide-client-detail { display: flex; flex-direction: column; align-items: flex-start; gap: 12px; }
+.guide-client-detail .guide-steps { align-self: stretch; margin-top: 8px; }
+.guide-client-detail > p { margin: 0; color: var(--fg-2); }
+.guide-bat { width: 100%; padding: 16px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.guide-bat h4 { margin: 0 0 8px; }
+.guide-bat p { margin: 0 0 12px; color: var(--fg-2); }
+.guide-bat .button { display: inline-flex; margin: 0 8px 8px 0; }
+.guide-bat details { margin-top: 12px; }
+.guide-bat pre { overflow-x: auto; padding: 12px; background: var(--surface); border: 1px solid var(--line); font-size: var(--fs-sm); }
 .guide-apps li span {
   color: var(--fg-2);
   font-size: var(--fs-sm);

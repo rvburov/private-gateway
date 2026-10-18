@@ -285,11 +285,11 @@ describe("administrator panel", () => {
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
     fireEvent.click(await screen.findByRole("button", { name: "Проверить" }));
-    expect(await screen.findByText(/Найдено проблем: 2, замечаний: 1\./)).toBeTruthy();
+    expect(await screen.findByText(/Найдено проблем: 1, замечаний: 2\./)).toBeTruthy();
     // Другой VPN — замечание, а не проблема.
     expect(screen.getByText(/M247 Europe SRL, Германия\. Это не ваш шлюз/)).toBeTruthy();
     expect(screen.getByText(/IPv6-адрес 2001:db8::20 — MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL/)).toBeTruthy();
-    expect(screen.getByText(/Ваши DNS-запросы видит MTS PJSC, Россия/)).toBeTruthy();
+    expect(screen.getByText(/Среди DNS-серверов обнаружены MTS PJSC, Россия/)).toBeTruthy();
   });
 
   it("shows setup instructions for each system and opens them from a profile", async () => {
@@ -299,7 +299,9 @@ describe("administrator panel", () => {
     const systems = screen.getByRole("group", { name: "Система устройства" });
     fireEvent.click(within(systems).getByRole("button", { name: "Android" }));
     expect(within(systems).getByRole("button", { name: "Android" }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(screen.getByRole("button", { name: "v2rayNG → Инструкция" }));
     expect(screen.getByText(/«Постоянная VPN» и «Блокировать подключения без VPN»/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /Все приложения для Android/ }));
     expect(screen.getByText(/ещё не проверяли/)).toBeTruthy();
     fireEvent.click(within(systems).getByRole("button", { name: "iPhone и iPad" }));
     expect(screen.getByText(/Проверено на iPhone с Hiddify по LTE/)).toBeTruthy();
