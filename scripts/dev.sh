@@ -18,7 +18,7 @@ checks_context() (
   GIT_INDEX_FILE="$index" git read-tree HEAD
   GIT_INDEX_FILE="$index" git -c core.safecrlf=false add --all
   tree=$(GIT_INDEX_FILE="$index" git write-tree)
-  git -c core.autocrlf=false archive --format=tar "$tree"
+  git -c core.autocrlf=false archive --format=tar "$@" "$tree"
 )
 build_checks_image() {
   if ! command -v docker >/dev/null; then
@@ -29,8 +29,31 @@ build_checks_image() {
   # Старый сборщик Docker без Buildx не заполняет TARGETARCH автоматически.
   local checks_arch
   checks_arch=$(docker version --format '{{.Server.Arch}}')
-  checks_context | docker build --build-arg "TARGETARCH=$checks_arch" \
-    --file deploy/checks/Dockerfile --tag "$CHECKS_IMAGE" -
+  local checks_dockerfile=deploy/checks/Dockerfile
+  local -a checks_archive_args=() checks_build_args=()
+  # Облачный HTTPS-прокси использует собственный CA. Только для такой среды создаём вариант
+  # Dockerfile с mount BuildKit и одним слоем VFS: обычный Dockerfile сохраняет старый сборщик Docker.
+  # Публичный сертификат сессии не попадает ни в Git, ни в слои образа.
+  if [[ -n ${CODEX_PROXY_CERT:-} ]]; then
+    [[ -r $CODEX_PROXY_CERT && -r /etc/ssl/certs/ca-certificates.crt ]] || {
+      echo 'The cloud proxy CA and system CA bundle must be readable.' >&2
+      exit 1
+    }
+    command -v python3 >/dev/null || {
+      echo 'Python 3 is required to prepare the cloud proxy build.' >&2
+      exit 1
+    }
+    cat /etc/ssl/certs/ca-certificates.crt "$CODEX_PROXY_CERT" > .local/checks-proxy-ca.pem
+    python3 scripts/checks-proxy-dockerfile.py deploy/checks/Dockerfile > .local/checks-proxy.Dockerfile
+    checks_dockerfile=deploy/checks/Dockerfile.proxy
+    checks_archive_args+=("--add-virtual-file=$checks_dockerfile:$(< .local/checks-proxy.Dockerfile)")
+    checks_build_args+=(--secret "id=proxy_ca,src=$repo_dir/.local/checks-proxy-ca.pem")
+    # Управляемая среда может монтировать ~/.docker только для чтения; учетные данные Docker
+    # остаются на месте, а служебные записи Buildx сохраняются в игнорируемом каталоге копии.
+    export BUILDX_CONFIG="${BUILDX_CONFIG:-$repo_dir/.local/buildx}"
+  fi
+  checks_context "${checks_archive_args[@]}" | docker build --build-arg "TARGETARCH=$checks_arch" \
+    "${checks_build_args[@]}" --file "$checks_dockerfile" --tag "$CHECKS_IMAGE" -
 }
 # Локальный стек: production-файл compose из релиза, собранного из этой копии, и поверх него
 # deploy/dev/compose.yml. Его секреты, релиз и данные лежат в .local/dev и в томах Docker проекта

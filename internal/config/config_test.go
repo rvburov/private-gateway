@@ -18,6 +18,7 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 		t.Setenv(name, value)
 	}
 	t.Setenv("GATEWAY_PORT", "443")
+	t.Setenv("GATEWAY_XRAY_PORT", "")
 	t.Setenv("GATEWAY_FALLBACK_PORT", "0")
 	t.Setenv("GATEWAY_XRAY_RESTART", `["systemctl","--user","restart","xray"]`)
 	good, err := Load()
@@ -40,6 +41,26 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 		}
 	}
 	t.Setenv("GATEWAY_FALLBACK_PORT", "0")
+	// Публикуемый порт меняет адрес профиля, но не внутренний listener или хеш Xray.
+	t.Setenv("GATEWAY_PORT", "8443")
+	public, err := Load()
+	if err != nil || public.Node.Port != 8443 || public.Xray.Settings.Port != 443 || public.Node.ConfigHash != good.Node.ConfigHash {
+		t.Fatalf("public port changed the internal listener: %+v, %v", public.Node, err)
+	}
+	t.Setenv("GATEWAY_XRAY_PORT", "9443")
+	internal, err := Load()
+	if err != nil || internal.Node.Port != 8443 || internal.Xray.Settings.Port != 9443 || internal.Node.ConfigHash == good.Node.ConfigHash {
+		t.Fatalf("internal port was not configured independently: %+v, %v", internal.Node, err)
+	}
+	for _, name := range []string{"GATEWAY_PORT", "GATEWAY_XRAY_PORT"} {
+		for _, port := range []string{"0", "-1", "65536", "bad"} {
+			t.Setenv(name, port)
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), name) {
+				t.Fatalf("invalid %s accepted: %s (%v)", name, port, err)
+			}
+		}
+		t.Setenv(name, "443")
+	}
 	for _, address := range []string{"0.0.0.0:8080", "[::]:8080", "localhost:8080", "127.0.0.1:0"} {
 		t.Setenv("GATEWAY_LISTEN", address)
 		if _, err := Load(); err == nil {

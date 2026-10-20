@@ -2,7 +2,8 @@
 """Проверить один активный профиль production через работающий шлюз Xray в Docker.
 
 Профиль берётся внутри контейнера API и никогда не печатается. Клиент подключается
-через публикацию контейнера Xray на loopback хоста.
+через опубликованный TLS-вход HAProxy на loopback хоста, отдельно от внутреннего
+порта Xray.
 """
 
 import argparse
@@ -59,7 +60,9 @@ checks = {
                           client.get("flow") == "xtls-rprx-vision"
                           for client in inbound["settings"]["clients"]),
     "profile_endpoint": uri.hostname == node["host"] and uri.port == node["port"] and
-                        uri.port == inbound["port"],
+                        1 <= uri.port <= 65535,
+    "xray_listen_port": inbound["port"] == int(os.environ.get("GATEWAY_XRAY_PORT", "443")) and
+                        1 <= inbound["port"] <= 65535,
     "profile_reality": query.get("pbk") == [node["public_key"]] and
                        query.get("sid") == [node["short_id"].lower()] and
                        query.get("sid", [None])[0] in reality["shortIds"] and
@@ -101,6 +104,9 @@ def get_profile():
 
 
 def client_config(profile, local_port, server_port=None):
+    for value in (local_port, server_port):
+        if value is not None and (type(value) is not int or not 1 <= value <= 65535):
+            raise SmokeError("client port is invalid")
     if len(profile) > 4096:
         raise SmokeError("profile is too long")
     try:

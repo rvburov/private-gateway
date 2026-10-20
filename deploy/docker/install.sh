@@ -220,6 +220,9 @@ os.chmod(path, 0o600)
 PY
 
 compose config --quiet
+ports=$(compose config --format json | python3 "$release/docker/release-ports.py")
+read -r panel_port vpn_port fallback_port < <(python3 -c \
+  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"])' <<< "$ports")
 compose pull postgres caddy edge
 compose build api
 compose build xray
@@ -285,7 +288,7 @@ compose exec -T api /usr/local/bin/gatewayctl config apply
 ready=false
 for _ in $(seq 1 60); do
   if curl --noproxy '*' --fail --silent --show-error --max-time 4 \
-      --resolve "$domain:443:127.0.0.1" "https://$domain/readyz" >/dev/null 2>&1; then
+      --resolve "$domain:$panel_port:127.0.0.1" "https://$domain:$panel_port/readyz" >/dev/null 2>&1; then
     ready=true
     break
   fi
@@ -295,27 +298,29 @@ if [[ $ready != true ]]; then
   printf 'HTTPS readiness failed; final TLS request and Caddy logs follow.\n' >&2
   curl --noproxy '*' --verbose --output /dev/null --max-time 10 \
     --write-out 'HTTP %{http_code}; TLS verification %{ssl_verify_result}\n' \
-    --resolve "$domain:443:127.0.0.1" "https://$domain/readyz" \
+    --resolve "$domain:$panel_port:127.0.0.1" "https://$domain:$panel_port/readyz" \
     2>&1 | tail -n 45 >&2 || true
   compose logs --no-color --tail=80 caddy edge >&2 || true
-  fail 'Public HTTPS did not become ready. Check DNS, TCP 80/443 and Caddy/edge logs.'
+  fail "Public HTTPS did not become ready. Check DNS, TCP 80/$panel_port and Caddy/edge logs."
 fi
 panel=$(curl --noproxy '*' --fail --silent --show-error --max-time 10 \
-  --resolve "$domain:443:127.0.0.1" "https://$domain/") \
+  --resolve "$domain:$panel_port:127.0.0.1" "https://$domain:$panel_port/") \
   || fail 'Panel HTML could not be loaded through HTTPS.'
 [[ $panel == *'<div id="root"></div>'* ]] || fail 'Panel HTML is missing; check API image file permissions.'
 unset panel
 browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
-  --write-out '%{http_code}' --max-time 10 --resolve "$domain:443:127.0.0.1" \
-  "https://$domain/browser/vnc.html") || fail 'Browser access check failed.'
+  --write-out '%{http_code}' --max-time 10 --resolve "$domain:$panel_port:127.0.0.1" \
+  "https://$domain:$panel_port/browser/vnc.html") || fail 'Browser access check failed.'
 [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
-curl --noproxy '*' --fail --silent --show-error --max-time 10 \
-  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" >/dev/null \
-  || fail 'Fallback HTTPS readiness check failed.'
-fallback_browser_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
-  --write-out '%{http_code}' --max-time 10 --resolve "$domain:8443:127.0.0.1" \
-  "https://$domain:8443/browser/vnc.html") || fail 'Fallback browser access check failed.'
-[[ $fallback_browser_status == 403 ]] || fail 'Fallback browser is not protected by administrator authentication.'
+if [[ $fallback_port != 0 ]]; then
+  curl --noproxy '*' --fail --silent --show-error --max-time 10 \
+    --resolve "$domain:$fallback_port:127.0.0.1" "https://$domain:$fallback_port/readyz" >/dev/null \
+    || fail 'Fallback HTTPS readiness check failed.'
+  fallback_browser_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
+    --write-out '%{http_code}' --max-time 10 --resolve "$domain:$fallback_port:127.0.0.1" \
+    "https://$domain:$fallback_port/browser/vnc.html") || fail 'Fallback browser access check failed.'
+  [[ $fallback_browser_status == 403 ]] || fail 'Fallback browser is not protected by administrator authentication.'
+fi
 compose exec -T api /usr/local/bin/gatewayctl browser start
 compose exec -T browser python3 /app/smoke.py --port 6080
 compose exec -T api /usr/local/bin/gatewayctl browser stop
@@ -361,7 +366,7 @@ ln -sfn "$release" /opt/private-gateway-docker/current
 printf '%s\n' "$version" > /etc/private-gateway-docker/installed.version
 success=true
 rm -rf -- "$access_backup"
-printf '\nDocker installation verified. Panel: https://%s/\nGateway: %s:443\n' "$domain" "$host"
+printf '\nDocker installation verified. Panel: https://%s:%s/\nGateway: %s:%s\n' "$domain" "$panel_port" "$host" "$vpn_port"
 printf 'The internal CLI token is in %s; keep it on this server. Set administrator credentials with admin-credentials.py.\n' "$env_file"
 if [[ -n $backup ]]; then
   printf 'Legacy files and users remain for rollback until the client connection is tested. Backup: %s\n' "$backup"

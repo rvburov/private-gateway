@@ -74,51 +74,85 @@ deliver() {
 }
 installed() { sudo cat /etc/private-gateway-docker/installed.version; }
 container() { compose ps --status running --quiet "$1"; }
+# Публичные порты читает тот же helper, что установщик и обновлятор.
+public_port() {
+  compose config --format json | python3 "$repository/deploy/docker/release-ports.py" --field "$1"
+}
 panel_ready() {
+  local port=${1:-$(public_port panel)}
   curl --fail --silent --show-error --max-time 10 --output /dev/null \
-    --resolve "$domain:${1:-443}:127.0.0.1" "https://$domain:${1:-443}/readyz"
+    --resolve "$domain:$port:127.0.0.1" "https://$domain:$port/readyz"
 }
-fallback_ready() {
-  panel_ready 8443 || fail 'the fallback panel does not answer through HAProxy.'
-  local status
+browser_protected() {
+  local port=${1:-$(public_port panel)} status
   status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 \
-    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/browser/vnc.html")
-  [[ $status == 403 ]] || fail 'fallback noVNC is not protected.'
+    --resolve "$domain:$port:127.0.0.1" "https://$domain:$port/browser/vnc.html")
+  [[ $status == 403 ]] || fail "noVNC is not protected on $port."
 }
-legacy_redirect() {
-  local redirect
-  redirect=$(curl --silent --show-error --output /dev/null --write-out '%{http_code} %{redirect_url}' --max-time 10 \
-    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz")
-  [[ $redirect == "301 https://$domain/readyz" ]] || fail 'legacy redirect was not restored.'
-}
-# Пересозданный Xray получает новый адрес; HAProxy узнаёт его из DNS Docker за секунды.
 vless_works() {
-  local attempt
+  local attempt port=${1:-$(public_port vpn)}
   for attempt in 1 2 3; do
-    if sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --port "${1:-443}"; then return 0; fi
+    if sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --port "$port"; then return 0; fi
     ((attempt == 3)) || sleep 5
   done
   return 1
 }
+# Хеши не раскрывают секреты и должны совпадать после перехода и отката.
+identity() {
+  sudo python3 - "$env_file" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+values = dict(line.split('=', 1) for line in Path(sys.argv[1]).read_text().splitlines() if '=' in line)
+names = ('GATEWAY_MASTER_KEY', 'GATEWAY_REALITY_PRIVATE_KEY', 'GATEWAY_SHORT_ID',
+         'GATEWAY_API_TOKEN', 'POSTGRES_PASSWORD', 'BROWSER_WORKER_TOKEN')
+print(hashlib.sha256('\n'.join(values[name] for name in names).encode()).hexdigest())
+PY
+  compose exec -T postgres psql -At -U gateway -d gateway -c \
+    'SELECT id, node_id, name, encode(credential_ciphertext, '\''hex'\''), subscription_generation, encode(subscription_hash, '\''hex'\''), revoked_at FROM devices ORDER BY id' \
+    | sha256sum
+}
+http_redirect() {
+  local redirect
+  redirect=$(curl --silent --show-error --output /dev/null --write-out '%{http_code} %{redirect_url}' --max-time 10 \
+    --resolve "$domain:80:127.0.0.1" "http://$domain/migration/path?query=kept")
+  [[ $redirect == "301 https://$domain:8443/migration/path?query=kept" ]] \
+    || fail "HTTP did not preserve the path and query on8443: $redirect"
+}
+check_identity() {
+  [[ $(identity) == "$saved_identity" ]] || fail 'The device credentials, subscription or server keys changed.'
+}
+check_stack() {
+  panel_ready || fail 'The panel is unavailable.'
+  browser_protected
+  vless_works || fail 'VLESS traffic is unavailable.'
+  local fallback
+  fallback=$(public_port fallback)
+  if [[ $fallback != 0 ]]; then
+    panel_ready "$fallback" || fail 'The fallback panel is unavailable.'
+    browser_protected "$fallback"
+    vless_works "$fallback" || fail 'The fallback VLESS traffic is unavailable.'
+  fi
+  check_identity
+}
 
 version_a=$(python3 "$repository/scripts/verify-release.py" --tar "$archive")
 version_b=$(printf 'b%.0s' {1..40})
-version_c=$(printf 'c%.0s' {1..40})
-version_d=$(printf 'd%.0s' {1..40})
 version_e=$(printf 'e%.0s' {1..40})
 version_f=$(printf 'f%.0s' {1..40})
 version_g=$(printf '1%.0s' {1..40})
-# B — та же сборка с ещё одним файлом панели, поэтому новый тег по содержимому получает только
-# образ API. C отправляет имя панели в Xray вместо Caddy: проверка панели проваливается, только
-# если обновление действительно перезапускает HAProxy, и тогда оно должно откатиться. D отправляет
-# в Caddy все остальные имена, включая VPN-клиентов: панель работает, и поймать это может только
-# проверка VLESS.
-python3 - "$archive" "$work" "$version_b" "$version_c" "$version_d" "$version_e" "$version_f" "$version_g" <<'PY'
+version_h=$(printf '2%.0s' {1..40})
+version_i=$(printf '3%.0s' {1..40})
+# В тестовых архивах меняются только проверяемые файлы; manifest пересчитывается.
+# E — текущая схема 443+8443 с основным443. F — будущий основной8443 с обоими входами.
+# G/H ломают панель/VLESS именно во время смены основного порта. I убирает внешний443.
+python3 - "$archive" "$work" "$version_b" "$version_e" "$version_f" "$version_g" "$version_h" "$version_i" <<'PY'
 import gzip
 import hashlib
 import io
 import json
 from pathlib import Path
+import re
 import sys
 import tarfile
 
@@ -129,13 +163,12 @@ with tarfile.open(source, "r:gz") as archive:
              for member in archive if member.isfile() and member.name != "manifest.json"}
 
 
-def write(version, changes):
+def write(version, changes, filename=None):
     content = {**files, **changes}
     hashes = {name: hashlib.sha256(data).hexdigest() for name, data in content.items()}
     entries = {"manifest.json": json.dumps({**manifest, "version": version, "files": hashes},
-                                           sort_keys=True, separators=(",", ":")).encode() + b"\n",
-               **content}
-    with (work / f"release-{version[0]}.tar.gz").open("wb") as raw, \
+                                           sort_keys=True, separators=(",", ":")).encode() + b"\n", **content}
+    with (work / (filename or f"release-{version[0]}.tar.gz")).open("wb") as raw, \
             gzip.GzipFile(filename="", fileobj=raw, mode="wb", mtime=0) as zipped, \
             tarfile.open(fileobj=zipped, mode="w", format=tarfile.USTAR_FORMAT) as output:
         for name, data in sorted(entries.items()):
@@ -145,37 +178,53 @@ def write(version, changes):
             output.addfile(member, io.BytesIO(data))
 
 
-route = "use_backend panel_https if { req.ssl_sni -i __PANEL_DOMAIN__ }"
-default = "default_backend vpn_reality"
-template = files["docker/haproxy.cfg.template"].decode()
+def compose_at(port, only=False):
+    text = files["docker/compose.yml"].decode()
+    text = re.sub(r'GATEWAY_PORT: "\d+"', f'GATEWAY_PORT: "{port}"', text)
+    text = re.sub(r'^      GATEWAY_FALLBACK_PORT:.*\n', '', text, flags=re.M)
+    text = text.replace(f'GATEWAY_PORT: "{port}"\n', f'GATEWAY_PORT: "{port}"\n      GATEWAY_FALLBACK_PORT: "{8443 if port == 443 else 0}"\n')
+    text = re.sub(r'(GATEWAY_BROWSER_PUBLIC_URL: https://\$\{PANEL_DOMAIN[^}]*})(?::\d+)?',
+                  lambda m: m[1] + (':8443' if port == 8443 else ''), text)
+    text = re.sub(r'(  edge:\n.*?    ports:\n)(?:      - [^\n]*\n)+',
+                  lambda m: m[1] + ('' if only else '      - "0.0.0.0:443:443/tcp"\n')
+                  + '      - "0.0.0.0:8443:443/tcp"\n', text, flags=re.S)
+    return text.encode()
+
+
+def caddy_at(port):
+    text = files['docker/Caddyfile.template'].decode()
+    # Только .localhost-стенд: CA runner заранее установлен. Production ACME не меняется.
+    text = re.sub(r'(?m)^(\s*)tls \{\n\s*issuer acme \{\n\s*disable_tlsalpn_challenge\n\s*}\n\s*}',
+                  r'\1tls internal', text)
+    text = re.sub(r'https://__PANEL_DOMAIN__(?::8443)?\{uri}',
+                  f'https://__PANEL_DOMAIN__{":8443" if port == 8443 else ""}{{uri}}', text)
+    if 'http://__PANEL_DOMAIN__' not in text:
+        destination = f'https://__PANEL_DOMAIN__{":8443" if port == 8443 else ""}{{uri}}'
+        text += '\nhttp://__PANEL_DOMAIN__ {\n    redir ' + destination + ' permanent\n}\n'
+    return text.encode()
+
+# Первичная установка использует тот же релиз, но локальный сертификат вместо public ACME.
+initial_caddy = files['docker/Caddyfile.template'].decode()
+initial_caddy = re.sub(r'(?m)^(\s*)tls \{\n\s*issuer acme \{\n\s*disable_tlsalpn_challenge\n\s*}\n\s*}',
+                       r'\1tls internal', initial_caddy)
+write(manifest['version'], {'docker/Caddyfile.template': initial_caddy.encode()}, 'release-initial.tar.gz')
+
+route = 'use_backend panel_https if { req.ssl_sni -i __PANEL_DOMAIN__ }'
+default = 'default_backend vpn_reality'
+template = files['docker/haproxy.cfg.template'].decode()
 if route not in template or default not in template:
-    raise SystemExit("The panel route or the default route is missing from the HAProxy template.")
-write(sys.argv[3], {"web/installation-test.txt": b"A panel file that only the API image contains.\n"})
-write(sys.argv[4], {"docker/haproxy.cfg.template":
-                    template.replace(route, route.replace("panel_https", "vpn_reality")).encode()})
-write(sys.argv[5], {"docker/haproxy.cfg.template":
-                    template.replace(default, "default_backend panel_https").encode()})
-# E имитирует подготовительный релиз: обновлённый установщик, но старый владелец 8443.
-compose = files["docker/compose.yml"].decode()
-if '      - "0.0.0.0:8443:443/tcp"\n' not in compose:
-    raise SystemExit("The fallback edge mapping is missing.")
-legacy = compose.replace('      - "0.0.0.0:8443:443/tcp"\n', '')
-legacy = legacy.replace('      - "0.0.0.0:80:80/tcp"\n',
-                        '      - "0.0.0.0:80:80/tcp"\n      - "0.0.0.0:8443:8443/tcp"\n')
-legacy = legacy.replace('GATEWAY_FALLBACK_PORT: "8443"', 'GATEWAY_FALLBACK_PORT: "0"')
-redirect = b"\nhttps://__PANEL_DOMAIN__:8443 {\n    redir https://__PANEL_DOMAIN__{uri} permanent\n}\n"
-write(sys.argv[6], {"docker/compose.yml": legacy.encode(),
-                    "docker/Caddyfile.template": files["docker/Caddyfile.template"] + redirect})
-write(sys.argv[7], {})
-# В G основной вход исправен, но публикация резервного порта потеряна.
-write(sys.argv[8], {"docker/compose.yml":
-                    compose.replace('      - "0.0.0.0:8443:443/tcp"\n', '').encode()})
+    raise SystemExit('The expected HAProxy routes are missing.')
+write(sys.argv[3], {'web/installation-test.txt': b'A file that only the API image contains.\n', 'docker/Caddyfile.template': initial_caddy.encode()})
+write(sys.argv[4], {'docker/compose.yml': compose_at(443), 'docker/Caddyfile.template': caddy_at(443)})
+main = {'docker/compose.yml': compose_at(8443), 'docker/Caddyfile.template': caddy_at(8443)}
+write(sys.argv[5], main)
+write(sys.argv[6], {**main, 'docker/haproxy.cfg.template': template.replace(route, route.replace('panel_https', 'vpn_reality')).encode()})
+write(sys.argv[7], {**main, 'docker/haproxy.cfg.template': template.replace(default, 'default_backend panel_https').encode()})
+write(sys.argv[8], {**main, 'docker/compose.yml': compose_at(8443, only=True)})
 PY
 
-# Имена .localhost Caddy подписывает своим локальным центром сертификации. Тест выдаёт Caddy центр,
-# которому доверяет этот runner, поэтому установщик и обновление проверяют панель с полной
-# проверкой TLS, как на VPS.
-cat > "$work/ca.cnf" <<'EOF'
+# Имена .localhost получают сертификаты от доверенного тестового CA, без ослабления TLS.
+cat > "$work/ca.cnf" <<'CA'
 [req]
 distinguished_name = name
 x509_extensions = ca
@@ -186,131 +235,110 @@ CN = Private Gateway installation test CA
 basicConstraints = critical,CA:TRUE
 keyUsage = critical,keyCertSign,cRLSign
 subjectKeyIdentifier = hash
-EOF
+CA
 openssl req -x509 -config "$work/ca.cnf" -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -noenc \
   -days 30 -keyout "$work/root.key" -out "$work/root.crt"
 sudo install -m 0644 "$work/root.crt" /usr/local/share/ca-certificates/private-gateway-test.crt
 sudo update-ca-certificates >/dev/null
 caddy_image=$(sed -n 's/^ *image: \(caddy:[^ ]*\)$/\1/p' "$repository/deploy/docker/compose.yml")
-docker volume create private-gateway_caddy-data >/dev/null
-docker run --rm --network none --entrypoint sh -v private-gateway_caddy-data:/data \
-  -v "$work/root.crt:/ca/root.crt:ro" -v "$work/root.key:/ca/root.key:ro" "$caddy_image" -c \
-  'install -d -m 0700 /data/caddy/pki/authorities/local && install -m 0600 /ca/root.crt /ca/root.key /data/caddy/pki/authorities/local/'
+seed_ca() {
+  docker volume create private-gateway_caddy-data >/dev/null
+  docker run --rm --network none --entrypoint sh -v private-gateway_caddy-data:/data \
+    -v "$work/root.crt:/ca/root.crt:ro" -v "$work/root.key:/ca/root.key:ro" "$caddy_image" -c \
+    'install -d -m 0700 /data/caddy/pki/authorities/local && install -m 0600 /ca/root.crt /ca/root.key /data/caddy/pki/authorities/local/'
+}
+seed_ca
 printf '127.0.0.1 %s\n' "$domain" | sudo tee -a /etc/hosts >/dev/null
 
-printf '\n== Bootstrap and first deployment of %s ==\n' "$version_a"
-# Тот же комплект, который загружает scripts/add-server.sh.
+# Тот же комплект, который получает новый VPS через scripts/add-server.sh.
 bundle=$work/bundle
 mkdir "$bundle"
 cp "$repository/deploy/docker/bootstrap.sh" "$repository/deploy/docker/bootstrap-receiver.sh" \
   "$repository/scripts/verify-release.py" "$repository/deploy/servers/deploy-key.pub" "$bundle/"
-printf '%s\n' "$version_a" > "$bundle/commit.sha"
-(cd "$bundle" && sha256sum bootstrap.sh bootstrap-receiver.sh verify-release.py commit.sha > SHA256SUMS)
-sudo bash "$bundle/bootstrap.sh" --ref "$version_a" --host 127.0.0.1 --domain "$domain" \
-  --deploy-key "$bundle/deploy-key.pub"
-deliver "$version_a" "$archive" 2>&1 | tee "$work/install.log"
-grep -qx "First Docker deployment verified: $version_a" "$work/install.log" \
-  || fail 'the first deployment did not report success.'
-[[ $(installed) == "$version_a" ]] || fail 'the installed version is not the delivered release.'
-panel_ready || fail 'the panel does not answer through HAProxy.'
-fallback_ready
+bootstrap() {
+  local version=$1 release_archive=$2
+  printf '%s\n' "$version" > "$bundle/commit.sha"
+  (cd "$bundle" && sha256sum bootstrap.sh bootstrap-receiver.sh verify-release.py commit.sha > SHA256SUMS)
+  sudo bash "$bundle/bootstrap.sh" --ref "$version" --host 127.0.0.1 --domain "$domain" \
+    --deploy-key "$bundle/deploy-key.pub"
+  deliver "$version" "$release_archive"
+  [[ $(installed) == "$version" ]] || fail 'The first deployment installed another version.'
+}
+printf '\n== Bootstrap and first deployment ==\n'
+bootstrap "$version_a" "$work/release-initial.tar.gz" 2>&1 | tee "$work/install.log"
+panel_ready
+browser_protected
 node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" {print $2}')
 compose exec -T api /usr/local/bin/gatewayctl device add installation-test --node "$node" >/dev/null
 compose exec -T api /usr/local/bin/gatewayctl config apply
-vless_works || fail 'VLESS traffic does not pass after the first deployment.'
-vless_works 8443 || fail 'fallback VLESS traffic does not pass after the first deployment.'
-xray_container=$(container xray)
+saved_identity=$(identity)
+check_stack
 
-printf '\n== Update to %s, which changes only the panel ==\n' "$version_b"
+printf '\n== Panel-only update preserves unchanged containers ==\n'
 declare -A before
 for service in postgres api browser xray caddy edge; do before[$service]=$(container "$service"); done
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/update-b.log"
-grep -q "^Docker deployment verified: $version_b\. " "$work/update-b.log" \
-  || fail 'the update did not report success.'
-grep -q '^VLESS traffic OK' "$work/update-b.log" || fail 'the update did not check VLESS traffic.'
-[[ $(installed) == "$version_b" ]] || fail 'the update did not switch the installed version.'
 for service in postgres browser xray caddy edge; do
-  [[ $(container "$service") == "${before[$service]}" ]] \
-    || fail "$service was recreated although its image and configuration did not change."
+  [[ $(container "$service") == "${before[$service]}" ]] || fail "$service was recreated without a change."
 done
-[[ $(container api) != "${before[api]}" ]] || fail 'the API was not recreated with its new image.'
-panel_ready || fail 'the panel does not answer after the update.'
-vless_works || fail 'VLESS traffic does not pass after the update.'
-fallback_ready
-vless_works 8443 || fail 'fallback VLESS traffic does not pass after the update.'
+[[ $(container api) != "${before[api]}" ]] || fail 'The changed API image was not installed.'
+check_stack
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/repeat-b.log"
-grep -qx "Release $version_b is already installed." "$work/repeat-b.log" \
-  || fail 'a repeated delivery was not recognised as installed.'
-sudo cp /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg"
+grep -Fx "Installed release verified: $version_b; panel=$(public_port panel); vpn=$(public_port vpn); updater=current" "$work/repeat-b.log" \
+  || fail 'The installed updater did not verify itself.'
 
-printf '\n== Update to %s, which sends the panel to Xray ==\n' "$version_c"
-if deliver "$version_c" "$work/release-c.tar.gz" 2>&1 | tee "$work/update-c.log"; then
-  fail 'the updater accepted a release whose HAProxy routing breaks the panel.'
-fi
-grep -q '^Deployment failed. Restoring the previous database and release.' "$work/update-c.log" \
-  || fail 'the failed update did not roll back.'
-[[ $(installed) == "$version_b" ]] || fail 'the rollback did not restore the installed version.'
-[[ $(sudo readlink -f /opt/private-gateway-docker/current) == "/opt/private-gateway-docker/releases/$version_b" ]] \
-  || fail 'the rollback did not restore the release pointer.'
-sudo test ! -e "/opt/private-gateway-docker/releases/$version_c" || fail 'the failed release was left installed.'
-sudo cmp -s /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg" \
-  || fail 'the rollback did not restore the HAProxy configuration.'
-[[ -n $(container edge) ]] || fail 'HAProxy is not running after the rollback.'
-panel_ready || fail 'the panel does not answer after the rollback.'
-# Читается целиком: grep -q выходит на первом совпадении, и pipefail счёл бы SIGPIPE пишущего сбоем.
-gateway_status=$(compose exec -T api /usr/local/bin/gatewayctl status)
-grep -Eq '^ACTIVE DEVICES +1$' <<< "$gateway_status" \
-  || fail "the device did not survive the rollback: $gateway_status"
-vless_works || fail 'VLESS traffic does not pass after the rollback.'
-fallback_ready
-vless_works 8443 || fail 'fallback VLESS traffic does not pass after the rollback.'
+printf '\n== Preparation release keeps the old primary443 and both public ports ==\n'
+deliver "$version_e" "$work/release-e.tar.gz" 2>&1 | tee "$work/preparation.log"
+[[ $(public_port panel) == 443 && $(public_port vpn) == 443 ]] || fail 'The preparation changed the primary port.'
+check_stack
 
-printf '\n== Update to %s, which sends VPN clients to Caddy ==\n' "$version_d"
-if deliver "$version_d" "$work/release-d.tar.gz" 2>&1 | tee "$work/update-d.log"; then
-  fail 'the updater accepted a release whose HAProxy routing breaks VLESS.'
+printf '\n== Failed panel transition restores the previous ports and credentials ==\n'
+if deliver "$version_g" "$work/release-1.tar.gz" 2>&1 | tee "$work/panel-rollback.log"; then
+  fail 'A broken panel was accepted.'
 fi
-grep -q '^Docker deployment stopped: VLESS traffic does not pass through the new release.' "$work/update-d.log" \
-  || fail 'the VLESS check did not stop the update.'
-grep -q '^VLESS traffic passes again with the previous release.' "$work/update-d.log" \
-  || fail 'the rollback did not bring VLESS traffic back.'
-[[ $(installed) == "$version_b" ]] || fail 'the rollback did not restore the installed version.'
-sudo cmp -s /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg" \
-  || fail 'the rollback did not restore the HAProxy configuration.'
-panel_ready || fail 'the panel does not answer after the VLESS rollback.'
-vless_works || fail 'VLESS traffic does not pass after the VLESS rollback.'
-[[ $(container xray) == "$xray_container" ]] || fail 'Xray was recreated although its image never changed.'
+[[ $(installed) == "$version_e" ]] || fail 'The panel rollback did not restore the release.'
+[[ $(public_port panel) == 443 && $(public_port vpn) == 443 ]] || fail 'The panel rollback did not restore the old ports.'
+check_stack
 
-# Проверить перенос порта и откат с установщиком подготовительного релиза.
-printf '\n== Restore legacy ownership of port 8443 ==\n'
-deliver "$version_e" "$work/release-e.tar.gz" 2>&1 | tee "$work/update-e.log"
-[[ $(installed) == "$version_e" ]] || fail 'legacy topology was not installed.'
-legacy_redirect
-vless_works || fail 'primary VLESS failed with legacy port ownership.'
-if deliver "$version_c" "$work/release-c.tar.gz" 2>&1 | tee "$work/transfer-failed.log"; then
-  fail 'the updater accepted broken routing during port transfer.'
+printf '\n== Failed VLESS transition rolls back while the panel itself works ==\n'
+if deliver "$version_h" "$work/release-2.tar.gz" 2>&1 | tee "$work/vless-rollback.log"; then
+  fail 'Broken VLESS traffic was accepted.'
 fi
-[[ $(installed) == "$version_e" ]] || fail 'port transfer rollback lost the previous release.'
-panel_ready || fail 'primary panel failed after port transfer rollback.'
-legacy_redirect
-vless_works || fail 'primary VLESS failed after port transfer rollback.'
-printf '\n== Transfer port 8443 from Caddy to HAProxy ==\n'
-deliver "$version_f" "$work/release-f.tar.gz" 2>&1 | tee "$work/update-f.log"
-[[ $(installed) == "$version_f" ]] || fail 'fallback topology was not installed.'
-panel_ready || fail 'primary panel failed after port transfer.'
-fallback_ready
-vless_works || fail 'primary VLESS failed after port transfer.'
-vless_works 8443 || fail 'fallback VLESS failed after port transfer.'
-gateway_status=$(compose exec -T api /usr/local/bin/gatewayctl status)
-grep -Eq '^ACTIVE DEVICES +1$' <<< "$gateway_status" || fail 'port transfer lost the device.'
-printf '\n== Reject a release that loses only the fallback port ==\n'
-if deliver "$version_g" "$work/release-1.tar.gz" 2>&1 | tee "$work/fallback-failed.log"; then
-  fail 'the updater accepted a release with an unavailable fallback port.'
+grep -q '^Docker deployment stopped: VLESS traffic does not pass through the new release.' "$work/vless-rollback.log" \
+  || fail 'The failure was not detected by the real VLESS test.'
+grep -q '^VLESS traffic passes again with the previous release.' "$work/vless-rollback.log" \
+  || fail 'VLESS was not verified after the rollback.'
+[[ $(installed) == "$version_e" ]] || fail 'The VLESS rollback did not restore the release.'
+check_stack
+
+printf '\n== Move the canonical panel and profiles to8443, retaining both public ports ==\n'
+deliver "$version_f" "$work/release-f.tar.gz" 2>&1 | tee "$work/primary8443.log"
+[[ $(public_port panel) == 8443 && $(public_port vpn) == 8443 ]] || fail 'The public ports did not change.'
+check_stack
+panel_ready 443 || fail 'The compatibility panel port443 disappeared.'
+http_redirect
+
+printf '\n== A release may also remove external443 without changing internal Xray443 ==\n'
+deliver "$version_i" "$work/release-3.tar.gz" 2>&1 | tee "$work/single8443.log"
+check_stack
+compose config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); assert not any(str(p.get("published")) == "443" for s in c["services"].values() for p in s.get("ports", []))'
+if curl --silent --max-time 3 --resolve "$domain:443:127.0.0.1" "https://$domain/readyz" >/dev/null; then
+  fail 'The single-port release still depends on an externally published443.'
 fi
-grep -q '^Docker deployment stopped: Fallback HTTPS readiness check failed.' "$work/fallback-failed.log" \
-  || fail 'the fallback readiness check did not stop the update.'
-[[ $(installed) == "$version_f" ]] || fail 'fallback failure did not restore the installed release.'
-panel_ready || fail 'primary panel failed after fallback rollback.'
-fallback_ready
-vless_works || fail 'primary VLESS failed after fallback rollback.'
-vless_works 8443 || fail 'fallback VLESS failed after fallback rollback.'
-printf '\nInstallation, update and rollback passed on %s.\n' "$(. /etc/os-release && printf '%s' "$PRETTY_NAME")"
+
+# Разрушительная очистка относится только к этому одноразовому runner. Следом проверяется
+# установка с нуля на8443, без внешнего443; рабочий VPS этот скрипт запускать отказывается.
+printf '\n== Fresh single8443 installation on the disposable runner ==\n'
+compose down --volumes --remove-orphans
+sudo rm -rf /etc/private-gateway-docker /opt/private-gateway-docker /var/lib/private-gateway-docker/xray
+seed_ca
+bootstrap "$version_i" "$work/release-3.tar.gz" 2>&1 | tee "$work/fresh8443.log"
+[[ $(public_port panel) == 8443 && $(public_port vpn) == 8443 ]] || fail 'Fresh installation did not select8443.'
+panel_ready
+browser_protected
+node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" {print $2}')
+compose exec -T api /usr/local/bin/gatewayctl device add fresh8443-test --node "$node" >/dev/null
+compose exec -T api /usr/local/bin/gatewayctl config apply
+vless_works || fail 'Fresh installation does not pass real VLESS through8443.'
+http_redirect
+printf '\nInstallation, port transitions, two rollbacks and fresh8443 installation passed.\n'

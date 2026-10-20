@@ -37,7 +37,14 @@ old_version=$(cat /etc/private-gateway-docker/installed.version)
 [[ $(readlink -f "$current") == "/opt/private-gateway-docker/releases/$old_version" ]] \
   || fail 'Installed release pointer and version disagree.'
 if [[ $version == "$old_version" ]]; then
+  cmp -s "$current/docker/update.sh" /usr/local/sbin/private-gateway-docker-deploy \
+    || fail 'The installed updater does not match the current release.'
+  ports=$(docker compose --env-file "$env_file" -f "$current/docker/compose.yml" config --format json \
+    | python3 "$current/docker/release-ports.py")
+  read -r panel_port vpn_port < <(python3 -c \
+    'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"])' <<< "$ports")
   printf 'Release %s is already installed.\n' "$version"
+  printf 'Installed release verified: %s; panel=%s; vpn=%s; updater=current\n' "$version" "$panel_port" "$vpn_port"
   exit 0
 fi
 release="/opt/private-gateway-docker/releases/$version"
@@ -48,6 +55,8 @@ new_compose=$release/docker/compose.yml
 install -d -m 0700 /var/backups/private-gateway
 backup=$(mktemp -d "/var/backups/private-gateway/docker-$(date -u +%Y%m%dT%H%M%SZ)-$version-XXXXXXXX")
 cp -p "$env_file" "$backup/stack.env"
+cp -p /usr/local/sbin/private-gateway-docker-deploy "$backup/update.sh"
+cp -p /usr/local/lib/private-gateway-docker/verify-release.py "$backup/verify-release.py"
 cp -p "$caddyfile" "$backup/Caddyfile"
 if [[ -f $haproxy_cfg ]]; then
   cp -p "$haproxy_cfg" "$backup/haproxy.cfg"
@@ -100,7 +109,6 @@ PY
 compose_new config --quiet
 edge_enabled=false
 old_edge=false
-panel_port=8443
 services=(postgres api browser xray caddy)
 old_services=(api browser xray caddy)
 # Списки читаются целиком: grep -q выходит на первом совпадении, и pipefail превратил бы SIGPIPE пишущего в «нет».
@@ -118,19 +126,21 @@ old_port_owner=$(compose_old config --format json | port_owner)
 new_port_owner=$(compose_new config --format json | port_owner)
 port_transfer=false
 if [[ $old_port_owner != "$new_port_owner" ]]; then port_transfer=true; fi
-fallback_port=$(compose_new config --format json | python3 -c \
-  'import json, sys; print(json.load(sys.stdin)["services"]["api"].get("environment", {}).get("GATEWAY_FALLBACK_PORT", "0"))')
-old_fallback_port=$(compose_old config --format json | python3 -c \
-  'import json, sys; print(json.load(sys.stdin)["services"]["api"].get("environment", {}).get("GATEWAY_FALLBACK_PORT", "0"))')
-[[ $fallback_port == 0 || $fallback_port == 8443 ]] || fail 'Unsupported fallback port in Docker deployment.'
-[[ $old_fallback_port == 0 || $old_fallback_port == 8443 ]] || fail 'Unsupported fallback port in the installed release.'
+# Каждый набор портов читается из своего Compose до изменения рабочего env; helper входит
+# в проверенный новый релиз и умеет читать прежние схемы без отдельного файла метаданных.
+[[ -f $release/docker/release-ports.py ]] || fail 'Release port reader is missing.'
+new_ports=$(compose_new config --format json | python3 "$release/docker/release-ports.py")
+old_ports=$(compose_old config --format json | python3 "$release/docker/release-ports.py")
+read -r panel_port vpn_port fallback_port < <(python3 -c \
+  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"])' <<< "$new_ports")
+read -r old_panel_port old_vpn_port old_fallback_port < <(python3 -c \
+  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"])' <<< "$old_ports")
 if grep -qx edge <<< "$old_service_list"; then
   old_edge=true
   old_services+=(edge)
 fi
 if grep -qx edge <<< "$new_service_list"; then
   edge_enabled=true
-  panel_port=443
   services+=(edge)
   [[ -f $release/docker/haproxy.cfg.template ]] || fail 'HAProxy template is missing.'
   compose_new pull postgres caddy edge
@@ -171,6 +181,7 @@ caddy_changed=false
 haproxy_changed=false
 stack_started=false
 pointer_changed=false
+helpers_changed=false
 vless_failed=false
 success=false
 # Настоящий VLESS-трафик через основной или резервный порт с профилем первого активного устройства — его проверяет
@@ -210,6 +221,10 @@ rollback() {
     mv -Tf "$current.rollback" "$current"
     printf '%s\n' "$old_version" > /etc/private-gateway-docker/installed.version
   fi
+  if [[ $helpers_changed == true ]]; then
+    cp -p "$backup/update.sh" /usr/local/sbin/private-gateway-docker-deploy
+    cp -p "$backup/verify-release.py" /usr/local/lib/private-gateway-docker/verify-release.py
+  fi
   if [[ -f $backup/xray.json ]]; then
     cp -p "$backup/xray.json" /var/lib/private-gateway-docker/xray/xray.json
   fi
@@ -230,12 +245,18 @@ rollback() {
     compose_old up -d --wait --no-deps --force-recreate edge || true
   fi
   if [[ $vless_failed == true ]]; then
-    if vless_works "$old_release" && \
+    if vless_works "$old_release" "$old_vpn_port" && \
         { [[ $old_fallback_port == 0 ]] || vless_works "$old_release" "$old_fallback_port"; }; then
       printf 'VLESS traffic passes again with the previous release.\n' >&2
     else
       printf 'VLESS traffic fails with the previous release too: check the network and the REALITY target.\n' >&2
     fi
+  fi
+  if curl --noproxy '*' --fail --silent --show-error --max-time 10 \
+      --resolve "$domain:$old_panel_port:127.0.0.1" "https://$domain:$old_panel_port/readyz" >/dev/null; then
+    printf 'Previous panel restored on port %s.\n' "$old_panel_port" >&2
+  else
+    printf 'Previous panel is not ready on port %s; inspect the backup before retrying.\n' "$old_panel_port" >&2
   fi
   printf 'Check Docker health and the backup before another deployment.\n' >&2
 }
@@ -333,7 +354,7 @@ active_devices=$(awk '$1 == "ACTIVE" && $2 == "DEVICES" {print $3}' <<< "$gatewa
 # Ответ панели ничего не доказывает о VPN-клиентах: их трафик тоже должен проходить.
 if ((active_devices == 0)); then
   printf 'VLESS traffic check skipped: there is no active device yet.\n'
-elif ! vless_works "$release"; then
+elif ! vless_works "$release" "$vpn_port"; then
   vless_failed=true
   fail 'VLESS traffic does not pass through the new release.'
 elif [[ $fallback_port != 0 ]] && ! vless_works "$release" "$fallback_port"; then
@@ -344,9 +365,12 @@ ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"
 pointer_changed=true
 printf '%s\n' "$version" > /etc/private-gateway-docker/installed.version
+helpers_changed=true
 install -m 0755 "$release/docker/update.sh" /usr/local/sbin/.private-gateway-docker-deploy.next
 mv -f /usr/local/sbin/.private-gateway-docker-deploy.next /usr/local/sbin/private-gateway-docker-deploy
 install -m 0644 "$release/docker/verify-release.py" /usr/local/lib/private-gateway-docker/.verify-release.next
 mv -f /usr/local/lib/private-gateway-docker/.verify-release.next /usr/local/lib/private-gateway-docker/verify-release.py
+cmp -s "$release/docker/update.sh" /usr/local/sbin/private-gateway-docker-deploy \
+  || fail 'The installed updater does not match the new release.'
 success=true
 printf 'Docker deployment verified: %s. Backup: %s\n' "$version" "$backup"

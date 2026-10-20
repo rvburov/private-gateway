@@ -70,7 +70,7 @@ for name in ("start.sh", "healthcheck.sh", "smoke.py"):
 for name in ("compose.yml", "Caddyfile.template", "haproxy.cfg.template", "Dockerfile.api", "Dockerfile.xray",
              "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py",
              "vpn-smoke.py", "change-reality-target.py", "rotate-admin-token.py", "admin-credentials.py",
-             "image-tags.py", "install.sh", "update.sh"):
+             "image-tags.py", "release-ports.py", "install.sh", "update.sh"):
     source = Path("deploy/docker") / name
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Docker release file must be regular: {source}")
@@ -83,7 +83,7 @@ required = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
             "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py",
-            "docker/image-tags.py", "docker/install.sh", "docker/update.sh",
+            "docker/image-tags.py", "docker/release-ports.py", "docker/install.sh", "docker/update.sh",
             "docker/verify-release.py"}
 files = {path.relative_to(payload).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
          for path in sorted(payload.rglob("*")) if path.is_file()}
