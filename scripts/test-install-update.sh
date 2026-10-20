@@ -271,6 +271,8 @@ browser_protected
 node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" {print $2}')
 compose exec -T api /usr/local/bin/gatewayctl device add installation-test --node "$node" >/dev/null
 compose exec -T api /usr/local/bin/gatewayctl config apply
+# Экспорт при первом smoke заполняет хеш подписки; снимок должен включать его.
+vless_works || fail 'Initial VLESS traffic is unavailable.'
 saved_identity=$(identity)
 check_stack
 
