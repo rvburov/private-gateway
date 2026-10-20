@@ -106,6 +106,24 @@ old_services=(api browser xray caddy)
 # Списки читаются целиком: grep -q выходит на первом совпадении, и pipefail превратил бы SIGPIPE пишущего в «нет».
 old_service_list=$(compose_old config --services)
 new_service_list=$(compose_new config --services)
+# При переносе опубликованного порта между службами сначала освобождается старый владелец.
+# Та же проверка нужна при откате: работающий новый edge иначе удержит 8443 старого Caddy.
+port_owner() {
+  python3 -c 'import json, sys
+services = json.load(sys.stdin)["services"]
+print(",".join(sorted(name for name, service in services.items()
+    if any(str(port.get("published")) == "8443" for port in service.get("ports", [])))))'
+}
+old_port_owner=$(compose_old config --format json | port_owner)
+new_port_owner=$(compose_new config --format json | port_owner)
+port_transfer=false
+if [[ $old_port_owner != "$new_port_owner" ]]; then port_transfer=true; fi
+fallback_port=$(compose_new config --format json | python3 -c \
+  'import json, sys; print(json.load(sys.stdin)["services"]["api"].get("environment", {}).get("GATEWAY_FALLBACK_PORT", "0"))')
+old_fallback_port=$(compose_old config --format json | python3 -c \
+  'import json, sys; print(json.load(sys.stdin)["services"]["api"].get("environment", {}).get("GATEWAY_FALLBACK_PORT", "0"))')
+[[ $fallback_port == 0 || $fallback_port == 8443 ]] || fail 'Unsupported fallback port in Docker deployment.'
+[[ $old_fallback_port == 0 || $old_fallback_port == 8443 ]] || fail 'Unsupported fallback port in the installed release.'
 if grep -qx edge <<< "$old_service_list"; then
   old_edge=true
   old_services+=(edge)
@@ -155,13 +173,15 @@ stack_started=false
 pointer_changed=false
 vless_failed=false
 success=false
-# Настоящий VLESS-трафик через TCP 443 с профилем первого активного устройства — его проверяет
+# Настоящий VLESS-трафик через основной или резервный порт с профилем первого активного устройства — его проверяет
 # vpn-smoke.py указанного релиза. Пересозданный Xray получает новый адрес, и HAProxy заново
 # находит его за секунды.
 vless_works() {
   local attempt
+  local port_args=()
+  if [[ -n ${2:-} ]]; then port_args=(--port "$2"); fi
   for attempt in 1 2 3; do
-    if python3 "$1/docker/vpn-smoke.py"; then return 0; fi
+    if python3 "$1/docker/vpn-smoke.py" "${port_args[@]}"; then return 0; fi
     if ((attempt < 3)); then sleep 5; fi
   done
   return 1
@@ -173,6 +193,10 @@ rollback() {
   if [[ $caddy_changed == true ]]; then cp -p "$backup/Caddyfile" "$caddyfile"; fi
   # До HAProxy прежний релиз сам публиковал свои службы на TCP 443.
   if [[ $edge_enabled == true && $old_edge != true ]]; then compose_new stop edge || true; fi
+  if [[ $port_transfer == true && $stack_started == true ]]; then
+    compose_new stop caddy || true
+    if [[ $edge_enabled == true ]]; then compose_new stop edge || true; fi
+  fi
   if [[ $haproxy_changed == true ]]; then
     if [[ -f $backup/haproxy.cfg ]]; then
       cp -p "$backup/haproxy.cfg" "$haproxy_cfg"
@@ -206,7 +230,8 @@ rollback() {
     compose_old up -d --wait --no-deps --force-recreate edge || true
   fi
   if [[ $vless_failed == true ]]; then
-    if vless_works "$old_release"; then
+    if vless_works "$old_release" && \
+        { [[ $old_fallback_port == 0 ]] || vless_works "$old_release" "$old_fallback_port"; }; then
       printf 'VLESS traffic passes again with the previous release.\n' >&2
     else
       printf 'VLESS traffic fails with the previous release too: check the network and the REALITY target.\n' >&2
@@ -245,8 +270,8 @@ os.replace(staged, path)
 PY
 env_changed=true
 # Примонтированный файл сохраняет то содержимое, с которым запустился его контейнер, поэтому
-# заменённому файлу нужен новый контейнер. Пересоздание edge рвёт все VPN-подключения: это
-# делает только изменённый файл HAProxy.
+# заменённому файлу нужен новый контейнер. Изменение файла HAProxy или опубликованных портов
+# пересоздаёт edge и рвёт VPN-подключения.
 if [[ -f $caddyfile.next ]]; then
   mv -f -- "$caddyfile.next" "$caddyfile"
   caddy_changed=true
@@ -256,6 +281,10 @@ if [[ -f $haproxy_cfg.next ]]; then
   haproxy_changed=true
 fi
 stack_started=true
+if [[ $port_transfer == true ]]; then
+  compose_old stop caddy
+  if [[ $old_edge == true ]]; then compose_old stop edge; fi
+fi
 compose_new up -d --wait "${services[@]}"
 if [[ $caddy_changed == true ]]; then compose_new up -d --wait --no-deps --force-recreate caddy; fi
 if [[ $haproxy_changed == true ]]; then compose_new up -d --wait --no-deps --force-recreate edge; fi
@@ -288,6 +317,15 @@ browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/nul
   --write-out '%{http_code}' --max-time 10 --resolve "$domain:$panel_port:127.0.0.1" \
   "https://$domain:$panel_port/browser/vnc.html") || fail 'Browser access check failed.'
 [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
+if [[ $fallback_port != 0 ]]; then
+  curl --noproxy '*' --fail --silent --show-error --max-time 10 \
+    --resolve "$domain:$fallback_port:127.0.0.1" "https://$domain:$fallback_port/readyz" >/dev/null \
+    || fail 'Fallback HTTPS readiness check failed.'
+  fallback_browser_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
+    --write-out '%{http_code}' --max-time 10 --resolve "$domain:$fallback_port:127.0.0.1" \
+    "https://$domain:$fallback_port/browser/vnc.html") || fail 'Fallback browser access check failed.'
+  [[ $fallback_browser_status == 403 ]] || fail 'Fallback browser is not protected by administrator authentication.'
+fi
 gateway_status=$(compose_new exec -T api /usr/local/bin/gatewayctl status)
 printf '%s\n' "$gateway_status"
 active_devices=$(awk '$1 == "ACTIVE" && $2 == "DEVICES" {print $3}' <<< "$gateway_status")
@@ -298,6 +336,9 @@ if ((active_devices == 0)); then
 elif ! vless_works "$release"; then
   vless_failed=true
   fail 'VLESS traffic does not pass through the new release.'
+elif [[ $fallback_port != 0 ]] && ! vless_works "$release" "$fallback_port"; then
+  vless_failed=true
+  fail 'VLESS traffic does not pass through the fallback port.'
 fi
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"

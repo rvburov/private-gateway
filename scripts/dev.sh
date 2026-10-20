@@ -26,7 +26,11 @@ build_checks_image() {
     exit 1
   fi
   export CHECKS_IMAGE="private-gateway-checks:$checkout_name"
-  checks_context | docker build --file deploy/checks/Dockerfile --tag "$CHECKS_IMAGE" -
+  # Старый сборщик Docker без Buildx не заполняет TARGETARCH автоматически.
+  local checks_arch
+  checks_arch=$(docker version --format '{{.Server.Arch}}')
+  checks_context | docker build --build-arg "TARGETARCH=$checks_arch" \
+    --file deploy/checks/Dockerfile --tag "$CHECKS_IMAGE" -
 }
 # Локальный стек: production-файл compose из релиза, собранного из этой копии, и поверх него
 # deploy/dev/compose.yml. Его секреты, релиз и данные лежат в .local/dev и в томах Docker проекта
