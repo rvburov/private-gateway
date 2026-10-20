@@ -28,6 +28,7 @@ type Config struct {
 	BrowserWorkerURL   string
 	BrowserWorkerToken string
 	BrowserPublicURL   string
+	FallbackPort       int
 }
 
 func Load() (Config, error) {
@@ -59,6 +60,11 @@ func Load() (Config, error) {
 	vpnPort, err := integer("GATEWAY_PORT", 443)
 	if err != nil {
 		return c, err
+	}
+	c.FallbackPort, err = integer("GATEWAY_FALLBACK_PORT", 0)
+	if err != nil || c.FallbackPort < 0 || c.FallbackPort > 65535 ||
+		(c.FallbackPort != 0 && c.FallbackPort == vpnPort) {
+		return c, errors.New("GATEWAY_FALLBACK_PORT must be 0 or a distinct valid public port")
 	}
 	statsPort, err := integer("GATEWAY_XRAY_STATS_PORT", 0)
 	if err != nil {

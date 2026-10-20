@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  browserURLForPanel,
   request,
   type AuditEvent,
   type BrowserStatus,
@@ -184,8 +185,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   const nodeList = nodes.data?.nodes ?? [];
   const currentStatus = status.data;
   const pending = currentStatus && currentStatus.desired_revision !== currentStatus.applied_revision;
-  const browserURL =
-    browser.data?.url && /^https?:\/\//.test(browser.data.url) ? browser.data.url : undefined;
+  const browserURL = browserURLForPanel(browser.data?.url, window.location.origin);
   const publicBrowser = browserURL?.startsWith("https://") ?? false;
   const addButton = (
     <button className="button primary" onClick={startAdding} disabled={!nodeList.length}>

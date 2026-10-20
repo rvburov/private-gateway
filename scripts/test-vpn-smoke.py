@@ -91,7 +91,9 @@ class VPNSmokeTest(unittest.TestCase):
                 uri = (f"vless://{credential}@127.0.0.1:{server_port}?encryption=none&flow=xtls-rprx-vision"
                        "&type=tcp&security=reality&sni=reality.example&fp=chrome&pbk=" + public_key
                        + "&sid=0123456789abcdef&spx=%2F#smoke")
-                client_config, name = smoke.client_config(uri, client_port)
+                # В профиле основной порт, а проверка идёт через явно выбранный резервный.
+                primary_uri = uri.replace(f":{server_port}?", ":443?")
+                client_config, name = smoke.client_config(primary_uri, client_port, server_port)
                 self.assertEqual(client_config["outbounds"][0]["settings"]["vnext"][0]["address"], "127.0.0.1")
                 (root / "client.json").write_text(json.dumps(client_config))
                 client = subprocess.Popen([binary, "run", "-config", str(root / "client.json")],

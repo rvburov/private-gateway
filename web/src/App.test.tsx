@@ -477,7 +477,8 @@ describe("administrator panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
     const oldLink = subscriptionLink();
     await screen.findByDisplayValue(oldLink);
-    fireEvent.click(screen.getByRole("button", { name: "Новая ссылка" }));
+    // Текстовое поле появляется до showModal: ждём доступную кнопку открытого окна.
+    fireEvent.click(await screen.findByRole("button", { name: "Новая ссылка" }));
     expect(screen.getByText(/Прежняя ссылка сразу перестанет работать/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
     expect(rotations).toBe(0);

@@ -17,6 +17,8 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 	for name, value := range values {
 		t.Setenv(name, value)
 	}
+	t.Setenv("GATEWAY_PORT", "443")
+	t.Setenv("GATEWAY_FALLBACK_PORT", "0")
 	t.Setenv("GATEWAY_XRAY_RESTART", `["systemctl","--user","restart","xray"]`)
 	good, err := Load()
 	if err != nil {
@@ -25,6 +27,19 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 	if len(good.Node.ConfigHash) != 64 {
 		t.Fatal("missing settings hash")
 	}
+	t.Setenv("GATEWAY_FALLBACK_PORT", "8443")
+	fallback, err := Load()
+	if err != nil || fallback.FallbackPort != 8443 ||
+		fallback.Node.ConfigHash != good.Node.ConfigHash || fallback.Xray.Settings.Port != 443 {
+		t.Fatalf("fallback must not change Xray settings: %v", err)
+	}
+	for _, port := range []string{"-1", "65536", "443", "bad"} {
+		t.Setenv("GATEWAY_FALLBACK_PORT", port)
+		if _, err := Load(); err == nil {
+			t.Fatalf("invalid fallback port accepted: %s", port)
+		}
+	}
+	t.Setenv("GATEWAY_FALLBACK_PORT", "0")
 	for _, address := range []string{"0.0.0.0:8080", "[::]:8080", "localhost:8080", "127.0.0.1:0"} {
 		t.Setenv("GATEWAY_LISTEN", address)
 		if _, err := Load(); err == nil {

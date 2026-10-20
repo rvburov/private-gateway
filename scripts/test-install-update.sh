@@ -76,13 +76,26 @@ installed() { sudo cat /etc/private-gateway-docker/installed.version; }
 container() { compose ps --status running --quiet "$1"; }
 panel_ready() {
   curl --fail --silent --show-error --max-time 10 --output /dev/null \
-    --resolve "$domain:443:127.0.0.1" "https://$domain/readyz"
+    --resolve "$domain:${1:-443}:127.0.0.1" "https://$domain:${1:-443}/readyz"
+}
+fallback_ready() {
+  panel_ready 8443 || fail 'the fallback panel does not answer through HAProxy.'
+  local status
+  status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 \
+    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/browser/vnc.html")
+  [[ $status == 403 ]] || fail 'fallback noVNC is not protected.'
+}
+legacy_redirect() {
+  local redirect
+  redirect=$(curl --silent --show-error --output /dev/null --write-out '%{http_code} %{redirect_url}' --max-time 10 \
+    --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz")
+  [[ $redirect == "301 https://$domain/readyz" ]] || fail 'legacy redirect was not restored.'
 }
 # Пересозданный Xray получает новый адрес; HAProxy узнаёт его из DNS Docker за секунды.
 vless_works() {
   local attempt
   for attempt in 1 2 3; do
-    if sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py; then return 0; fi
+    if sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --port "${1:-443}"; then return 0; fi
     ((attempt == 3)) || sleep 5
   done
   return 1
@@ -92,12 +105,15 @@ version_a=$(python3 "$repository/scripts/verify-release.py" --tar "$archive")
 version_b=$(printf 'b%.0s' {1..40})
 version_c=$(printf 'c%.0s' {1..40})
 version_d=$(printf 'd%.0s' {1..40})
+version_e=$(printf 'e%.0s' {1..40})
+version_f=$(printf 'f%.0s' {1..40})
+version_g=$(printf '1%.0s' {1..40})
 # B — та же сборка с ещё одним файлом панели, поэтому новый тег по содержимому получает только
 # образ API. C отправляет имя панели в Xray вместо Caddy: проверка панели проваливается, только
 # если обновление действительно перезапускает HAProxy, и тогда оно должно откатиться. D отправляет
 # в Caddy все остальные имена, включая VPN-клиентов: панель работает, и поймать это может только
 # проверка VLESS.
-python3 - "$archive" "$work" "$version_b" "$version_c" "$version_d" <<'PY'
+python3 - "$archive" "$work" "$version_b" "$version_c" "$version_d" "$version_e" "$version_f" "$version_g" <<'PY'
 import gzip
 import hashlib
 import io
@@ -139,6 +155,21 @@ write(sys.argv[4], {"docker/haproxy.cfg.template":
                     template.replace(route, route.replace("panel_https", "vpn_reality")).encode()})
 write(sys.argv[5], {"docker/haproxy.cfg.template":
                     template.replace(default, "default_backend panel_https").encode()})
+# E имитирует подготовительный релиз: обновлённый установщик, но старый владелец 8443.
+compose = files["docker/compose.yml"].decode()
+if '      - "0.0.0.0:8443:443/tcp"\n' not in compose:
+    raise SystemExit("The fallback edge mapping is missing.")
+legacy = compose.replace('      - "0.0.0.0:8443:443/tcp"\n', '')
+legacy = legacy.replace('      - "0.0.0.0:80:80/tcp"\n',
+                        '      - "0.0.0.0:80:80/tcp"\n      - "0.0.0.0:8443:8443/tcp"\n')
+legacy = legacy.replace('GATEWAY_FALLBACK_PORT: "8443"', 'GATEWAY_FALLBACK_PORT: "0"')
+redirect = b"\nhttps://__PANEL_DOMAIN__:8443 {\n    redir https://__PANEL_DOMAIN__{uri} permanent\n}\n"
+write(sys.argv[6], {"docker/compose.yml": legacy.encode(),
+                    "docker/Caddyfile.template": files["docker/Caddyfile.template"] + redirect})
+write(sys.argv[7], {})
+# В G основной вход исправен, но публикация резервного порта потеряна.
+write(sys.argv[8], {"docker/compose.yml":
+                    compose.replace('      - "0.0.0.0:8443:443/tcp"\n', '').encode()})
 PY
 
 # Имена .localhost Caddy подписывает своим локальным центром сертификации. Тест выдаёт Caddy центр,
@@ -182,13 +213,12 @@ grep -qx "First Docker deployment verified: $version_a" "$work/install.log" \
   || fail 'the first deployment did not report success.'
 [[ $(installed) == "$version_a" ]] || fail 'the installed version is not the delivered release.'
 panel_ready || fail 'the panel does not answer through HAProxy.'
-redirect=$(curl --silent --output /dev/null --write-out '%{http_code} %{redirect_url}' --max-time 10 \
-  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz")
-[[ $redirect == "301 https://$domain/readyz" ]] || fail "port 8443 answered '$redirect' instead of a redirect."
+fallback_ready
 node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" {print $2}')
 compose exec -T api /usr/local/bin/gatewayctl device add installation-test --node "$node" >/dev/null
 compose exec -T api /usr/local/bin/gatewayctl config apply
 vless_works || fail 'VLESS traffic does not pass after the first deployment.'
+vless_works 8443 || fail 'fallback VLESS traffic does not pass after the first deployment.'
 xray_container=$(container xray)
 
 printf '\n== Update to %s, which changes only the panel ==\n' "$version_b"
@@ -206,6 +236,8 @@ done
 [[ $(container api) != "${before[api]}" ]] || fail 'the API was not recreated with its new image.'
 panel_ready || fail 'the panel does not answer after the update.'
 vless_works || fail 'VLESS traffic does not pass after the update.'
+fallback_ready
+vless_works 8443 || fail 'fallback VLESS traffic does not pass after the update.'
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/repeat-b.log"
 grep -qx "Release $version_b is already installed." "$work/repeat-b.log" \
   || fail 'a repeated delivery was not recognised as installed.'
@@ -230,6 +262,8 @@ gateway_status=$(compose exec -T api /usr/local/bin/gatewayctl status)
 grep -Eq '^ACTIVE DEVICES +1$' <<< "$gateway_status" \
   || fail "the device did not survive the rollback: $gateway_status"
 vless_works || fail 'VLESS traffic does not pass after the rollback.'
+fallback_ready
+vless_works 8443 || fail 'fallback VLESS traffic does not pass after the rollback.'
 
 printf '\n== Update to %s, which sends VPN clients to Caddy ==\n' "$version_d"
 if deliver "$version_d" "$work/release-d.tar.gz" 2>&1 | tee "$work/update-d.log"; then
@@ -245,4 +279,38 @@ sudo cmp -s /etc/private-gateway-docker/haproxy.cfg "$work/haproxy.cfg" \
 panel_ready || fail 'the panel does not answer after the VLESS rollback.'
 vless_works || fail 'VLESS traffic does not pass after the VLESS rollback.'
 [[ $(container xray) == "$xray_container" ]] || fail 'Xray was recreated although its image never changed.'
+
+# Проверить перенос порта и откат с установщиком подготовительного релиза.
+printf '\n== Restore legacy ownership of port 8443 ==\n'
+deliver "$version_e" "$work/release-e.tar.gz" 2>&1 | tee "$work/update-e.log"
+[[ $(installed) == "$version_e" ]] || fail 'legacy topology was not installed.'
+legacy_redirect
+vless_works || fail 'primary VLESS failed with legacy port ownership.'
+if deliver "$version_c" "$work/release-c.tar.gz" 2>&1 | tee "$work/transfer-failed.log"; then
+  fail 'the updater accepted broken routing during port transfer.'
+fi
+[[ $(installed) == "$version_e" ]] || fail 'port transfer rollback lost the previous release.'
+panel_ready || fail 'primary panel failed after port transfer rollback.'
+legacy_redirect
+vless_works || fail 'primary VLESS failed after port transfer rollback.'
+printf '\n== Transfer port 8443 from Caddy to HAProxy ==\n'
+deliver "$version_f" "$work/release-f.tar.gz" 2>&1 | tee "$work/update-f.log"
+[[ $(installed) == "$version_f" ]] || fail 'fallback topology was not installed.'
+panel_ready || fail 'primary panel failed after port transfer.'
+fallback_ready
+vless_works || fail 'primary VLESS failed after port transfer.'
+vless_works 8443 || fail 'fallback VLESS failed after port transfer.'
+gateway_status=$(compose exec -T api /usr/local/bin/gatewayctl status)
+grep -Eq '^ACTIVE DEVICES +1$' <<< "$gateway_status" || fail 'port transfer lost the device.'
+printf '\n== Reject a release that loses only the fallback port ==\n'
+if deliver "$version_g" "$work/release-1.tar.gz" 2>&1 | tee "$work/fallback-failed.log"; then
+  fail 'the updater accepted a release with an unavailable fallback port.'
+fi
+grep -q '^Docker deployment stopped: Fallback HTTPS readiness check failed.' "$work/fallback-failed.log" \
+  || fail 'the fallback readiness check did not stop the update.'
+[[ $(installed) == "$version_f" ]] || fail 'fallback failure did not restore the installed release.'
+panel_ready || fail 'primary panel failed after fallback rollback.'
+fallback_ready
+vless_works || fail 'primary VLESS failed after fallback rollback.'
+vless_works 8443 || fail 'fallback VLESS failed after fallback rollback.'
 printf '\nInstallation, update and rollback passed on %s.\n' "$(. /etc/os-release && printf '%s' "$PRETTY_NAME")"

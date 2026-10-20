@@ -27,10 +27,33 @@ export function ProfileDialog({
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [rotated, setRotated] = useState(false);
+  const [changingPort, setChangingPort] = useState(false);
 
-  const subscriptionLink = new URL(profile.subscription_path, window.location.origin).toString();
+  const selectedPort = profile.fallback_port && profile.port === profile.fallback_port
+    ? String(profile.fallback_port) : "primary";
+  const subscriptionURL = new URL(profile.subscription_path, window.location.origin);
+  if (selectedPort !== "primary") subscriptionURL.port = selectedPort;
+  const subscriptionLink = subscriptionURL.toString();
   const text = format === "subscription" ? subscriptionLink : profile[format];
   const linkFormat = format === "subscription" || format === "uri";
+
+  async function changePort(port: string) {
+    setChangingPort(true);
+    setCopied(false);
+    setShowQR(false);
+    setError(null);
+    try {
+      const result = await request<ProfileExport>(
+        token,
+        `/devices/${encodeURIComponent(profile.device.id)}/profile?port=${port}`,
+      );
+      onChange({ ...result, device: profile.device });
+    } catch (err) {
+      setError(err);
+    } finally {
+      setChangingPort(false);
+    }
+  }
 
   async function rotateSubscription() {
     setRotating(true);
@@ -38,7 +61,7 @@ export function ProfileDialog({
     try {
       const result = await request<{ subscription_path: string }>(
         token,
-        `/devices/${encodeURIComponent(profile.device.id)}/subscription`,
+        `/devices/${encodeURIComponent(profile.device.id)}/subscription${profile.fallback_port ? `?port=${selectedPort}` : ""}`,
         { method: "POST" },
       );
       onChange({ ...profile, subscription_path: result.subscription_path });
@@ -93,6 +116,25 @@ export function ProfileDialog({
         могут использовать собственный файл конфигурации. Для нового устройства сначала примените
         конфигурацию.
       </p>
+      {!!profile.fallback_port && (
+        <>
+          <label htmlFor="profile-port">Вход на сервер</label>
+          <select
+            id="profile-port"
+            className="profile-format-picker"
+            value={selectedPort}
+            disabled={changingPort || rotating || confirmRotate}
+            onChange={(event) => void changePort(event.target.value)}
+          >
+            <option value="primary">Основной вход</option>
+            <option value={profile.fallback_port}>Резервный вход — {profile.fallback_port}</option>
+          </select>
+          <p className="profile-format-help" role="status">
+            {changingPort ? "Получаем профиль…" :
+              "Если основной вход недоступен, выберите резервный и заново импортируйте ссылку или QR-код в приложение."}
+          </p>
+        </>
+      )}
       <label htmlFor="profile-format">Формат профиля</label>
       <select
         id="profile-format"
@@ -129,6 +171,7 @@ export function ProfileDialog({
         <button
           className="button secondary-button profile-qr-toggle"
           onClick={() => setShowQR((visible) => !visible)}
+          disabled={changingPort || rotating}
           aria-expanded={showQR}
           aria-controls="profile-qr"
         >
@@ -189,6 +232,7 @@ export function ProfileDialog({
           ) : (
             <button
               className="button secondary-button"
+              disabled={changingPort || rotating}
               onClick={() => {
                 setConfirmRotate(true);
                 setRotated(false);
@@ -205,11 +249,11 @@ export function ProfileDialog({
           Скрыть профиль
         </button>
         {!linkFormat && (
-          <button className="button secondary-button" onClick={download}>
+          <button className="button secondary-button" onClick={download} disabled={changingPort || rotating}>
             Скачать файл
           </button>
         )}
-        <button className="button primary" onClick={() => void copy()}>
+        <button className="button primary" onClick={() => void copy()} disabled={changingPort || rotating}>
           <Icon name={copied ? "check" : "copy"} size={17} />
           {copied ? "Скопировано" : linkFormat ? "Скопировать ссылку" : "Скопировать конфигурацию"}
         </button>

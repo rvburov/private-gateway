@@ -1,17 +1,17 @@
 # Архитектура
 
-На одном VPS Docker Compose запускает шесть сервисов. HAProxy принимает TCP 443 и по SNI направляет запросы к домену панели в Caddy, а VLESS + REALITY — в Xray. Caddy использует порт 80 для автоматического TLS-сертификата; старый HTTPS-порт 8443 перенаправляет на обычный адрес панели. PostgreSQL, API, Xray StatsService и browser worker не имеют опубликованных host-портов.
+На одном VPS Docker Compose запускает шесть сервисов. HAProxy принимает TCP 443 и резервный TCP 8443 и по SNI направляет запросы к домену панели в Caddy, а VLESS + REALITY — в Xray. Caddy использует порт 80 для автоматического TLS-сертификата; оба опубликованных TLS-порта направлены на один внутренний вход HAProxy. PostgreSQL, API, Xray StatsService и browser worker не имеют опубликованных host-портов.
 
 ```mermaid
 flowchart LR
-    Admin[Администратор] -->|HTTPS 443, SNI панели| Edge[HAProxy]
+    Admin[Администратор] -->|HTTPS 443/8443, SNI панели| Edge[HAProxy]
     Edge --> Caddy
     Caddy --> API[Go API и веб-панель]
     Caddy -->|проверка сеанса через API| Browser[Временный браузер]
     API --> DB[(PostgreSQL 18)]
     API -->|проверенный конфиг в общем каталоге| Xray[Xray worker]
     API -->|закрытый HTTP control| Browser
-    Client["Клиент VLESS + REALITY"] -->|TCP 443, SNI REALITY| Edge
+    Client["Клиент VLESS + REALITY"] -->|TCP 443/8443, SNI REALITY| Edge
     Edge --> Xray
     Xray --> Internet[Интернет]
 ```
@@ -23,9 +23,9 @@ flowchart LR
 | Панель управления | TypeScript, React, TanStack Query, Vite, CSS | Экраны входа, устройств, конфигурации, браузера, инструкций и проверки подключения. Исходники — [web/src](../web/src/App.tsx); готовые файлы отдаёт Go API через Caddy. |
 | API и командная утилита | Go, `chi`, Cobra | Авторизация администратора, устройства, профили клиентов, применение конфигурации Xray и управление браузером. Код — [internal](../internal/httpapi/server.go) и [gatewayctl](../cmd/gatewayctl/main.go). |
 | База данных | PostgreSQL 18, SQL, `pgx/v5`, `sqlc`, `golang-migrate` | Хранит состояние шлюза, устройства и журнал действий. Запросы — [queries.sql](../internal/storage/queries.sql), миграции — [internal/storage/migrations](../internal/storage/migrations/000001_initial.up.sql). |
-| VPN-трафик и счётчики | Xray, VLESS + REALITY, StatsService | Принимает подключения совместимых клиентов через TCP 443, передаёт трафик и предоставляет только внутреннему API байты по профилю с последнего запуска Xray. Go API создаёт конфигурацию, а [Xray worker](../deploy/docker/xray-worker.py) запускает её в отдельном контейнере. |
+| VPN-трафик и счётчики | Xray, VLESS + REALITY, StatsService | Принимает подключения совместимых клиентов через TCP 443 или 8443, передаёт трафик и предоставляет только внутреннему API байты по профилю с последнего запуска Xray. Go API создаёт конфигурацию, а [Xray worker](../deploy/docker/xray-worker.py) запускает её в отдельном контейнере. |
 | Удалённый браузер | Chromium, Python, noVNC, VNC | Chromium открывает сайты на VPS, noVNC показывает его экран в панели, а [Python worker](../deploy/docker/browser-worker.py) запускает и останавливает временный сеанс. |
-| HTTPS и контейнеры | HAProxy, Caddy, Docker Compose | [HAProxy](../deploy/docker/haproxy.cfg.template) разделяет HTTPS панели и VPN-трафик на TCP 443 по SNI. Caddy обслуживает панель и noVNC; [Compose](../deploy/docker/compose.yml) запускает шесть сервисов и их внутренние сети. |
+| HTTPS и контейнеры | HAProxy, Caddy, Docker Compose | [HAProxy](../deploy/docker/haproxy.cfg.template) разделяет HTTPS панели и VPN-трафик на TCP 443 и 8443 по SNI. Caddy обслуживает панель и noVNC; [Compose](../deploy/docker/compose.yml) запускает шесть сервисов и их внутренние сети. |
 | Установка, обновление и проверки | Bash, Python, GitHub Actions YAML | [Скрипты установки](../deploy/docker/install.sh) собирают и обновляют стек; [CI/CD](../.github/workflows/ci.yml) проверяет код теми же проверками в Docker, что и [`scripts/dev.sh test`](../scripts/dev.sh), и доставляет успешный релиз на все серверы из [`deploy/servers`](../deploy/servers). |
 
 На iPhone, Android и ПК используются сторонние VLESS + REALITY клиенты: проект выдаёт им URI, QR-код или конфигурационный файл, но не содержит собственного мобильного приложения. Node.js нужен для сборки панели, на VPS он не запускается.

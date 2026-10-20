@@ -38,6 +38,7 @@ services:
       GATEWAY_SHORT_ID: ${GATEWAY_SHORT_ID:?Set GATEWAY_SHORT_ID}
       GATEWAY_HOST: ${GATEWAY_HOST:?Set GATEWAY_HOST}
       GATEWAY_PORT: "443"
+      GATEWAY_FALLBACK_PORT: "8443"
       GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-www.cloudflare.com}
       GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:-www.cloudflare.com:443}
       GATEWAY_XRAY_CONFIG: /state/xray.json
@@ -124,7 +125,6 @@ services:
     image: caddy:2.10.2-alpine@sha256:4c6e91c6ed0e2fa03efd5b44747b625fec79bc9cd06ac5235a779726618e530d
     ports:
       - "0.0.0.0:80:80/tcp"
-      - "0.0.0.0:8443:8443/tcp"
     volumes:
       - ${GATEWAY_CADDYFILE:?Set GATEWAY_CADDYFILE}:/etc/caddy/Caddyfile:ro
       - caddy-data:/data
@@ -144,6 +144,7 @@ services:
     image: haproxy:3.2-alpine@sha256:254e6370f01cd654e0744edf607c67f33777c1b6a9dc0d4b28bcba7171460122
     ports:
       - "0.0.0.0:443:443/tcp"
+      - "0.0.0.0:8443:443/tcp"
     volumes:
       - /etc/private-gateway-docker/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     networks: [edge]

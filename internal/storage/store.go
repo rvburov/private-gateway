@@ -217,6 +217,12 @@ func (s *Store) DeleteRevoked(ctx context.Context, deviceID string) error {
 	})
 }
 func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, error) {
+	return s.ExportAtPort(ctx, deviceID, 0)
+}
+
+// ExportAtPort меняет только адрес выдаваемого профиля. Нулевой порт означает порт узла.
+// Вызывающий код разрешает лишь опубликованные входы; ревизия и настройки Xray не меняются.
+func (s *Store) ExportAtPort(ctx context.Context, deviceID string, port int) (model.Profile, error) {
 	if _, err := uuid.Parse(deviceID); err != nil {
 		return model.Profile{}, ErrNotFound
 	}
@@ -237,7 +243,12 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 		if err != nil {
 			return err
 		}
-		result, err = xray.ClientProfiles(nodeModel(node), credential, row.Name)
+		clientNode := nodeModel(node)
+		if port != 0 {
+			clientNode.Port = port
+		}
+		result, err = xray.ClientProfiles(clientNode, credential, row.Name)
+		result.Port = clientNode.Port
 		if err != nil {
 			return err
 		}
@@ -317,6 +328,11 @@ func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string
 // Отозванное устройство и заменённая ссылка не находятся. Клиенты регулярно опрашивают ссылки,
 // поэтому чтения не попадают в аудит.
 func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, string, error) {
+	return s.SubscriptionAtPort(ctx, token, 0)
+}
+
+// SubscriptionAtPort использует тот же секрет и тот же отзыв для обоих входов.
+func (s *Store) SubscriptionAtPort(ctx context.Context, token string, port int) (model.Profile, string, error) {
 	row, err := s.queries.GetActiveDeviceBySubscription(ctx, secure.SubscriptionHash(token))
 	if err != nil {
 		return model.Profile{}, "", classify(err)
@@ -329,7 +345,12 @@ func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, 
 	if err != nil {
 		return model.Profile{}, "", err
 	}
-	profile, err := xray.ClientProfiles(nodeModel(node), credential, row.Name)
+	clientNode := nodeModel(node)
+	if port != 0 {
+		clientNode.Port = port
+	}
+	profile, err := xray.ClientProfiles(clientNode, credential, row.Name)
+	profile.Port = clientNode.Port
 	if err != nil {
 		return model.Profile{}, "", err
 	}

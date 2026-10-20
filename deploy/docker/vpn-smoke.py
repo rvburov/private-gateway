@@ -324,16 +324,19 @@ def main():
     parser.add_argument("--isolated", action="store_true", help="check the same server config with a temporary loopback Xray")
     parser.add_argument("--isolated-target", choices=("www.cloudflare.com", "www.wikipedia.org", "www.apple.com"),
                         help="try an alternate REALITY camouflage target in isolated mode")
+    parser.add_argument("--port", type=int, help="Проверить опубликованный порт вместо порта основного профиля")
     args = parser.parse_args()
     if args.isolated_target and not args.isolated:
         parser.error("--isolated-target requires --isolated")
+    if args.port is not None and (not 1 <= args.port <= 65535 or args.isolated):
+        parser.error("--port requires a valid public port and cannot be combined with --isolated")
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
     profile = get_profile()
     if args.isolated:
         check_reality_public_key(profile)
     port = free_port()
-    server_port = free_port() if args.isolated else None
+    server_port = free_port() if args.isolated else args.port
     while server_port == port:
         server_port = free_port()
     config, target = client_config(profile, port, server_port)
@@ -357,7 +360,7 @@ def main():
         finally:
             if server is not None:
                 stop(server)
-    print("VLESS traffic OK:", protocol)
+    print("VLESS traffic OK:", protocol, "; port", args.port or urlsplit(profile).port)
 
 
 if __name__ == "__main__":

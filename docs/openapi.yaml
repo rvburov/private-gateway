@@ -232,6 +232,7 @@ paths:
   /api/v1/devices/{id}/profile:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
+      - {$ref: '#/components/parameters/ProfilePort'}
     get:
       operationId: exportDevice
       responses:
@@ -241,8 +242,10 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [uri, sing_box_json, mihomo_yaml, subscription_path]
+                required: [port, uri, sing_box_json, mihomo_yaml, subscription_path]
                 properties:
+                  port: {type: integer, minimum: 1, maximum: 65535, description: Порт подключения во всех форматах профиля}
+                  fallback_port: {type: integer, description: Доступный резервный порт; отсутствует, если резервный вход не настроен}
                   uri: {type: string, format: uri}
                   sing_box_json: {type: string, description: Полная конфигурация sing-box в JSON}
                   mihomo_yaml: {type: string, description: Полная конфигурация Mihomo в YAML}
@@ -253,6 +256,7 @@ paths:
   /api/v1/devices/{id}/subscription:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
+      - {$ref: '#/components/parameters/ProfilePort'}
     post:
       operationId: rotateSubscription
       description: Выдать активному устройству новую ссылку-подписку. Прежняя ссылка сразу перестаёт работать.
@@ -296,6 +300,7 @@ paths:
     parameters:
       - {name: token, in: path, required: true, schema: {type: string}}
       - {name: format, in: query, required: false, schema: {type: string, enum: [base64, uri, sing-box, mihomo, html]}}
+      - {$ref: '#/components/parameters/ProfilePort'}
     get:
       operationId: subscription
       security: []
@@ -417,6 +422,18 @@ components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
   parameters:
+    ProfilePort:
+      name: port
+      in: query
+      required: false
+      description: >-
+        primary выбирает основной порт устройства, 8443 — настроенный резервный вход
+        production-стека. Другие значения и повтор параметра дают 400. При отключённом
+        резервном входе 8443 также даёт 400. Без параметра резервный порт выбирается,
+        если Host запроса содержит настроенный резервный порт; иначе используется основной.
+        Путь подписки в ответе сохраняет выбор. Для загрузки подписки без обращения к 443
+        используйте HTTPS-адрес панели с :8443 и параметром port=8443.
+      schema: {type: string, enum: [primary, '8443']}
     DeviceID:
       name: id
       in: path

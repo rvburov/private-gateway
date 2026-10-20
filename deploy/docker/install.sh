@@ -309,6 +309,13 @@ browser_auth_status=$(curl --noproxy '*' --silent --show-error --output /dev/nul
   --write-out '%{http_code}' --max-time 10 --resolve "$domain:443:127.0.0.1" \
   "https://$domain/browser/vnc.html") || fail 'Browser access check failed.'
 [[ $browser_auth_status == 403 ]] || fail 'Browser is not protected by administrator authentication.'
+curl --noproxy '*' --fail --silent --show-error --max-time 10 \
+  --resolve "$domain:8443:127.0.0.1" "https://$domain:8443/readyz" >/dev/null \
+  || fail 'Fallback HTTPS readiness check failed.'
+fallback_browser_status=$(curl --noproxy '*' --silent --show-error --output /dev/null \
+  --write-out '%{http_code}' --max-time 10 --resolve "$domain:8443:127.0.0.1" \
+  "https://$domain:8443/browser/vnc.html") || fail 'Fallback browser access check failed.'
+[[ $fallback_browser_status == 403 ]] || fail 'Fallback browser is not protected by administrator authentication.'
 compose exec -T api /usr/local/bin/gatewayctl browser start
 compose exec -T browser python3 /app/smoke.py --port 6080
 compose exec -T api /usr/local/bin/gatewayctl browser stop

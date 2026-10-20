@@ -22,6 +22,7 @@ services:
       # сертификата для проверки.
       GATEWAY_BROWSER_WORKER_URL: ""
       GATEWAY_PANEL_TLS_ADDRESS: ""
+      GATEWAY_FALLBACK_PORT: "0"
     volumes:
       - state:/state
 

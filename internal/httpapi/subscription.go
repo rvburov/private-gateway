@@ -5,9 +5,11 @@ import (
 	"errors"
 	"html/template"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -36,7 +38,12 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "unknown format; use base64, uri, sing-box, mihomo or html")
 		return
 	}
-	profile, name, err := s.store.Subscription(r.Context(), token)
+	port, ok := s.profilePort(r)
+	if !ok {
+		fail(w, 400, "unsupported profile port")
+		return
+	}
+	profile, name, err := s.store.SubscriptionAtPort(r.Context(), token, port)
 	if errors.Is(err, storage.ErrNotFound) {
 		fail(w, 404, "not found")
 		return
@@ -50,7 +57,7 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Profile-Update-Interval", "24")
 	switch format {
 	case "html":
-		s.subscriptionPage(w, r, token, name)
+		s.subscriptionPage(w, r, token, name, port)
 	case "uri":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(profile.URI + "\n"))
@@ -104,7 +111,7 @@ func attachment(name, extension string) string {
 }
 
 // subscriptionPage помогает импортировать ссылку тому, кто открыл её в браузере телефона.
-func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token, name string) {
+func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token, name string, port int) {
 	if !requestHost.MatchString(r.Host) {
 		fail(w, 400, "invalid host")
 		return
@@ -113,7 +120,19 @@ func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token,
 	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
 		scheme = "http"
 	}
-	link := scheme + "://" + r.Host + storage.SubscriptionPathPrefix + token
+	host := r.Host
+	if port != 0 {
+		hostname := r.Host
+		if h, _, err := net.SplitHostPort(r.Host); err == nil {
+			hostname = h
+		}
+		host = net.JoinHostPort(hostname, strconv.Itoa(port))
+	}
+	link := scheme + "://" + host + s.subscriptionPath(storage.SubscriptionPathPrefix+token, port)
+	mihomoLink, _ := url.Parse(link)
+	query := mihomoLink.Query()
+	query.Set("format", "mihomo")
+	mihomoLink.RawQuery = query.Encode()
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	// Токен проверен, хост проверен выше, а имя устройства экранируется, поэтому ссылки импорта
 	// могут нести собственные схемы приложений. Порядок — как в «Инструкциях» панели.
@@ -127,7 +146,7 @@ func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token,
 		{"Hiddify", template.URL("hiddify://import/" + link + "#" + url.PathEscape(name))},
 		{"Streisand", template.URL("streisand://import/" + link)},
 		{"V2Box", template.URL("v2box://install-sub?url=" + url.QueryEscape(link) + "&name=" + url.QueryEscape(name))},
-		{"Clash Meta / Mihomo", template.URL("clash://install-config?url=" + url.QueryEscape(link+"?format=mihomo") +
+		{"Clash Meta / Mihomo", template.URL("clash://install-config?url=" + url.QueryEscape(mihomoLink.String()) +
 			"&name=" + url.QueryEscape(name))},
 	}
 	_ = subscriptionPage.Execute(w, map[string]any{"Name": name, "Link": link, "Apps": apps})

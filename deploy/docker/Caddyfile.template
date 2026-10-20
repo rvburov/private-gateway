@@ -26,7 +26,3 @@ https://__PANEL_DOMAIN__ {
         reverse_proxy api:8080
     }
 }
-
-https://__PANEL_DOMAIN__:8443 {
-    redir https://__PANEL_DOMAIN__{uri} permanent
-}
