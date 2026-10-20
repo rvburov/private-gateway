@@ -216,7 +216,6 @@ func serve() error {
 	}
 	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{
 		Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
-		FallbackPort: cfg.FallbackPort,
 		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
 		Checks: httpapi.ServerChecks{
 			XrayBinary: cfg.Xray.Binary, XrayConfigPath: cfg.Xray.ConfigPath,

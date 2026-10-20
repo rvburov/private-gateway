@@ -38,12 +38,11 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "unknown format; use base64, uri, sing-box, mihomo or html")
 		return
 	}
-	port, ok := s.profilePort(r)
-	if !ok {
+	if !validProfilePortQuery(r) {
 		fail(w, 400, "unsupported profile port")
 		return
 	}
-	profile, name, err := s.store.SubscriptionAtPort(r.Context(), token, port)
+	profile, name, err := s.store.Subscription(r.Context(), token)
 	if errors.Is(err, storage.ErrNotFound) {
 		fail(w, 404, "not found")
 		return
@@ -57,7 +56,7 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Profile-Update-Interval", "24")
 	switch format {
 	case "html":
-		s.subscriptionPage(w, r, token, name, port)
+		s.subscriptionPage(w, r, token, name, profile.Port)
 	case "uri":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(profile.URI + "\n"))
@@ -128,7 +127,7 @@ func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token,
 		}
 		host = net.JoinHostPort(hostname, strconv.Itoa(port))
 	}
-	link := scheme + "://" + host + s.subscriptionPath(storage.SubscriptionPathPrefix+token, port)
+	link := scheme + "://" + host + (storage.SubscriptionPathPrefix + token)
 	mihomoLink, _ := url.Parse(link)
 	query := mihomoLink.Query()
 	query.Set("format", "mihomo")

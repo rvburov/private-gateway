@@ -37,9 +37,8 @@ services:
       GATEWAY_REALITY_PRIVATE_KEY: ${GATEWAY_REALITY_PRIVATE_KEY:?Set GATEWAY_REALITY_PRIVATE_KEY}
       GATEWAY_SHORT_ID: ${GATEWAY_SHORT_ID:?Set GATEWAY_SHORT_ID}
       GATEWAY_HOST: ${GATEWAY_HOST:?Set GATEWAY_HOST}
-      GATEWAY_PORT: "443"
+      GATEWAY_PORT: "8443"
       GATEWAY_XRAY_PORT: "443"
-      GATEWAY_FALLBACK_PORT: "8443"
       GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:-www.cloudflare.com}
       GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:-www.cloudflare.com:443}
       GATEWAY_XRAY_CONFIG: /state/xray.json
@@ -53,7 +52,7 @@ services:
       GATEWAY_WEB_DIR: /app/web
       GATEWAY_BROWSER_WORKER_URL: http://browser:9000
       GATEWAY_BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN}
-      GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}/browser/vnc.html?autoconnect=true&resize=remote
+      GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}:8443/browser/vnc.html?autoconnect=true&resize=remote
       GATEWAY_XRAY_STATS_ADDRESS: xray:10085
       # Серверные проверки панели: настоящее VLESS-подключение к Xray и сертификат панели от Caddy —
       # оба по закрытым сетям Docker.

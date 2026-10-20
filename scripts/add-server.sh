@@ -6,7 +6,7 @@
 #   bash scripts/add-server.sh NAME SERVER_IPV4 PANEL_DOMAIN SSH_USER [SSH_PORT]
 #
 # Серверу нужны Ubuntu 26.04 amd64, DNS-запись A для PANEL_DOMAIN, указывающая на него, и открытые
-# TCP 22, 80 и 443. Скрипт показывает ключ хоста SSH сервера, чтобы сверить его с консолью
+# TCP 22, 80, 443 и 8443. Скрипт показывает ключ хоста SSH сервера, чтобы сверить его с консолью
 # провайдера, загружает по SSH ограниченный приёмник выкладки из текущего коммита (sudo спросит ваш
 # пароль на сервере) и коммитит deploy/servers/NAME.conf в master. Следующий push в master заставит
 # CI/CD установить туда программу; следующие push обновляют её вместе с остальными серверами.
@@ -41,7 +41,7 @@ scanned=$(ssh-keyscan -T 15 -t ed25519 -p "$port" "$host" 2> /dev/null \
 [[ -n $scanned ]] || fail "could not read the ED25519 SSH host key of $host:$port"
 fingerprint=$(printf '%s\n' "$scanned" | ssh-keygen -lf - | awk '{ print $2 }')
 cat << EOF
-New server $name: SSH $host:$port, panel https://$domain/
+New server $name: SSH $host:$port, panel https://$domain:8443/
 SSH host key fingerprint: $fingerprint (ED25519)
 Compare it with the fingerprint your VPS provider shows, or with the output of
   sudo ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub
@@ -80,7 +80,7 @@ ssh -t "${ssh_options[@]}" -p "$port" "$destination" \
 
 record=$(python3 scripts/servers.py add "$name" --host "$host" --port "$port" --domain "$domain" --host-key "$scanned")
 git add "$record"
-git commit --quiet -m "Add server $name" -m "Panel https://$domain/ on $host:$port, prepared by scripts/add-server.sh."
+git commit --quiet -m "Add server $name" -m "Panel https://$domain:8443/ on $host:$port, prepared by scripts/add-server.sh."
 printf '\nServer %s is prepared and %s is committed to master.\n' "$name" "$record"
 printf 'Not on GitHub yet:\n'
 git log --format='  %h %s' origin/master..master
@@ -95,5 +95,5 @@ cat << EOF
 After the first deployment, create the administrator over SSH on the new server:
   ssh -p $port $destination
   sudo python3 /opt/private-gateway-docker/current/docker/admin-credentials.py
-Then open https://$domain/, sign in and connect the authenticator app.
+Then open https://$domain:8443/, sign in and connect the authenticator app.
 EOF

@@ -13,46 +13,37 @@ import (
 	"github.com/rvburov/private-gateway/internal/model"
 )
 
-func TestProfilePortSelection(t *testing.T) {
+func TestLegacyProfilePortQueryValidation(t *testing.T) {
 	for _, tc := range []struct {
-		host, query    string
-		fallback, want int
-		ok             bool
+		query string
+		valid bool
 	}{
-		{"panel.example", "", 8443, 0, true},
-		{"panel.example:8443", "", 8443, 8443, true},
-		{"panel.example:8443", "?port=primary", 8443, 0, true},
-		{"panel.example", "?port=8443", 8443, 8443, true},
-		{"panel.example", "?port=8443", 0, 0, false},
-		{"panel.example:8443", "", 0, 0, true},
-		{"panel.example", "?port=22", 8443, 0, false},
-		{"panel.example", "?port=", 8443, 0, false},
-		{"panel.example", "?port=primary&port=8443", 8443, 0, false},
+		{"", true}, {"?port=primary", true}, {"?port=8443", true},
+		{"?port=443", false}, {"?port=22", false}, {"?port=", false},
+		{"?port=08443", false}, {"?port=primary&port=8443", false},
+		{"?port=8443&port=8443", false}, {"?port=%zz", false},
 	} {
-		r := httptest.NewRequest("GET", "https://"+tc.host+"/"+tc.query, nil)
-		s := &Server{options: Options{FallbackPort: tc.fallback}}
-		port, ok := s.profilePort(r)
-		if port != tc.want || ok != tc.ok {
-			t.Fatalf("%s%s fallback=%d: got %d/%v", tc.host, tc.query, tc.fallback, port, ok)
+		r := httptest.NewRequest("GET", "https://panel.example:8443/"+tc.query, nil)
+		if got := validProfilePortQuery(r); got != tc.valid {
+			t.Fatalf("%s: valid=%v", tc.query, got)
 		}
 	}
 }
 
-func TestFallbackProfilesPostgreSQL(t *testing.T) {
+func TestPublicPortMigrationPreservesDeviceAndSubscriptionPostgreSQL(t *testing.T) {
 	store, _, node, _ := integrationStore(t)
 	ctx := context.Background()
-	device, err := store.Create(ctx, "Fallback test", node.ID)
+	device, err := store.Create(ctx, "Port migration test", node.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := store.Status(ctx)
+	original, err := store.Export(ctx, device.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	const token = "fallback-integration-token-with-32-characters"
-	handler := New(store, &testXray{}, &testBrowser{}, Options{
-		Token: token, XrayConfigured: true, FallbackPort: 8443,
-	})
+	const token = "port-migration-integration-token-with-32-characters"
+	engine := &testXray{}
+	handler := New(store, engine, &testBrowser{}, Options{Token: token, XrayConfigured: true})
 	call := func(method, path, host string, auth bool) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, "https://"+host+path, nil)
@@ -73,83 +64,130 @@ func TestFallbackProfilesPostgreSQL(t *testing.T) {
 		}
 		return p
 	}
-	primary := export("?port=primary", "panel.example:8443")
-	backup := export("?port=8443", "panel.example")
-	automatic := export("", "panel.example:8443")
-	if primary.Port != node.Port || backup.Port != 8443 || backup.FallbackPort != 8443 ||
-		automatic.URI != backup.URI {
-		t.Fatal("export selected the wrong port")
+	withQuery := func(path, port, format string) string {
+		t.Helper()
+		parsed, err := url.Parse(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		query := parsed.Query()
+		if port != "" {
+			query.Set("port", port)
+		}
+		if format != "" {
+			query.Set("format", format)
+		}
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
 	}
-	mainURI, _ := url.Parse(primary.URI)
-	backupURI, _ := url.Parse(backup.URI)
-	backupURI.Host = mainURI.Host
-	if backupURI.String() != mainURI.String() {
-		t.Fatal("fallback changed credentials or REALITY settings")
+	if w := call("POST", "/api/v1/config/apply", "panel.example", true); w.Code != 200 {
+		t.Fatal("initial configuration could not be applied")
 	}
-	mainPath, _ := url.Parse(primary.SubscriptionPath)
-	backupPath, _ := url.Parse(backup.SubscriptionPath)
-	if mainPath.Path != backupPath.Path || backupPath.Query().Get("port") != "8443" {
-		t.Fatal("fallback must reuse the subscription secret")
+	before, err := store.Status(ctx)
+	if err != nil || before.DesiredRevision != before.AppliedRevision {
+		t.Fatal("initial configuration not applied")
 	}
-	for _, p := range []model.Profile{primary, backup} {
-		for format, want := range map[string]string{
-			"uri": p.URI + "\n", "base64": base64.StdEncoding.EncodeToString([]byte(p.URI + "\n")),
-			"sing-box": p.SingBoxJSON, "mihomo": p.MihomoYAML,
-		} {
-			w := call("GET", p.SubscriptionPath+"&format="+format, "panel.example:8443", false)
-			if w.Code != 200 || w.Body.String() != want || w.Header().Get("Cache-Control") != "no-store" {
-				t.Fatalf("subscription format=%s port=%d status=%d", format, p.Port, w.Code)
+	node.Port = 8443
+	if err := store.EnsureNode(ctx, node); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := store.Status(ctx)
+	if err != nil || pending.DesiredRevision <= before.DesiredRevision ||
+		pending.AppliedRevision != before.AppliedRevision || pending.DesiredRevision == pending.AppliedRevision {
+		t.Fatal("node migration bypassed normal configuration revision application")
+	}
+	current := export("", "panel.example:8443")
+	if current.Port != 8443 || current.SubscriptionPath != original.SubscriptionPath {
+		t.Fatal("migration changed the subscription secret or used the wrong public port")
+	}
+	oldURI, _ := url.Parse(original.URI)
+	newURI, _ := url.Parse(current.URI)
+	if oldURI.Port() != "443" || newURI.Port() != "8443" {
+		t.Fatal("profile public port did not migrate")
+	}
+	oldURI.Host = newURI.Host
+	if oldURI.String() != newURI.String() {
+		t.Fatal("migration changed client UUID or REALITY parameters")
+	}
+	for _, host := range []string{"panel.example", "panel.example:443", "panel.example:8443"} {
+		for _, legacy := range []string{"", "primary", "8443"} {
+			query := ""
+			if legacy != "" {
+				query = "?port=" + legacy
+			}
+			profile := export(query, host)
+			if profile.URI != current.URI || profile.SubscriptionPath != current.SubscriptionPath {
+				t.Fatal("legacy selection restored port 443 or changed the secret")
+			}
+			for format, want := range map[string]string{
+				"uri": current.URI + "\n", "base64": base64.StdEncoding.EncodeToString([]byte(current.URI + "\n")),
+				"sing-box": current.SingBoxJSON, "mihomo": current.MihomoYAML,
+			} {
+				w := call("GET", withQuery(original.SubscriptionPath, legacy, format), host, false)
+				if w.Code != 200 || w.Body.String() != want || w.Header().Get("Cache-Control") != "no-store" {
+					t.Fatalf("subscription format=%s port=%s host=%s status=%d", format, legacy, host, w.Code)
+				}
 			}
 		}
 	}
-	w := call("GET", backup.SubscriptionPath+"&format=html", "panel.example", false)
+	// Канонические ссылки приложений сохраняют рабочий 8443 даже при старом Host и port=primary.
+	w := call("GET", withQuery(original.SubscriptionPath, "primary", "html"), "panel.example:443", false)
 	if w.Code != 200 || !strings.Contains(w.Body.String(), "https://panel.example:8443/sub/") ||
-		!strings.Contains(w.Body.String(), "format%3Dmihomo%26port%3D8443") {
-		t.Fatal("HTML import lost fallback port or format query")
+		!strings.Contains(w.Body.String(), "format%3Dmihomo") || strings.Contains(w.Body.String(), "port%3Dprimary") {
+		t.Fatal("HTML import restored a legacy endpoint or lost its format query")
 	}
-	for _, path := range []string{
-		"/api/v1/devices/" + device.ID + "/profile?port=22",
-		"/api/v1/devices/" + device.ID + "/profile?port=primary&port=8443",
-		mainPath.Path + "?port=22",
-	} {
-		if w := call("GET", path, "panel.example", true); w.Code != 400 {
-			t.Fatalf("unsupported port status=%d", w.Code)
+	for _, query := range []string{"?port=443", "?port=22", "?port=", "?port=primary&port=8443", "?port=8443&port=8443", "?port=%zz"} {
+		for _, path := range []string{"/api/v1/devices/" + device.ID + "/profile", original.SubscriptionPath} {
+			if w := call("GET", path+query, "panel.example:8443", true); w.Code != 400 {
+				t.Fatalf("invalid port query accepted: %s status=%d", query, w.Code)
+			}
+		}
+		if w := call("POST", "/api/v1/devices/"+device.ID+"/subscription"+query, "panel.example:8443", true); w.Code != 400 {
+			t.Fatal("invalid port query rotated subscription")
 		}
 	}
-	if w := call("POST", "/api/v1/devices/"+device.ID+"/subscription?port=22", "panel.example", true); w.Code != 400 {
-		t.Fatal("invalid port rotated subscription")
-	}
-	if w := call("GET", primary.SubscriptionPath, "panel.example", false); w.Code != 200 {
+	if w := call("GET", original.SubscriptionPath, "panel.example:8443", false); w.Code != 200 {
 		t.Fatal("invalid rotation changed subscription")
 	}
-	after, err := store.Status(ctx)
-	if err != nil || before.DesiredRevision != after.DesiredRevision || before.AppliedRevision != after.AppliedRevision {
-		t.Fatal("export changed configuration revisions")
+	unchanged, err := store.Status(ctx)
+	if err != nil || unchanged.DesiredRevision != pending.DesiredRevision || unchanged.AppliedRevision != pending.AppliedRevision || unchanged.ActiveDevices != before.ActiveDevices {
+		t.Fatal("exports modified revisions or devices")
 	}
-	w = call("POST", "/api/v1/devices/"+device.ID+"/subscription?port=8443", "panel.example", true)
+	devices, err := store.Devices(ctx)
+	if err != nil || len(devices) != 1 || devices[0].ID != device.ID || devices[0].RevokedAt != nil {
+		t.Fatal("device did not survive migration")
+	}
+	if w := call("POST", "/api/v1/config/apply", "panel.example:8443", true); w.Code != 200 {
+		t.Fatal("migrated configuration could not be applied")
+	}
+	applied, err := store.Status(ctx)
+	if err != nil || applied.AppliedRevision != pending.DesiredRevision || applied.DesiredRevision != pending.DesiredRevision {
+		t.Fatal("normal apply did not mark the migration applied")
+	}
+	if len(engine.clients) != 1 || engine.clients[0].ID != newURI.User.Username() {
+		t.Fatal("normal apply changed the device credential")
+	}
+	w = call("POST", "/api/v1/devices/"+device.ID+"/subscription?port=primary", "panel.example:8443", true)
 	var rotated struct {
 		Path string `json:"subscription_path"`
 	}
-	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rotated) != nil ||
-		!strings.HasSuffix(rotated.Path, "?port=8443") {
-		t.Fatal("rotation lost fallback selection")
+	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &rotated) != nil || rotated.Path == original.SubscriptionPath || strings.Contains(rotated.Path, "?") {
+		t.Fatal("rotation failed or retained the removed port selector")
 	}
-	for _, path := range []string{primary.SubscriptionPath, backup.SubscriptionPath} {
-		if w := call("GET", path, "panel.example", false); w.Code != 404 {
+	for _, legacy := range []string{"", "primary", "8443"} {
+		if w := call("GET", withQuery(original.SubscriptionPath, legacy, "uri"), "panel.example:8443", false); w.Code != 404 {
 			t.Fatal("rotation left the old subscription active")
 		}
-	}
-	if w := call("GET", rotated.Path, "panel.example", false); w.Code != 200 {
-		t.Fatal("rotated subscription unavailable")
+		if w := call("GET", withQuery(rotated.Path, legacy, "uri"), "panel.example:8443", false); w.Code != 200 || w.Body.String() != current.URI+"\n" {
+			t.Fatal("rotated subscription lost port 8443 or changed device credentials")
+		}
 	}
 	if _, err := store.Revoke(ctx, device.ID); err != nil {
 		t.Fatal(err)
 	}
-	for _, port := range []string{"primary", "8443"} {
-		path, _ := url.Parse(rotated.Path)
-		path.RawQuery = "port=" + port
-		if w := call("GET", path.String(), "panel.example", false); w.Code != 404 {
-			t.Fatal("revoked subscription still active")
+	for _, legacy := range []string{"", "primary", "8443"} {
+		if w := call("GET", withQuery(rotated.Path, legacy, "uri"), "panel.example:8443", false); w.Code != 404 {
+			t.Fatal("revoked subscription remained active")
 		}
 	}
 }

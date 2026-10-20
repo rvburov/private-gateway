@@ -23,7 +23,6 @@ export interface TrafficUsage {
 
 export interface ProfileExport {
   port?: number;
-  fallback_port?: number;
   uri: string;
   sing_box_json: string;
   mihomo_yaml: string;
@@ -53,7 +52,7 @@ export interface BrowserStatus {
   url: string;
 }
 
-// На резервном входе noVNC остаётся на том же адресе панели. Внешние службы не подменяются.
+// noVNC остаётся на том же адресе и порту панели. Внешние службы не подменяются.
 export function browserURLForPanel(value: string | undefined, origin: string): string | undefined {
   if (!value) return undefined;
   try {

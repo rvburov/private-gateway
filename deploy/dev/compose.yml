@@ -22,7 +22,6 @@ services:
       # сертификата для проверки.
       GATEWAY_BROWSER_WORKER_URL: ""
       GATEWAY_PANEL_TLS_ADDRESS: ""
-      GATEWAY_FALLBACK_PORT: "0"
       GATEWAY_PORT: "443"
       GATEWAY_XRAY_PORT: "443"
     volumes:

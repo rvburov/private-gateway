@@ -5,6 +5,7 @@ import fcntl
 import getpass
 import hashlib
 import hmac
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -47,6 +48,22 @@ def backup_database(command, destination):
     os.chmod(destination, 0o600)
 
 
+
+def public_panel_port(configuration):
+    # Помощник из того же проверенного релиза читает только нормализованный JSON Compose.
+    try:
+        spec = importlib.util.spec_from_file_location("gateway_release_ports", Path(__file__).with_name("release-ports.py"))
+        ports = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ports)
+        return ports.release_ports(json.loads(configuration))["panel"]
+    except (OSError, ImportError, AttributeError, KeyError, TypeError, ValueError) as error:
+        raise SetupError("installed release has invalid public panel ports") from error
+
+
+def panel_origin(domain, port):
+    return "https://" + domain + (":" + str(port) if port != 443 else "")
+
+
 def atomic_private_file(path, content):
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".admin-credentials.", delete=False) as output:
         staged = Path(output.name)
@@ -70,9 +87,9 @@ def without_legacy_admin(old):
     return ("\n".join(lines) + "\n").encode()
 
 
-def verify(domain, username, password):
+def verify(domain, username, password, port=443):
     opener = build_opener(ProxyHandler({}))
-    base = "https://" + domain + "/api/v1"
+    base = panel_origin(domain, port) + "/api/v1"
     request = Request(base + "/auth/login", data=json.dumps({
         "username": username, "password": password,
     }).encode(), headers={"Content-Type": "application/json"}, method="POST")
@@ -94,6 +111,7 @@ def setup(env=ENV, compose=COMPOSE, backups=BACKUPS, execute=run,
     if len(domains) != 1 or not re.fullmatch(r"[A-Za-z0-9.-]+", domains[0]):
         raise SetupError("invalid panel domain")
     command = ["docker", "compose", "--env-file", str(env), "-f", str(compose)]
+    port = public_panel_port(execute(command + ["config", "--format", "json"]))
     api = command + ["exec", "-T", "api", "/usr/local/bin/gateway-api"]
     current = execute(api + ["admin-name"]).decode().strip()
     username = input(f"Administrator login [{current or 'admin'}]: ").strip() or current or "admin"
@@ -129,7 +147,7 @@ def setup(env=ENV, compose=COMPOSE, backups=BACKUPS, execute=run,
         atomic_private_file(env, without_legacy_admin(old))
         execute(command + ["config", "--quiet"])
         execute(command + ["up", "-d", "--no-deps", "--force-recreate", "--wait", "api"])
-        check(domains[0], username, password)
+        check(domains[0], username, password, port)
     except BaseException as error:
         atomic_private_file(env, old)
         if attempted:
@@ -142,7 +160,8 @@ def setup(env=ENV, compose=COMPOSE, backups=BACKUPS, execute=run,
             except BaseException as rollback_error:
                 raise SetupError(f"setup and rollback failed; inspect backup {backup}") from rollback_error
         raise SetupError(f"setup failed; previous access restored; backup {backup}") from error
-    return f"Administrator login and password stored in PostgreSQL. Backup: {backup}. Open the panel to enroll a new authenticator."
+    return (f"Administrator login and password stored in PostgreSQL. Backup: {backup}. "
+            f"Open {panel_origin(domains[0], port)}/ to enroll a new authenticator.")
 
 
 def main():

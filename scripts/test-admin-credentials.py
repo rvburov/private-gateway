@@ -29,10 +29,19 @@ class CredentialsTest(unittest.TestCase):
         self.compose.write_text("services: {}\n")
         self.backups = self.root / "backups"
         self.calls = []
+        self.panel_port = 8443
         self.saved = False
 
     def execute(self, command, stdin=None):
         self.calls.append((command, stdin))
+        if command[-3:] == ["config", "--format", "json"]:
+            return json.dumps({"services": {
+                "api": {"environment": {
+                    "GATEWAY_BROWSER_PUBLIC_URL": f"https://example.test:{self.panel_port}/browser/vnc.html",
+                    "GATEWAY_PORT": "8443", "GATEWAY_XRAY_PORT": "443"}},
+                "edge": {"ports": [{"published": "8443", "target": 443},
+                                   {"published": "443", "target": 443}]},
+            }}).encode()
         if command[-1] == "admin-name":
             return b"old-admin\n"
         if command[-1] == "admin-backup":
@@ -63,7 +72,8 @@ class CredentialsTest(unittest.TestCase):
         checked = []
         result = self.invoke(lambda *args: checked.append(args))
         self.assertIn("PostgreSQL", result)
-        self.assertEqual(checked, [("example.test", "romanburov89@gmail.com", "very-long-password")])
+        self.assertIn("https://example.test:8443/", result)
+        self.assertEqual(checked, [("example.test", "romanburov89@gmail.com", "very-long-password", 8443)])
         self.assertEqual(self.new_credentials["username"], "romanburov89@gmail.com")
         self.assertTrue(self.new_credentials["password_hash"].startswith("pbkdf2_sha256:600000:"))
         self.assertNotIn("very-long-password", json.dumps(self.new_credentials))
@@ -74,6 +84,14 @@ class CredentialsTest(unittest.TestCase):
         self.assertTrue((backup / "gateway.dump").read_bytes())
         self.assertEqual((backup / "administrator.json").stat().st_mode & 0o777, 0o600)
         self.assertFalse(any(command[-1] == "admin-restore" for command, _ in self.calls))
+
+    def test_legacy_panel_port_is_taken_from_installed_release(self):
+        self.panel_port = 443
+        checked = []
+        result = self.invoke(lambda *args: checked.append(args))
+        self.assertEqual(checked[0][-1], 443)
+        self.assertIn("https://example.test/", result)
+        self.assertNotIn("https://example.test:8443/", result)
 
     def test_failed_verification_restores_database_and_environment(self):
         def failed(*_args):
@@ -113,9 +131,9 @@ class CredentialsTest(unittest.TestCase):
                 return Response()
 
         with patch.object(admin, "build_opener", return_value=Opener()):
-            admin.verify("example.test", "admin", "new-password")
+            admin.verify("example.test", "admin", "new-password", 8443)
         self.assertEqual(len(requests), 1)
-        self.assertEqual(requests[0].full_url, "https://example.test/api/v1/auth/login")
+        self.assertEqual(requests[0].full_url, "https://example.test:8443/api/v1/auth/login")
 
 
 if __name__ == "__main__":

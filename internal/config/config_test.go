@@ -17,9 +17,13 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 	for name, value := range values {
 		t.Setenv(name, value)
 	}
-	t.Setenv("GATEWAY_PORT", "443")
+	t.Setenv("GATEWAY_PORT", "")
 	t.Setenv("GATEWAY_XRAY_PORT", "")
-	t.Setenv("GATEWAY_FALLBACK_PORT", "0")
+	defaults, err := Load()
+	if err != nil || defaults.Node.Port != 8443 || defaults.Xray.Settings.Port != 443 {
+		t.Fatalf("invalid default public/internal ports: %v", err)
+	}
+	t.Setenv("GATEWAY_PORT", "443")
 	t.Setenv("GATEWAY_XRAY_RESTART", `["systemctl","--user","restart","xray"]`)
 	good, err := Load()
 	if err != nil {
@@ -28,19 +32,6 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 	if len(good.Node.ConfigHash) != 64 {
 		t.Fatal("missing settings hash")
 	}
-	t.Setenv("GATEWAY_FALLBACK_PORT", "8443")
-	fallback, err := Load()
-	if err != nil || fallback.FallbackPort != 8443 ||
-		fallback.Node.ConfigHash != good.Node.ConfigHash || fallback.Xray.Settings.Port != 443 {
-		t.Fatalf("fallback must not change Xray settings: %v", err)
-	}
-	for _, port := range []string{"-1", "65536", "443", "bad"} {
-		t.Setenv("GATEWAY_FALLBACK_PORT", port)
-		if _, err := Load(); err == nil {
-			t.Fatalf("invalid fallback port accepted: %s", port)
-		}
-	}
-	t.Setenv("GATEWAY_FALLBACK_PORT", "0")
 	// Публикуемый порт меняет адрес профиля, но не внутренний listener или хеш Xray.
 	t.Setenv("GATEWAY_PORT", "8443")
 	public, err := Load()

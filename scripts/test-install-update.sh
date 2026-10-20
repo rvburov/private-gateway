@@ -134,6 +134,11 @@ check_stack() {
     vless_works "$fallback" || fail 'The fallback VLESS traffic is unavailable.'
   fi
   check_identity
+  local status desired applied
+  status=$(compose exec -T api /usr/local/bin/gatewayctl status)
+  desired=$(awk '$1 == "DESIRED" && $2 == "REVISION" {print $3}' <<< "$status")
+  applied=$(awk '$1 == "APPLIED" && $2 == "REVISION" {print $3}' <<< "$status")
+  [[ $desired =~ ^[0-9]+$ && $desired == "$applied" ]] || fail 'The desired revision was not applied.'
 }
 
 version_a=$(python3 "$repository/scripts/verify-release.py" --tar "$archive")
@@ -313,10 +318,13 @@ grep -q '^VLESS traffic passes again with the previous release.' "$work/vless-ro
 [[ $(installed) == "$version_e" ]] || fail 'The VLESS rollback did not restore the release.'
 check_stack
 
+previous_revision=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "DESIRED" && $2 == "REVISION" {print $3}')
 printf '\n== Move the canonical panel and profiles to8443, retaining both public ports ==\n'
 deliver "$version_f" "$work/release-f.tar.gz" 2>&1 | tee "$work/primary8443.log"
 [[ $(public_port panel) == 8443 && $(public_port vpn) == 8443 ]] || fail 'The public ports did not change.'
 check_stack
+current_revision=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "DESIRED" && $2 == "REVISION" {print $3}')
+((current_revision > previous_revision)) || fail 'The public port change did not advance the configuration revision.'
 panel_ready 443 || fail 'The compatibility panel port443 disappeared.'
 http_redirect
 

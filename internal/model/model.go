@@ -22,11 +22,10 @@ type Device struct {
 }
 
 type Profile struct {
-	Port         int    `json:"port"`
-	FallbackPort int    `json:"fallback_port,omitempty"`
-	URI          string `json:"uri"`
-	SingBoxJSON  string `json:"sing_box_json"`
-	MihomoYAML   string `json:"mihomo_yaml"`
+	Port        int    `json:"port"`
+	URI         string `json:"uri"`
+	SingBoxJSON string `json:"sing_box_json"`
+	MihomoYAML  string `json:"mihomo_yaml"`
 	// Путь ссылки-подписки устройства на домене панели: /sub/ и её токен.
 	SubscriptionPath string `json:"subscription_path,omitempty"`
 }

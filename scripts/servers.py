@@ -112,7 +112,7 @@ def add(directory, name, record):
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"{name}.conf"
     with open(path, "x", encoding="utf-8", newline="\n") as output:
-        output.write(f"# Server {name}: panel https://{record['domain']}/\n"
+        output.write(f"# Server {name}: panel https://{record['domain']}:8443/\n"
                      "# Public values only; the private deploy key is the DEPLOY_SSH_KEY secret.\n")
         output.writelines(f"{field}={record[field]}\n" for field in FIELDS)
     return path

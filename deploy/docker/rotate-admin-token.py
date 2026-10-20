@@ -3,6 +3,8 @@
 
 import fcntl
 import hmac
+import importlib.util
+import json
 import os
 from pathlib import Path
 import re
@@ -37,6 +39,22 @@ def changed_env(content, token):
     old = env_value(content, "GATEWAY_API_TOKEN")
     return content.replace(("GATEWAY_API_TOKEN=" + old + "\n").encode(),
                            ("GATEWAY_API_TOKEN=" + token + "\n").encode(), 1)
+
+
+
+def public_panel_port(configuration):
+    # Помощник из того же проверенного релиза читает только нормализованный JSON Compose.
+    try:
+        spec = importlib.util.spec_from_file_location("gateway_release_ports", Path(__file__).with_name("release-ports.py"))
+        ports = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(ports)
+        return ports.release_ports(json.loads(configuration))["panel"]
+    except (OSError, ImportError, AttributeError, KeyError, TypeError, ValueError) as error:
+        raise RotationError("installed release has invalid public panel ports") from error
+
+
+def panel_origin(domain, port):
+    return "https://" + domain + (":" + str(port) if port != 443 else "")
 
 
 def atomic_private_file(path, content):
@@ -77,8 +95,8 @@ def http_status(url, authorization):
         return error.code
 
 
-def verify_access(new, old, domain):
-    base = "https://" + domain
+def verify_access(new, old, domain, port=443):
+    base = panel_origin(domain, port)
     api_new = http_status(base + "/api/v1/status", "Bearer " + new)
     api_old = http_status(base + "/api/v1/status", "Bearer " + old)
     browser = http_status(base + "/browser/vnc.html", "")
@@ -108,6 +126,7 @@ def rotate(env=ENV, compose=COMPOSE, backups=BACKUPS,
     if new_env == old_env:
         raise RotationError("configuration was not updated")
     compose_command = ["docker", "compose", "--env-file", str(env), "-f", str(compose)]
+    port = public_panel_port(execute(compose_command + ["config", "--format", "json"], timeout=20))
     restart = compose_command + ["up", "-d", "--no-deps", "--force-recreate", "--wait", "api"]
     execute(compose_command + ["config", "--quiet"], timeout=20)
 
@@ -122,7 +141,7 @@ def rotate(env=ENV, compose=COMPOSE, backups=BACKUPS,
         execute(compose_command + ["config", "--quiet"], timeout=20)
         execute(restart, timeout=120)
         execute(compose_command + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "status"], timeout=20)
-        verify(new_token, old_token, domain)
+        verify(new_token, old_token, domain, port)
     except BaseException as error:
         atomic_private_file(env, old_env)
         try:
@@ -132,7 +151,7 @@ def rotate(env=ENV, compose=COMPOSE, backups=BACKUPS,
         reason = str(error) if isinstance(error, RotationError) else type(error).__name__
         raise RotationError(f"rotation failed ({reason}); previous access was restored; "
                             f"backup {backup}") from error
-    return f"Internal CLI token rotated. New token is in {env}; backup {backup}"
+    return f"Internal CLI token rotated. New token is in {env}; backup {backup}. Panel: {panel_origin(domain, port)}/"
 
 
 def main():

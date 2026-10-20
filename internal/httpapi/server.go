@@ -43,7 +43,6 @@ type Options struct {
 	StatsAddress   string
 	StatsBinary    string
 	Checks         ServerChecks
-	FallbackPort   int
 }
 type Server struct {
 	store          *storage.Store
@@ -260,23 +259,19 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]string{"status": "deleted"})
 }
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
-	port, ok := s.profilePort(r)
-	if !ok {
+	if !validProfilePortQuery(r) {
 		fail(w, 400, "unsupported profile port")
 		return
 	}
-	result, err := s.store.ExportAtPort(r.Context(), chi.URLParam(r, "id"), port)
+	result, err := s.store.Export(r.Context(), chi.URLParam(r, "id"))
 	if err != nil {
 		s.error(w, err)
 		return
 	}
-	result.FallbackPort = s.options.FallbackPort
-	result.SubscriptionPath = s.subscriptionPath(result.SubscriptionPath, port)
 	respond(w, 200, result)
 }
 func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
-	port, ok := s.profilePort(r)
-	if !ok {
+	if !validProfilePortQuery(r) {
 		fail(w, 400, "unsupported profile port")
 		return
 	}
@@ -285,7 +280,7 @@ func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	respond(w, 200, map[string]string{"subscription_path": s.subscriptionPath(path, port)})
+	respond(w, 200, map[string]string{"subscription_path": path})
 }
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.Audit(r.Context())

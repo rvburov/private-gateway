@@ -1,4 +1,6 @@
 {
+    # Канонический HTTPS использует внешний 8443; перенаправление задаётся явно ниже.
+    auto_https disable_redirects
     # Секрет ссылки-подписки — в её пути, а неудачный запрос пишется в журнал вместе с URI:
     # журнал хранит всё остальное. Журнала запросов нет вовсе.
     log default {
@@ -11,7 +13,18 @@
     }
 }
 
+http://__PANEL_DOMAIN__ {
+    redir https://__PANEL_DOMAIN__:8443{uri} permanent
+}
+
 https://__PANEL_DOMAIN__ {
+    # Сертификат выпускается и продлевается через HTTP-01 на внешнем TCP 80.
+    tls {
+        issuer acme {
+            disable_tlsalpn_challenge
+        }
+    }
+
     handle_path /browser/* {
         forward_auth api:8080 {
             uri /browser-authorization
