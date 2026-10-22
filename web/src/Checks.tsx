@@ -1,28 +1,12 @@
 import { useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { errorMessage, request } from "./api";
 import { collectDeviceDiagnostics, type DeviceDiagnostics } from "./deviceDiagnostics";
-import { AdvancedDiagnostics } from "./AdvancedDiagnostics";
-import {
-  connectionModes,
-  runPerformance,
-  savePerformanceHistory,
-  type ConnectionMode,
-  type PerformanceRun,
-} from "./performance";
-import { Icon, type IconName } from "./icons";
+import { CheckList, type CheckResult } from "./CheckResults";
+import { DiagnosticReportDownload } from "./DiagnosticReportDownload";
+import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 
-export type CheckStatus = "ok" | "warn" | "fail" | "skip" | "info";
-
-export interface CheckResult {
-  id: string;
-  title: string;
-  status: CheckStatus;
-  detail: string;
-  // Только у проверки трафика сервера: адрес, который видят сайты за шлюзом.
-  ip?: string;
-}
+export type { CheckStatus, CheckResult } from "./CheckResults";
 
 // Адрес и сеть, которой он принадлежит; сеть неизвестна, если её не удалось узнать.
 export interface Network {
@@ -47,18 +31,13 @@ export interface BrowserFacts {
 
 export interface CheckRun {
   browser: CheckResult[];
-  server: CheckResult[] | null;
-  serverError: string | null;
   browserFacts: BrowserFacts;
   device: DeviceDiagnostics;
-  performance: PerformanceRun | null;
-  performanceError: string | null;
   checkedAt: number;
 }
 
 // Внешние сервисы проверки. ipleak.net сообщает адрес и сеть по IPv4 и по IPv6, узнаёт сеть
 // любого адреса и видит, какие DNS-серверы спрашивают у него уникальные имена его поддоменов.
-// Для скорости отдельно разрешён только speed.cloudflare.com.
 export const ipv4Service = "https://ipv4.ipleak.net/json/";
 export const ipv6Service = "https://ipv6.ipleak.net/json/";
 const lookupService = "https://ipleak.net/json/";
@@ -130,28 +109,6 @@ const sites = [
     expect: "Без красных пунктов; несовпадение пояса с IP выдаёт VPN.",
   },
 ];
-
-const labels: Record<CheckStatus, string> = {
-  ok: "В порядке",
-  warn: "Внимание",
-  fail: "Проблема",
-  skip: "Пропущено",
-  info: "Сведения",
-};
-const marks: Record<CheckStatus, IconName> = {
-  ok: "check",
-  warn: "alert",
-  fail: "close",
-  skip: "minus",
-  info: "info",
-};
-const badges: Record<CheckStatus, string> = {
-  ok: "success",
-  warn: "warning",
-  fail: "danger",
-  skip: "neutral",
-  info: "neutral",
-};
 
 export function isIPAddress(value: string) {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(value) || value.includes(":");
@@ -528,138 +485,74 @@ async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
   };
 }
 
-async function runChecks(
-  token: string,
-  nodeHost: string | undefined,
-  signal: AbortSignal,
-  mode: ConnectionMode,
-  onProgress: (phase: string) => void,
-): Promise<CheckRun> {
+async function runChecks(nodeHost: string | undefined, signal: AbortSignal): Promise<CheckRun> {
   signal.throwIfAborted();
-  onProgress("Проверяем IP, DNS, WebRTC и работу VLESS на сервере…");
   const device = collectDeviceDiagnostics();
-  const [facts, server] = await Promise.all([
-    browserFacts(signal),
-    request<{ checks: CheckResult[] }>(token, "/checks", { signal }).then(
-      (data) => ({ checks: data.checks, error: null }),
-      (error: unknown) => ({ checks: null, error: errorMessage(error) }),
-    ),
-  ]);
-  const trafficIP = server.checks?.find((check) => check.id === "traffic")?.ip;
-  const serverIP = trafficIP || (nodeHost && isIPAddress(nodeHost) ? nodeHost : null);
+  const facts = await browserFacts(signal);
   signal.throwIfAborted();
-  let performance: PerformanceRun | null = null;
-  let performanceError: string | null = null;
-  try {
-    performance = await runPerformance(token, mode, signal, onProgress);
-  } catch (error) {
-    signal.throwIfAborted();
-    performanceError = errorMessage(error);
-  }
-  signal.throwIfAborted();
+  const serverIP = nodeHost && isIPAddress(nodeHost) ? nodeHost : null;
+  return { browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, checkedAt: Date.now() };
+}
+
+// Отчёт безопасности не включает замеры скорости, параметры VPS или сеанс входа.
+export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string) {
   return {
-    browser: browserVerdicts(facts, serverIP),
-    server: server.checks,
-    serverError: server.error,
-    browserFacts: facts,
-    device,
-    performance,
-    performanceError,
-    checkedAt: Date.now(),
+    format: "private-gateway-privacy-diagnostics",
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    checkedAt: new Date(result.checkedAt).toISOString(),
+    panelOrigin,
+    browser: result.browser,
+    browserFacts: result.browserFacts,
+    device: result.device,
   };
 }
 
-function CheckList({ checks }: { checks: CheckResult[] }) {
-  return (
-    <ul className="check-list">
-      {checks.map((check) => (
-        <li key={check.id}>
-          <span className={`check-mark ${check.status}`}>
-            <Icon name={marks[check.status]} size={16} />
-          </span>
-          <div>
-            <div className="check-head">
-              <strong>{check.title}</strong>
-              <span className={`badge ${badges[check.status]}`}>{labels[check.status]}</span>
-            </div>
-            <p>{check.detail}</p>
-          </div>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }) {
+export function Checks({ nodeHost }: { nodeHost?: string }) {
   const client = useQueryClient();
-  const [mode, setMode] = useState<ConnectionMode>("current");
-  const [progress, setProgress] = useState("");
   const [stopped, setStopped] = useState(false);
   const run = useQuery({
-    queryKey: ["checks"],
-    queryFn: async ({ signal }) => {
-      const result = await runChecks(token, nodeHost, signal, mode, setProgress);
-      signal.throwIfAborted();
-      if (result.performance) savePerformanceHistory(result.performance);
-      return result;
-    },
+    queryKey: ["privacy-checks"],
+    queryFn: ({ signal }) => runChecks(nodeHost, signal),
     enabled: false,
     retry: false,
     staleTime: Infinity,
     gcTime: 30 * 60_000,
   });
   const result = run.data;
-  const all = [...(result?.browser ?? []), ...(result?.server ?? [])];
-  const problems = all.filter((check) => check.status === "fail").length;
-  const warnings = all.filter((check) => check.status === "warn").length;
-  const placeholder = (text: string) => <div className="loading">{run.isFetching ? "Проверяем…" : text}</div>;
+  const problems = result?.browser.filter((check) => check.status === "fail").length ?? 0;
+  const warnings = result?.browser.filter((check) => check.status === "warn").length ?? 0;
   return (
     <>
       <section className="card check-run">
         <div className="check-run-text">
-          <h2>Проверить сейчас</h2>
+          <h2>Проверить безопасность</h2>
           <p>
-            Проверим IP, DNS, WebRTC, сведения об устройстве и работу VLESS на сервере. Затем измерим скорость,
-            задержку и стабильность HTTP-запросов до панели и до внешнего сервиса. Сервер покажет доступные
-            показатели нагрузки. До полутора минут и до 40 МБ трафика на один запуск.
+            Проверим внешний IP, DNS, IPv6, WebRTC, часовой пояс и сведения, которые браузер сообщает
+            сайтам об устройстве. Скорость, задержки и состояние VPS проверяются в разделе «Сервер».
           </p>
           <p className="hint">
-            Для этого браузер обратится к ipleak.net (его держит VPN-сервис AirVPN) и к STUN-серверам Google и
-            Cloudflare, а для скорости — к speed.cloudflare.com. Эти сервисы увидят ваш внешний адрес.
-            Токен входа и VPN-профиль им не передаются.
+            Браузер обратится к ipleak.net (его держит VPN-сервис AirVPN) и к STUN-серверам Google и
+            Cloudflare. Эти сервисы увидят ваш внешний адрес. Токен входа и VPN-профиль им не передаются.
           </p>
         </div>
         <div className="check-run-actions">
-          <label htmlFor="check-connection-mode">Как подключены сейчас</label>
-          <select
-            id="check-connection-mode"
-            value={mode}
-            disabled={run.isFetching}
-            onChange={(event) => setMode(event.target.value as ConnectionMode)}
-          >
-            {connectionModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-          </select>
           {run.isFetching ? (
             <button className="button" onClick={() => {
-              void client.cancelQueries({ queryKey: ["checks"] });
+              void client.cancelQueries({ queryKey: ["privacy-checks"] });
               setStopped(true);
-              setProgress("");
             }}>
               <Icon name="close" size={18} />Остановить
             </button>
           ) : (
             <button className="button primary" onClick={() => { setStopped(false); void run.refetch(); }}>
               <Icon name="shield" size={18} />
-              {result ? "Проверить снова" : "Проверить"}
+              {result ? "Проверить снова" : "Проверить безопасность"}
             </button>
           )}
         </div>
-        <p className="hint check-comparison-note">
-          Для сравнения выполните отдельные замеры с VPN и без него, затем в другой сети. Переключайте VPN
-          и сеть самостоятельно; закройте загрузки и видео. Выбранная подпись сохраняется вместе с числами.
-        </p>
-        {run.isFetching && <p className="check-progress" role="status" aria-live="polite">{progress || "Начинаем проверку…"}</p>}
-        {stopped && <p className="check-progress" role="status">Проверка остановлена. Незавершённый замер не добавлен в историю.</p>}
+        {run.isFetching && <p className="check-progress" role="status" aria-live="polite">Проверяем IP, DNS, IPv6, WebRTC и сведения браузера…</p>}
+        {stopped && <p className="check-progress" role="status">Проверка безопасности остановлена.</p>}
         {result && (
           <div
             className={`notice check-summary ${problems ? "error" : warnings ? "warning-notice" : "success-notice"}`}
@@ -678,58 +571,36 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
         )}
         <ErrorNotice error={run.error} />
       </section>
-      <div className="check-columns">
-        <section className="card">
-          <div className="card-heading">
-            <div>
-              <h2>Что видят сайты</h2>
-              <p>Проверки этого браузера на этом устройстве.</p>
-            </div>
-            <Icon name="browser" size={23} />
+      <section className="card">
+        <div className="card-heading">
+          <div>
+            <h2>Что видят сайты</h2>
+            <p>Проверки этого браузера на этом устройстве.</p>
           </div>
-          {result ? <CheckList checks={result.browser} /> : placeholder("Нажмите «Проверить».")}
-          {result && (
-            <details className="check-fingerprint">
-              <summary>Что ещё видит любой сайт</summary>
-              <dl>
-                {result.device.facts.map(({ id, label, value }) => (
-                  <div key={id}>
-                    <dt>{label}</dt>
-                    <dd>{value}</dd>
-                  </div>
-                ))}
-              </dl>
-              {result.device.notes.map((note) => <p className="hint" key={note}>{note}</p>)}
-            </details>
-          )}
-        </section>
-        <section className="card">
-          <div className="card-heading">
-            <div>
-              <h2>Сервер</h2>
-              <p>Проверки, которые сервер выполняет сам.</p>
-            </div>
-            <Icon name="server" size={23} />
-          </div>
-          {result?.server ? (
-            <CheckList checks={result.server} />
-          ) : result?.serverError ? (
-            <div className="card-body">
-              <ErrorNotice error={new Error(result.serverError)} />
-            </div>
-          ) : (
-            placeholder("Нажмите «Проверить».")
-          )}
-          <div className="card-footer">
-            <Icon name="lock" size={15} />
-            <span>
-              Для проверки трафика сервер подключается к Xray с профилем самого старого активного устройства:
-              его счётчик вырастет на несколько килобайт. Профиль никуда не передаётся.
-            </span>
-          </div>
-        </section>
-      </div>
-      <AdvancedDiagnostics result={result} busy={run.isFetching} />
+          <Icon name="browser" size={23} />
+        </div>
+        {result ? <CheckList checks={result.browser} /> : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить безопасность»."}</div>}
+        {result && (
+          <details className="check-fingerprint">
+            <summary>Что ещё видит любой сайт</summary>
+            <dl>
+              {result.device.facts.map(({ id, label, value }) => (
+                <div key={id}>
+                  <dt>{label}</dt>
+                  <dd>{value}</dd>
+                </div>
+              ))}
+            </dl>
+            {result.device.notes.map((note) => <p className="hint" key={note}>{note}</p>)}
+          </details>
+        )}
+      </section>
+      {result && <DiagnosticReportDownload
+        kind="privacy"
+        report={() => privacyDiagnosticReport(result, window.location.origin)}
+        checkedAt={result.checkedAt}
+        busy={run.isFetching}
+      />}
       <section className="card">
         <div className="card-heading">
           <div>

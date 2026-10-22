@@ -12,6 +12,7 @@ import {
   type TrafficUsage,
 } from "./api";
 import { Checks } from "./Checks";
+import { ServerDiagnostics } from "./ServerDiagnostics";
 import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
@@ -25,7 +26,7 @@ const intros: Record<Page, [string, string]> = {
     "Профили устройств",
     "Отдельный профиль для каждого телефона и компьютера. Доступ можно отозвать в любой момент.",
   ],
-  nodes: ["Сервер подключения", "Параметры сервера для подключения по VLESS + REALITY."],
+  nodes: ["Сервер подключения", "Параметры VLESS + REALITY, работа сервера, скорость и задержки."],
   audit: [
     "История действий",
     "Изменения доступа и конфигурации шлюза. Секреты и ссылки в журнал не попадают.",
@@ -35,8 +36,8 @@ const intros: Record<Page, [string, string]> = {
     "Пошагово для вашей системы: приложение, ссылка-подписка, режимы и проверка. А ещё — как настроить браузер и что может выдать вас и с VPN.",
   ],
   checks: [
-    "Проверка подключения",
-    "Что видят сайты, когда вы подключены, и всё ли в порядке на сервере. Проверка идёт только по кнопке, с того устройства, где открыта панель.",
+    "Проверка безопасности",
+    "Что видят сайты: IP, DNS, WebRTC и признаки браузера. Проверка идёт только по кнопке, с того устройства, где открыта панель.",
   ],
 };
 
@@ -471,7 +472,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
                 Открыть инструкции
               </button>
               <button className="button secondary-button" onClick={() => navigate("checks")}>
-                Проверить подключение
+                Проверить безопасность
               </button>
             </div>
           </section>
@@ -589,8 +590,9 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
           )}
         </div>
       )}
+      {page === "nodes" && <ServerDiagnostics token={token} />}
       {page === "guide" && <Guide onCheck={() => navigate("checks")} />}
-      {page === "checks" && <Checks token={token} nodeHost={nodeList[0]?.host} />}
+      {page === "checks" && <Checks nodeHost={nodeList[0]?.host} />}
       {page === "audit" && (
         <section className="card">
           <div className="card-heading">

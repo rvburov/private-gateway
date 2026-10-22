@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { browserVerdicts, isPrivateAddress, type BrowserFacts, type Network } from "./Checks";
+import { browserVerdicts, isPrivateAddress, privacyDiagnosticReport, type BrowserFacts, type Network } from "./Checks";
 
 const now = new Date("2026-07-01T12:00:00Z");
 const gateway = "203.0.113.7";
@@ -86,4 +86,22 @@ describe("connection checks in the browser", () => {
       expect(isPrivateAddress(address)).toBe(true);
     for (const address of ["203.0.113.7", "172.32.0.1", "2001:db8::5"]) expect(isPrivateAddress(address)).toBe(false);
   });
+  it("exports only privacy diagnostics even if the caller has server and credential fields", () => {
+    const run = {
+      checkedAt: now.getTime(), browser: browserVerdicts(viaGateway, gateway, now),
+      browserFacts: viaGateway,
+      device: { collectedAt: now.getTime(), facts: [{ id: "ua", label: "User-Agent", value: "Test browser" }], notes: [] },
+      server: [{ detail: "server-diagnostics-only" }], serverError: "private-server-error",
+      performance: { upload: 500, memoryBytes: 987654 }, performanceError: "private-speed-error",
+      token: "session-secret", profile: "vless://profile-secret",
+    };
+    const report = privacyDiagnosticReport(run, "https://panel.example:8443");
+    expect(report.format).toBe("private-gateway-privacy-diagnostics");
+    expect(report.browserFacts.ipv4?.ip).toBe(gateway);
+    expect(report.device.facts[0].value).toBe("Test browser");
+    expect(JSON.stringify(report)).not.toMatch(/server-diagnostics-only|private-server-error|private-speed-error|memoryBytes|987654|session-secret|profile-secret/);
+    expect(Object.keys(report)).not.toContain("performance");
+    expect(Object.keys(report)).not.toContain("server");
+  });
+
 });

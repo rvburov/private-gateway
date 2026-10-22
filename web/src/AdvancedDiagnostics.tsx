@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { CheckRun } from "./Checks";
+import type { ServerCheckRun } from "./ServerDiagnostics";
 import {
   clearPerformanceHistory,
   connectionModes,
@@ -9,7 +9,7 @@ import {
   type PerformanceRun,
   type ServerSnapshot,
 } from "./performance";
-import { bytes, ErrorNotice } from "./ui";
+import { bytes } from "./ui";
 
 const number = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 const measured = (value: number | null | undefined, unit: string) =>
@@ -119,53 +119,15 @@ function CgroupResources({ title, values, before, elapsed }: {
   );
 }
 
-// Отчёт собирается из результатов проверок; в него не входят сеанс входа или профили устройств.
-export function diagnosticReport(result: CheckRun, panelOrigin: string) {
-  return {
-    format: "private-gateway-diagnostics",
-    version: 1,
-    exportedAt: new Date().toISOString(),
-    checkedAt: new Date(result.checkedAt).toISOString(),
-    panelOrigin,
-    browser: result.browser,
-    browserFacts: result.browserFacts,
-    device: result.device,
-    server: result.server,
-    serverError: result.serverError,
-    performance: result.performance,
-    performanceError: result.performanceError,
-  };
-}
-
-export function AdvancedDiagnostics({ result, busy }: { result?: CheckRun; busy: boolean }) {
+export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun; busy: boolean }) {
   const [history, setHistory] = useState<PerformanceHistoryEntry[]>(loadPerformanceHistory);
-  const [downloadError, setDownloadError] = useState<unknown>(null);
   useEffect(() => { setHistory(loadPerformanceHistory()); }, [result?.performance?.checkedAt]);
   const performance = result?.performance;
-  function downloadReport() {
-    if (!result) return;
-    setDownloadError(null);
-    try {
-      const content = JSON.stringify(diagnosticReport(result, window.location.origin), null, 2);
-      const url = URL.createObjectURL(new Blob([content], { type: "application/json" }));
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `private-gateway-diagnostics-${new Date(result.checkedAt).toISOString().replaceAll(":", "-")}.json`;
-      document.body.append(link);
-      try { link.click(); } finally {
-        link.remove();
-        // Safari начинает скачивание асинхронно; не отзываем адрес до начала загрузки.
-        setTimeout(() => URL.revokeObjectURL(url), 1_000);
-      }
-    } catch {
-      setDownloadError(new Error("Не удалось скачать отчёт в этом браузере."));
-    }
-  }
   return (
     <>
       <section className="card" aria-label="Скорость и задержка">
         <div className="card-heading">
-          <div><h2>Скорость и задержка</h2><p>{performance ? `${modeName(performance.mode)} · ${time(performance.checkedAt)}` : "Измеряем по нажатию «Проверить»."}</p></div>
+          <div><h2>Скорость и задержка</h2><p>{performance ? `${modeName(performance.mode)} · ${time(performance.checkedAt)}` : "Измеряем по нажатию «Проверить сервер»."}</p></div>
         </div>
         {performance ? (
           <>
@@ -207,11 +169,6 @@ export function AdvancedDiagnostics({ result, busy }: { result?: CheckRun; busy:
         ) : <p className="card-body hint">Пока нет сохранённых замеров.</p>}
         <p className="diagnostics-notes">Автоматически сохраняются только числа, время и выбранная подпись подключения. IP-адреса, сведения об устройстве и токен входа в историю не записываются.</p>
       </section>
-      {result && <section className="card diagnostics-export">
-        <div><h2>Отчёт о проверке</h2><p className="hint">JSON содержит IP-адреса и сведения о браузере, устройстве и сервере. Скачивается на ваше устройство; передавайте его только тому, кому доверяете.</p></div>
-        <button className="button" disabled={busy} onClick={downloadReport}>Скачать отчёт JSON</button>
-        <ErrorNotice error={downloadError} />
-      </section>}
     </>
   );
 }

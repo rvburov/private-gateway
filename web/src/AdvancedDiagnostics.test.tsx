@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
-import { AdvancedDiagnostics, diagnosticReport } from "./AdvancedDiagnostics";
-import type { CheckRun } from "./Checks";
+import { cleanup, render, screen, within } from "@testing-library/react";
+import { AdvancedDiagnostics } from "./AdvancedDiagnostics";
+import type { ServerCheckRun } from "./ServerDiagnostics";
 import type { PathMeasurement, ServerSnapshot } from "./performance";
 
 function snapshot(at: string, vpnAt: string, usage: number): ServerSnapshot {
@@ -21,12 +21,9 @@ const path = (): PathMeasurement => ({
   upload: { mbps: 3, bytes: 512, durationMs: 1000, error: null },
 });
 
-function result(before: ServerSnapshot, after: ServerSnapshot): CheckRun {
+function result(before: ServerSnapshot, after: ServerSnapshot): ServerCheckRun {
   return {
     checkedAt: Date.parse("2026-10-23T10:00:10Z"),
-    browser: [{ id: "exit", title: "Выход", status: "ok", detail: "Адрес 203.0.113.7." }],
-    browserFacts: { ipv4: { ip: "203.0.113.7", asn: null, isp: null, city: null, countryCode: null, timeZone: null }, ipv6: null, webrtc: null, dns: [], timeZone: "Europe/Moscow" },
-    device: { collectedAt: Date.now(), facts: [{ id: "ua", label: "User-Agent", value: "Test browser" }], notes: ["Сведения сообщает браузер."] },
     server: [], serverError: null, performanceError: null,
     performance: { checkedAt: Date.parse("2026-10-23T10:00:10Z"), mode: "wifi-vpn", panel: path(), internet: path(), serverBefore: before, serverAfter: after, serverError: null },
   };
@@ -69,35 +66,4 @@ describe("extended diagnostics", () => {
     expect(screen.getByText("Повторные отправки TCP / исходящие сегменты").parentElement?.querySelector("dd")?.textContent).toBe("Недоступно");
   });
 
-  it("exports selected diagnostic fields without unrelated session or profile data", () => {
-    const first = snapshot("2026-10-23T10:00:00Z", "2026-10-23T10:00:00Z", 0);
-    const run = { ...result(first, first), token: "session-secret", profile: "vless://profile-secret", subscription: "sub-secret" };
-    const report = diagnosticReport(run, "https://gateway.example:8443");
-    const serialized = JSON.stringify(report);
-    expect(serialized).toContain("203.0.113.7");
-    expect(serialized).toContain("Test browser");
-    expect(serialized).not.toMatch(/session-secret|profile-secret|sub-secret/);
-    expect(report.panelOrigin).toBe("https://gateway.example:8443");
-  });
-
-  it("starts an explicit local download and lets Safari open the blob before revoking it", () => {
-    vi.useFakeTimers();
-    const create = vi.fn(() => "blob:diagnostic-report");
-    const revoke = vi.fn();
-    vi.stubGlobal("URL", class extends URL { static createObjectURL = create; static revokeObjectURL = revoke; });
-    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
-      expect(this.isConnected).toBe(true);
-      expect(this.download).toMatch(/private-gateway-diagnostics.*\.json$/);
-    });
-    const first = snapshot("2026-10-23T10:00:00Z", "2026-10-23T10:00:00Z", 0);
-    render(<AdvancedDiagnostics result={result(first, first)} busy={false} />);
-    expect(create).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Скачать отчёт JSON" }));
-    expect(create).toHaveBeenCalledOnce();
-    expect(click).toHaveBeenCalledOnce();
-    expect(revoke).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1000);
-    expect(revoke).toHaveBeenCalledWith("blob:diagnostic-report");
-    expect(document.querySelector("a[download]")).toBeNull();
-  });
 });
