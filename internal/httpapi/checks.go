@@ -37,7 +37,8 @@ type ServerChecks struct {
 
 // checkServices — внешние сервисы, к которым обращается браузерная часть «Проверки»: ipleak.net
 // сообщает адреса и сети по IPv4 и IPv6, а через уникальные поддомены — DNS-серверы браузера.
-var checkServices = []string{"https://ipleak.net", "https://*.ipleak.net"}
+// speed.cloudflare.com принимает только измерения скорости по явному запуску пользователя.
+var checkServices = []string{"https://ipleak.net", "https://*.ipleak.net", "https://speed.cloudflare.com"}
 
 type checkResult struct {
 	ID     string `json:"id"`

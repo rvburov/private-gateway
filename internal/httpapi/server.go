@@ -50,6 +50,7 @@ type Server struct {
 	browser        Browser
 	options        Options
 	checksMu       sync.Mutex
+	performance    performanceTransfers
 	loginMu        sync.Mutex
 	sessions       map[string]adminSession
 	browserTickets map[string]string
@@ -104,6 +105,10 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Delete("/devices/{id}", s.deleteDevice)
 			r.Get("/audit", s.audit)
 			r.Get("/checks", s.serverChecks)
+			r.Get("/checks/performance/ping", s.performancePing)
+			r.Get("/checks/performance/download", s.performanceDownload)
+			r.Post("/checks/performance/upload", s.performanceUpload)
+			r.Get("/checks/performance/server", s.performanceServer)
 			r.Post("/config/validate", s.validate)
 			r.Post("/config/apply", s.apply)
 			r.Get("/browser", s.browserStatus)
@@ -140,7 +145,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		// «Проверка» панели только по кнопке спрашивает у этих сервисов, какие адреса, сети и
-		// DNS-серверы видят сайты.
+		// DNS-серверы видят сайты, и измеряет скорость до независимого узла.
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' "+strings.Join(checkServices, " ")+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})

@@ -1170,7 +1170,7 @@ textarea:focus {
 }
 .check-fingerprint dl {
   display: grid;
-  grid-template-columns: max-content minmax(0, 1fr);
+  grid-template-columns: minmax(130px, 2fr) minmax(0, 3fr);
   gap: 8px 16px;
   padding: 0 20px;
 }
@@ -1179,6 +1179,7 @@ textarea:focus {
 }
 .check-fingerprint dt {
   color: var(--fg-3);
+  overflow-wrap: anywhere;
 }
 .check-fingerprint dd {
   overflow-wrap: anywhere;
@@ -1671,5 +1672,152 @@ textarea:focus {
   * {
     transition: none !important;
     animation: none !important;
+  }
+}
+
+/* Измерения запускаются вручную; прежние результаты остаются видны при повторном запуске. */
+.check-run-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 220px;
+}
+.check-run-actions label {
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.check-run-actions select {
+  width: 100%;
+}
+.check-comparison-note,
+.check-progress {
+  grid-column: 1 / -1;
+}
+.check-progress {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+.measurement-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.measurement {
+  padding: 18px 20px;
+  min-width: 0;
+}
+.measurement + .measurement {
+  border-left: 1px solid var(--line);
+}
+.measurement h3 {
+  font-size: var(--fs-md);
+  margin-bottom: 14px;
+}
+.measurement-values {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.measurement-values dt {
+  color: var(--fg-3);
+  font-size: var(--fs-sm);
+}
+.measurement-values dd {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.measurement-values div:last-child {
+  grid-column: 1 / -1;
+}
+.measurement-values div:last-child dd {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+.measurement .hint {
+  margin-top: 12px;
+}
+.diagnostics-notes {
+  padding: 14px 20px;
+  border-top: 1px solid var(--line);
+  font-size: var(--fs-sm);
+  color: var(--fg-2);
+}
+.diagnostics-notes p + p {
+  margin-top: 8px;
+}
+.diagnostics-subheading {
+  font-size: var(--fs-md);
+  padding: 12px 20px;
+}
+.diagnostics-table-scroll {
+  overflow-x: auto;
+}
+.diagnostics-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: var(--fs-sm);
+}
+.diagnostics-table caption {
+  text-align: left;
+  color: var(--fg-2);
+  padding: 0 20px 12px;
+}
+.diagnostics-table th,
+.diagnostics-table td {
+  padding: 12px 20px;
+  text-align: left;
+  border-top: 1px solid var(--line);
+}
+.diagnostics-table thead th {
+  color: var(--fg-2);
+  font-weight: 500;
+}
+.diagnostics-table tbody th span {
+  display: block;
+  white-space: nowrap;
+}
+.diagnostics-table tbody th span + span {
+  font-weight: 400;
+  color: var(--fg-2);
+}
+.diagnostics-export {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 14px 20px;
+  padding: 18px 20px;
+}
+.diagnostics-export > div:first-child {
+  flex: 1 1 300px;
+}
+.diagnostics-export .notice {
+  flex-basis: 100%;
+}
+@media (max-width: 700px) {
+  .check-run-actions {
+    width: 100%;
+    min-width: 0;
+  }
+  .measurement-columns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .measurement + .measurement {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .measurement-values {
+    gap: 12px;
+  }
+  .diagnostics-table th,
+  .diagnostics-table td {
+    padding: 10px 14px;
+  }
+  .check-fingerprint dl {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 4px;
+  }
+  .check-fingerprint dd {
+    margin-bottom: 8px;
   }
 }

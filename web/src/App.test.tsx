@@ -33,6 +33,8 @@ let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
 let browserRunning = false;
 let rememberedSession = false;
+let performanceBlocked = false;
+let performanceUnavailable = false;
 // Что отвечает ipleak.net, внешний сервис раздела «Проверка».
 let visibleIP = "203.0.113.7";
 let visibleIPv6: string | null = null;
@@ -60,6 +62,8 @@ beforeEach(() => {
   adminSetup = true;
   browserRunning = false;
   rememberedSession = false;
+  performanceBlocked = false;
+  performanceUnavailable = false;
   visibleIP = "203.0.113.7";
   visibleIPv6 = null;
   dnsResolvers = ["162.158.1.10"];
@@ -85,6 +89,11 @@ beforeEach(() => {
     if (/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path))
       return Response.json({ session: "test", ip: Object.fromEntries(dnsResolvers.map((ip) => [ip, 1])) });
     if (path.startsWith("https://ipleak.net/json/")) return about(path.slice("https://ipleak.net/json/".length));
+    if (path.startsWith("https://speed.cloudflare.com/")) {
+      if (performanceUnavailable) throw new TypeError("Failed to fetch");
+      const url = new URL(path);
+      return new Response(new Uint8Array(url.pathname === "/__down" ? Number(url.searchParams.get("bytes")) : 0));
+    }
     if (path === "/api/v1/auth/login") {
       const input = JSON.parse(options.body as string) as { username: string; password: string };
       return input.username === "admin" && input.password === "long-password"
@@ -106,6 +115,25 @@ beforeEach(() => {
     const token = (options.headers as Record<string, string>)?.Authorization;
     if (token !== "Bearer admin-token")
       return Response.json({ error: "unauthorized" }, { status: 401 });
+    if (path.startsWith("/api/v1/checks/performance/")) {
+      if (performanceUnavailable) return Response.json({ error: "unavailable" }, { status: 503 });
+      const url = new URL(path, window.location.origin);
+      if (url.pathname.endsWith("/ping")) {
+        if (performanceBlocked) return new Promise<Response>((_resolve, reject) => {
+          options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+        });
+        return Response.json({ ok: true });
+      }
+      if (url.pathname.endsWith("/download")) return new Response(new Uint8Array(Number(url.searchParams.get("bytes"))));
+      if (url.pathname.endsWith("/upload")) return Response.json({ bytes: (options.body as ArrayBuffer).byteLength });
+      if (url.pathname.endsWith("/server")) return Response.json({
+        sampledAt: new Date().toISOString(),
+        runtime: { os: "linux", arch: "amd64", goVersion: "go-test", cpuCount: 2, goroutines: 5 },
+        system: { scope: "Видимая виртуальная машина.", uptimeSeconds: 3600, loadAverage: [0.1, 0.2, 0.3], memoryTotalBytes: 1024 ** 3, memoryAvailableBytes: 512 * 1024 ** 2, cpu: { totalTicks: 200, stealTicks: 10 } },
+        api: { scope: "Контейнер API.", memoryBytes: 1024, memoryLimitBytes: null, cpuQuotaCores: null, cpuUsageUsec: null, cpuThrottledUsec: null, cpuThrottledPeriods: null },
+        vpn: { status: "unavailable", detail: "Показатели VPN недоступны.", scope: "Контейнер VPN.", running: null, cgroup: null, network: null, tcp: null },
+      });
+    }
     if (path === "/api/v1/status")
       return Response.json({
         database: "ok",
@@ -258,15 +286,21 @@ describe("administrator panel", () => {
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByText("Проверка подключения")).toBeTruthy();
     const asked = () => fetchMock.mock.calls.map(([path]) => String(path));
-    expect(asked().filter((path) => path.startsWith("https://") || path === "/api/v1/checks")).toEqual([]);
+    expect(asked().filter((path) => path.startsWith("https://") || path.startsWith("/api/v1/checks"))).toEqual([]);
     expect(screen.getByRole("link", { name: "ipleak.net" }).getAttribute("href")).toBe("https://ipleak.net/");
 
     fireEvent.click(screen.getByRole("button", { name: "Проверить" }));
-    expect(await screen.findByText(/Всё в порядке: вы выходите в интернет через свой шлюз, утечек не найдено/)).toBeTruthy();
+    expect(await screen.findByText(/По выполненным проверкам проблем не найдено/)).toBeTruthy();
     expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
     expect(screen.getByText(/Ваши DNS-запросы видит Cloudflare, Inc\. — публичный DNS/)).toBeTruthy();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Канал до панели" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Интернет через текущее подключение" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Скачать отчёт JSON" })).toBeTruthy();
+    const stored = window.localStorage.getItem("private-gateway-performance-v1");
+    expect(stored).not.toBeNull();
+    expect(stored).not.toMatch(/admin-token|203\.0\.113|User-Agent|gateway\.example|secret|profile/i);
     // Внешний сервис не получает cookies и адрес панели.
     const outsideCalls = fetchMock.mock.calls.filter(([path]) => String(path).startsWith("https://"));
     expect(
@@ -274,6 +308,8 @@ describe("administrator panel", () => {
     ).toBe(true);
     for (const [, options] of outsideCalls)
       expect(options).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
+    for (const [, options] of outsideCalls)
+      expect(new Headers(options?.headers).has("Authorization")).toBe(false);
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/v1/checks",
       expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer admin-token" }) }),
@@ -282,8 +318,36 @@ describe("administrator panel", () => {
     // Результаты остаются, пока владелец смотрит другие разделы.
     fireEvent.click(within(menu).getByRole("button", { name: "Инструкции" }));
     fireEvent.click(await screen.findByRole("button", { name: "Перейти к проверке" }));
-    expect(await screen.findByText(/Всё в порядке/)).toBeTruthy();
+    expect(await screen.findByText(/По выполненным проверкам проблем не найдено/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Проверить снова" })).toBeTruthy();
+  });
+
+  it("stops an active measurement without writing partial history", async () => {
+    performanceBlocked = true;
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/checks/performance/ping"))).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
+    expect(await screen.findByText(/Проверка остановлена\. Незавершённый замер/)).toBeTruthy();
+    expect(window.localStorage.getItem("private-gateway-performance-v1")).toBeNull();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Проверить" })).toBeTruthy());
+    expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/checks/performance/download"))).toBe(false);
+  });
+
+  it("keeps privacy results when speed services fail and clears only measurement history", async () => {
+    performanceUnavailable = true;
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    fireEvent.change(await screen.findByLabelText("Как подключены сейчас"), { target: { value: "wifi-vpn" } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить" }));
+    expect(await screen.findByText(/По выполненным проверкам проблем не найдено/)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
+    expect(within(screen.getByRole("region", { name: "Интернет через текущее подключение" })).getAllByText("Недоступно").length).toBeGreaterThan(0);
+    expect(JSON.parse(window.localStorage.getItem("private-gateway-performance-v1") || "[]")[0].mode).toBe("wifi-vpn");
+    fireEvent.click(screen.getByRole("button", { name: "Очистить историю" }));
+    expect(window.localStorage.getItem("private-gateway-performance-v1")).toBeNull();
+    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
   });
 
   it("names the provider an IPv6 address and DNS go to past another VPN", async () => {

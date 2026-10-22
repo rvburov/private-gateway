@@ -368,6 +368,139 @@ paths:
                         ip: {type: string, description: 'только у traffic: адрес, который видят сайты за шлюзом'}
         '409': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
+  /api/v1/checks/performance/ping:
+    get:
+      operationId: performancePing
+      description: Короткий авторизованный ответ без кеширования для HTTP-проб браузера. Не является ICMP ping.
+      responses:
+        '200':
+          description: Сервер принял пробу.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok: {type: boolean, const: true}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/checks/performance/download:
+    get:
+      operationId: performanceDownload
+      description: >-
+        Случайные несжимаемые данные без кеширования для замера канала до панели.
+        Одна передача одновременно, общий бюджет 64 МиБ в минуту, дедлайн 10 секунд.
+        Доступность и скорость панели не подтверждают скорость VLESS с устройства.
+      parameters:
+        - name: bytes
+          in: query
+          description: Число байтов; параметр допускается только один раз.
+          schema: {type: integer, minimum: 1, maximum: 4194304, default: 4194304}
+      responses:
+        '200':
+          description: Запрошенное число байтов, Content-Encoding identity и Cache-Control no-store.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/Error'}
+        '408': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '429':
+          description: Общий бюджет исчерпан; Retry-After содержит число секунд до следующего окна.
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/checks/performance/upload:
+    post:
+      operationId: performanceUpload
+      description: >-
+        Принимает и отбрасывает несжатое тело до 1 МиБ без сохранения или журналирования.
+        Ограничения передачи и бюджета общие с download. Дедлайн 10 секунд.
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary, maxLength: 1048576}
+      responses:
+        '200':
+          description: Фактически принятое число байтов.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [bytes]
+                properties:
+                  bytes: {type: integer, minimum: 0, maximum: 1048576}
+        '400': {$ref: '#/components/responses/Error'}
+        '408': {$ref: '#/components/responses/Error'}
+        '409': {$ref: '#/components/responses/Error'}
+        '413': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '429':
+          description: Общий бюджет исчерпан; Retry-After содержит число секунд до следующего окна.
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/checks/performance/server:
+    get:
+      operationId: performanceServer
+      description: >-
+        Снимок доступных показателей без профилей, ключей и переменных окружения.
+        Поля system относятся к системе или VM, видимой через proc, api — к cgroup API,
+        vpn — к отдельному свежему снимку worker Xray. Недоступные значения равны null.
+        Счётчики накопительные: изменение вычисляется по двум снимкам с проверкой сброса.
+      responses:
+        '200':
+          description: Снимок ресурсов без кеширования; недоступность отдельного показателя не заменяется нулём.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sampledAt, runtime, system, api, vpn]
+                properties:
+                  sampledAt: {type: string, format: date-time}
+                  runtime:
+                    type: object
+                    properties:
+                      os: {type: string}
+                      arch: {type: string}
+                      goVersion: {type: string}
+                      cpuCount: {type: integer}
+                      goroutines: {type: integer}
+                      version: {type: string}
+                      revision: {type: string}
+                  system:
+                    type: object
+                    properties:
+                      scope: {type: string}
+                      uptimeSeconds: {type: [number, 'null']}
+                      loadAverage:
+                        type: [array, 'null']
+                        items: {type: number}
+                      memoryTotalBytes: {type: [integer, 'null']}
+                      memoryAvailableBytes: {type: [integer, 'null']}
+                      cpu:
+                        type: [object, 'null']
+                        properties:
+                          totalTicks: {type: integer}
+                          stealTicks: {type: integer}
+                  api: {$ref: '#/components/schemas/ResourceDiagnostics'}
+                  vpn:
+                    type: object
+                    properties:
+                      status: {type: string, enum: [ok, unavailable, stale, invalid]}
+                      detail: {type: string}
+                      scope: {type: string}
+                      sampledAt: {type: string, format: date-time}
+                      running: {type: [boolean, 'null']}
+                      cgroup: {$ref: '#/components/schemas/ResourceDiagnostics'}
+                      network:
+                        type: [object, 'null']
+                        properties:
+                          rxBytes: {type: integer}
+                          txBytes: {type: integer}
+                      tcp:
+                        type: [object, 'null']
+                        properties:
+                          outSegments: {type: integer}
+                          retransmittedSegments: {type: integer}
+        default: {$ref: '#/components/responses/Error'}
   /api/v1/config/validate:
     post:
       operationId: validateConfig
@@ -473,6 +606,17 @@ components:
               running: {type: boolean}
               url: {type: string, format: uri, description: Адрес noVNC по HTTPS под защитой cookie подтверждённого сеанса администратора}
   schemas:
+    ResourceDiagnostics:
+      type: [object, 'null']
+      description: Ограниченные показатели группы ресурсов; scope присутствует у API, отсутствует у вложенного vpn.cgroup.
+      properties:
+        scope: {type: string}
+        memoryBytes: {type: [integer, 'null']}
+        memoryLimitBytes: {type: [integer, 'null']}
+        cpuQuotaCores: {type: [number, 'null']}
+        cpuUsageUsec: {type: [integer, 'null']}
+        cpuThrottledUsec: {type: [integer, 'null']}
+        cpuThrottledPeriods: {type: [integer, 'null']}
     Node:
       type: object
       required: [id, name, host, port, server_name, public_key, short_id]

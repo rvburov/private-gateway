@@ -1,5 +1,15 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { errorMessage, request } from "./api";
+import { collectDeviceDiagnostics, type DeviceDiagnostics } from "./deviceDiagnostics";
+import { AdvancedDiagnostics } from "./AdvancedDiagnostics";
+import {
+  connectionModes,
+  runPerformance,
+  savePerformanceHistory,
+  type ConnectionMode,
+  type PerformanceRun,
+} from "./performance";
 import { Icon, type IconName } from "./icons";
 import { ErrorNotice } from "./ui";
 
@@ -35,17 +45,20 @@ export interface BrowserFacts {
   timeZone: string;
 }
 
-interface CheckRun {
+export interface CheckRun {
   browser: CheckResult[];
   server: CheckResult[] | null;
   serverError: string | null;
-  fingerprint: [string, string][];
+  browserFacts: BrowserFacts;
+  device: DeviceDiagnostics;
+  performance: PerformanceRun | null;
+  performanceError: string | null;
   checkedAt: number;
 }
 
 // Внешние сервисы проверки. ipleak.net сообщает адрес и сеть по IPv4 и по IPv6, узнаёт сеть
 // любого адреса и видит, какие DNS-серверы спрашивают у него уникальные имена его поддоменов.
-// Content-Security-Policy панели разрешает ровно ipleak.net и его поддомены.
+// Для скорости отдельно разрешён только speed.cloudflare.com.
 export const ipv4Service = "https://ipv4.ipleak.net/json/";
 export const ipv6Service = "https://ipv6.ipleak.net/json/";
 const lookupService = "https://ipleak.net/json/";
@@ -436,7 +449,8 @@ async function dnsServers(signal: AbortSignal) {
 
 // Собирает кандидатов WebRTC так же, как это сделал бы сайт: STUN-сервер сообщает браузеру его
 // внешний адрес. Имена mDNS (*.local) уже скрывают локальные адреса и пропускаются.
-function webrtcAddresses(timeout = 4_000): Promise<{ public: string[]; local: string[] } | null> {
+function webrtcAddresses(signal: AbortSignal, timeout = 4_000): Promise<{ public: string[]; local: string[] } | null> {
+  signal.throwIfAborted();
   if (typeof RTCPeerConnection === "undefined") return Promise.resolve(null);
   return new Promise((resolve) => {
     const found = { public: new Set<string>(), local: new Set<string>() };
@@ -447,12 +461,17 @@ function webrtcAddresses(timeout = 4_000): Promise<{ public: string[]; local: st
       resolve(null);
       return;
     }
+    let finished = false;
     const finish = () => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
       connection.close();
       resolve({ public: [...found.public], local: [...found.local] });
     };
     const timer = setTimeout(finish, timeout);
+    signal.addEventListener("abort", finish, { once: true });
     connection.onicecandidate = (event) => {
       if (!event.candidate) return finish();
       const fields = event.candidate.candidate.split(" ");
@@ -461,11 +480,15 @@ function webrtcAddresses(timeout = 4_000): Promise<{ public: string[]; local: st
       if (!candidate || candidate.endsWith(".local")) return;
       (type === "host" ? found.local : found.public).add(candidate);
     };
-    connection.createDataChannel("check");
-    connection
-      .createOffer()
-      .then((offer) => connection.setLocalDescription(offer))
-      .catch(finish);
+    try {
+      connection.createDataChannel("check");
+      connection
+        .createOffer()
+        .then((offer) => { if (!finished) return connection.setLocalDescription(offer); })
+        .catch(finish);
+    } catch {
+      finish();
+    }
   });
 }
 
@@ -473,7 +496,7 @@ async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
   const [ipv4, ipv6, webrtc, dns] = await Promise.all([
     exitNetwork(ipv4Service, signal),
     exitNetwork(ipv6Service, signal),
-    webrtcAddresses(),
+    webrtcAddresses(signal),
     dnsServers(signal),
   ]);
   // Один запрос на адрес: сети выходов уже известны, а DNS-серверы повторяются.
@@ -495,6 +518,7 @@ async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
     Promise.all(outsideRTC.map(find)),
     dns ? Promise.all(dns.slice(0, 12).map(find)) : null,
   ]);
+  signal.throwIfAborted();
   return {
     ipv4,
     ipv6,
@@ -504,18 +528,16 @@ async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
   };
 }
 
-function fingerprint(): [string, string][] {
-  const agent = navigator as Navigator & { userAgentData?: { platform?: string } };
-  return [
-    ["Языки", navigator.languages?.join(", ") || navigator.language || "—"],
-    ["Система", agent.userAgentData?.platform || navigator.platform || "—"],
-    ["Экран", `${window.screen.width} × ${window.screen.height}, плотность ${window.devicePixelRatio}`],
-    ["Ядер процессора", navigator.hardwareConcurrency ? String(navigator.hardwareConcurrency) : "—"],
-    ["Do Not Track", navigator.doNotTrack === "1" ? "включён" : "выключен"],
-  ];
-}
-
-async function runChecks(token: string, nodeHost: string | undefined, signal: AbortSignal): Promise<CheckRun> {
+async function runChecks(
+  token: string,
+  nodeHost: string | undefined,
+  signal: AbortSignal,
+  mode: ConnectionMode,
+  onProgress: (phase: string) => void,
+): Promise<CheckRun> {
+  signal.throwIfAborted();
+  onProgress("Проверяем IP, DNS, WebRTC и работу VLESS на сервере…");
+  const device = collectDeviceDiagnostics();
   const [facts, server] = await Promise.all([
     browserFacts(signal),
     request<{ checks: CheckResult[] }>(token, "/checks", { signal }).then(
@@ -525,11 +547,24 @@ async function runChecks(token: string, nodeHost: string | undefined, signal: Ab
   ]);
   const trafficIP = server.checks?.find((check) => check.id === "traffic")?.ip;
   const serverIP = trafficIP || (nodeHost && isIPAddress(nodeHost) ? nodeHost : null);
+  signal.throwIfAborted();
+  let performance: PerformanceRun | null = null;
+  let performanceError: string | null = null;
+  try {
+    performance = await runPerformance(token, mode, signal, onProgress);
+  } catch (error) {
+    signal.throwIfAborted();
+    performanceError = errorMessage(error);
+  }
+  signal.throwIfAborted();
   return {
     browser: browserVerdicts(facts, serverIP),
     server: server.checks,
     serverError: server.error,
-    fingerprint: fingerprint(),
+    browserFacts: facts,
+    device,
+    performance,
+    performanceError,
     checkedAt: Date.now(),
   };
 }
@@ -556,15 +591,24 @@ function CheckList({ checks }: { checks: CheckResult[] }) {
 }
 
 export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }) {
+  const client = useQueryClient();
+  const [mode, setMode] = useState<ConnectionMode>("current");
+  const [progress, setProgress] = useState("");
+  const [stopped, setStopped] = useState(false);
   const run = useQuery({
     queryKey: ["checks"],
-    queryFn: ({ signal }) => runChecks(token, nodeHost, signal),
+    queryFn: async ({ signal }) => {
+      const result = await runChecks(token, nodeHost, signal, mode, setProgress);
+      signal.throwIfAborted();
+      if (result.performance) savePerformanceHistory(result.performance);
+      return result;
+    },
     enabled: false,
     retry: false,
     staleTime: Infinity,
     gcTime: 30 * 60_000,
   });
-  const result = run.isFetching ? undefined : run.data;
+  const result = run.data;
   const all = [...(result?.browser ?? []), ...(result?.server ?? [])];
   const problems = all.filter((check) => check.status === "fail").length;
   const warnings = all.filter((check) => check.status === "warn").length;
@@ -575,21 +619,47 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
         <div className="check-run-text">
           <h2>Проверить сейчас</h2>
           <p>
-            Браузер узнает, через чью сеть и какую страну он выходит в интернет по IPv4 и IPv6, чьи DNS-серверы
-            видят его запросы и какие адреса раскрывает WebRTC. Другой внешний адрес в WebRTC может раскрыть
-            обход прокси; сторонний DNS-сервер требует отдельной проверки маршрута. Сервер проверит себя и
-            пропустит настоящий VLESS-трафик. Займёт до 20 секунд.
+            Проверим IP, DNS, WebRTC, сведения об устройстве и работу VLESS на сервере. Затем измерим скорость,
+            задержку и стабильность HTTP-запросов до панели и до внешнего сервиса. Сервер покажет доступные
+            показатели нагрузки. До полутора минут и до 40 МБ трафика на один запуск.
           </p>
           <p className="hint">
             Для этого браузер обратится к ipleak.net (его держит VPN-сервис AirVPN) и к STUN-серверам Google и
-            Cloudflare — они увидят ваши адреса и DNS-серверы, как любой сайт проверки. Панель им ничего не
-            передаёт.
+            Cloudflare, а для скорости — к speed.cloudflare.com. Эти сервисы увидят ваш внешний адрес.
+            Токен входа и VPN-профиль им не передаются.
           </p>
         </div>
-        <button className="button primary" onClick={() => void run.refetch()} disabled={run.isFetching}>
-          <Icon name="shield" size={18} />
-          {run.isFetching ? "Проверяем…" : result ? "Проверить снова" : "Проверить"}
-        </button>
+        <div className="check-run-actions">
+          <label htmlFor="check-connection-mode">Как подключены сейчас</label>
+          <select
+            id="check-connection-mode"
+            value={mode}
+            disabled={run.isFetching}
+            onChange={(event) => setMode(event.target.value as ConnectionMode)}
+          >
+            {connectionModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+          </select>
+          {run.isFetching ? (
+            <button className="button" onClick={() => {
+              void client.cancelQueries({ queryKey: ["checks"] });
+              setStopped(true);
+              setProgress("");
+            }}>
+              <Icon name="close" size={18} />Остановить
+            </button>
+          ) : (
+            <button className="button primary" onClick={() => { setStopped(false); void run.refetch(); }}>
+              <Icon name="shield" size={18} />
+              {result ? "Проверить снова" : "Проверить"}
+            </button>
+          )}
+        </div>
+        <p className="hint check-comparison-note">
+          Для сравнения выполните отдельные замеры с VPN и без него, затем в другой сети. Переключайте VPN
+          и сеть самостоятельно; закройте загрузки и видео. Выбранная подпись сохраняется вместе с числами.
+        </p>
+        {run.isFetching && <p className="check-progress" role="status" aria-live="polite">{progress || "Начинаем проверку…"}</p>}
+        {stopped && <p className="check-progress" role="status">Проверка остановлена. Незавершённый замер не добавлен в историю.</p>}
         {result && (
           <div
             className={`notice check-summary ${problems ? "error" : warnings ? "warning-notice" : "success-notice"}`}
@@ -601,7 +671,7 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
                 ? `Найдено проблем: ${problems}${warnings ? `, замечаний: ${warnings}` : ""}. Подробности и что сделать — ниже.`
                 : warnings
                   ? `Проблем нет, замечаний: ${warnings}. Посмотрите их ниже.`
-                  : "Всё в порядке: вы выходите в интернет через свой шлюз, утечек не найдено."}{" "}
+                  : "По выполненным проверкам проблем не найдено."}{" "}
               Проверено в {new Date(result.checkedAt).toLocaleTimeString("ru-RU", { timeStyle: "short" })}.
             </span>
           </div>
@@ -622,17 +692,14 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
             <details className="check-fingerprint">
               <summary>Что ещё видит любой сайт</summary>
               <dl>
-                {result.fingerprint.map(([term, value]) => (
-                  <div key={term}>
-                    <dt>{term}</dt>
+                {result.device.facts.map(({ id, label, value }) => (
+                  <div key={id}>
+                    <dt>{label}</dt>
                     <dd>{value}</dd>
                   </div>
                 ))}
               </dl>
-              <p className="hint">
-                VPN этого не меняет. Вместе с часовым поясом и шрифтами это складывается в отпечаток, по
-                которому сайты узнают браузер и без IP.
-              </p>
+              {result.device.notes.map((note) => <p className="hint" key={note}>{note}</p>)}
             </details>
           )}
         </section>
@@ -662,6 +729,7 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
           </div>
         </section>
       </div>
+      <AdvancedDiagnostics result={result} busy={run.isFetching} />
       <section className="card">
         <div className="card-heading">
           <div>

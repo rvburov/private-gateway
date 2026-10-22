@@ -122,6 +122,77 @@ http_redirect() {
 check_identity() {
   [[ $(identity) == "$saved_identity" ]] || fail 'The device credentials, subscription or server keys changed.'
 }
+# Проверяем установленный worker, общий файл состояния и чтение его API. Токен остаётся
+# внутри уже настроенного API-контейнера; ни ответ, ни переменные окружения не печатаются.
+worker_telemetry() {
+  compose exec -T api python3 - <<'PY'
+from datetime import datetime, timezone
+import json
+import os
+import time
+import urllib.error
+import urllib.request
+
+opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+request = urllib.request.Request(
+    "http://127.0.0.1:8080/api/v1/checks/performance/server",
+    headers={"Authorization": "Bearer " + os.environ["GATEWAY_API_TOKEN"]},
+)
+
+
+def counter(group, name):
+    return isinstance(group, dict) and type(group.get(name)) is int and group[name] >= 0
+
+
+def validate(document):
+    if not isinstance(document, dict) or not isinstance(document.get("vpn"), dict):
+        return "the API did not return VPN telemetry"
+    vpn = document["vpn"]
+    if vpn.get("status") != "ok" or vpn.get("running") is not True:
+        return "the installed worker did not report a running Xray"
+    try:
+        sampled = datetime.fromisoformat(vpn["sampledAt"].replace("Z", "+00:00"))
+        age = (datetime.now(timezone.utc) - sampled).total_seconds()
+    except (KeyError, AttributeError, TypeError, ValueError):
+        return "the worker sample time is invalid"
+    if not -5 <= age <= 15:
+        return "the worker sample is not fresh"
+    # На одноразовом Ubuntu 26.04 runner Docker предоставляет собственный cgroup
+    # контейнера. Неограниченные memory.max/cpu.max вправе возвращать null.
+    for name in ("memoryBytes", "cpuUsageUsec"):
+        if not counter(vpn.get("cgroup"), name):
+            return "the worker cgroup counters are unavailable"
+    for name in ("rxBytes", "txBytes"):
+        if not counter(vpn.get("network"), name):
+            return "the worker network counters are unavailable"
+    for name in ("outSegments", "retransmittedSegments"):
+        if not counter(vpn.get("tcp"), name):
+            return "the worker TCP counters are unavailable"
+    return None
+
+
+deadline = time.monotonic() + 10
+reason = "the diagnostic API is unavailable"
+while (remaining := deadline - time.monotonic()) > 0:
+    try:
+        with opener.open(request, timeout=min(1, remaining)) as response:
+            data = response.read(65537)
+            if response.status != 200 or response.headers.get("Cache-Control") != "no-store":
+                reason = "the diagnostic response status or cache policy is invalid"
+            elif len(data) > 65536:
+                reason = "the diagnostic response is too large"
+            else:
+                reason = validate(json.loads(data))
+        if reason is None:
+            print("Installed VPN telemetry passed: running Xray, fresh sample, cgroup, network and TCP counters.")
+            break
+    except (OSError, urllib.error.URLError, ValueError):
+        reason = "the diagnostic API is unavailable or returned invalid JSON"
+    time.sleep(min(0.5, max(0, deadline - time.monotonic())))
+else:
+    raise SystemExit("Installed VPN telemetry failed: " + reason + ".")
+PY
+}
 check_stack() {
   panel_ready || fail 'The panel is unavailable.'
   browser_protected
@@ -139,6 +210,7 @@ check_stack() {
   desired=$(awk '$1 == "DESIRED" && $2 == "REVISION" {print $3}' <<< "$status")
   applied=$(awk '$1 == "APPLIED" && $2 == "REVISION" {print $3}' <<< "$status")
   [[ $desired =~ ^[0-9]+$ && $desired == "$applied" ]] || fail 'The desired revision was not applied.'
+  worker_telemetry
 }
 
 version_a=$(python3 "$repository/scripts/verify-release.py" --tar "$archive")
@@ -350,5 +422,6 @@ node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" 
 compose exec -T api /usr/local/bin/gatewayctl device add fresh8443-test --node "$node" >/dev/null
 compose exec -T api /usr/local/bin/gatewayctl config apply
 vless_works || fail 'Fresh installation does not pass real VLESS through8443.'
+worker_telemetry
 http_redirect
 printf '\nInstallation, port transitions, two rollbacks and fresh8443 installation passed.\n'

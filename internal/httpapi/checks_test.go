@@ -147,9 +147,14 @@ func TestPanelPolicyAllowsOnlyTheCheckServices(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	New(nil, nil, nil, Options{}).ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/healthz", nil))
 	policy := recorder.Header().Get("Content-Security-Policy")
-	if !strings.Contains(policy, "connect-src 'self' https://ipleak.net https://*.ipleak.net;") ||
+	if !strings.Contains(policy, "connect-src 'self' https://ipleak.net https://*.ipleak.net https://speed.cloudflare.com;") ||
 		!strings.Contains(policy, "default-src 'self';") {
 		t.Fatalf("Content-Security-Policy = %q", policy)
+	}
+	for _, broader := range []string{"connect-src *", "https://*.cloudflare.com", "https:;", "https://cloudflare.com"} {
+		if strings.Contains(policy, broader) {
+			t.Fatalf("Content-Security-Policy permits unrelated destinations: %q", policy)
+		}
 	}
 }
 
