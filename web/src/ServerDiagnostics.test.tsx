@@ -171,7 +171,7 @@ describe("server diagnostics", () => {
     fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
     await screen.findByRole("button", { name: "Проверить сервер снова" });
     expect(screen.getByText("Серверная проверка недоступна.")).toBeTruthy();
-    expect(within(screen.getByRole("region", { name: "Канал до панели" })).getByText("15 Мбит/с")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Канал до панели" }).querySelector("dd")?.textContent).toBe("15 Мбит/с");
     expect(localStorage.getItem("private-gateway-performance-v1")).not.toBeNull();
   });
 

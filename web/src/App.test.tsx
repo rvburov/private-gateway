@@ -359,7 +359,7 @@ describe("administrator panel", () => {
     expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
     expect(screen.getByText(/Ваши DNS-запросы видит Cloudflare, Inc\. — публичный DNS/)).toBeTruthy();
     expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Скачать отчёт безопасности JSON" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Скачать отчёт" })).toBeTruthy();
     expect(screen.queryByText("VLESS-трафик через сервер")).toBeNull();
     expect(asked().filter((path) => path.startsWith("/api/v1/checks") || path.startsWith("https://speed.cloudflare.com/"))).toEqual([]);
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBeNull();
@@ -393,7 +393,7 @@ describe("administrator panel", () => {
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Канал до панели" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Интернет через текущее подключение" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Скачать отчёт сервера JSON" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Скачать отчёт" })).toBeTruthy();
     expect(collect).not.toHaveBeenCalled();
     expect(fetchMock.mock.calls.some(([path]) => String(path).includes("ipleak.net"))).toBe(false);
     expect(screen.queryByText("Что видят сайты")).toBeNull();

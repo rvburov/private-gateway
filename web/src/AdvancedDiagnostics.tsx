@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import type { ServerCheckRun } from "./ServerDiagnostics";
 import { HelpTip } from "./HelpTip";
 import {
@@ -14,7 +14,9 @@ import { bytes } from "./ui";
 
 const number = new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 1 });
 const measured = (value: number | null | undefined, unit: string) =>
-  typeof value === "number" && Number.isFinite(value) ? `${number.format(value)} ${unit}` : "Недоступно";
+  typeof value === "number" && Number.isFinite(value)
+    ? <>{number.format(value)} <span className="measurement-unit">{unit}</span></>
+    : "Недоступно";
 const size = (value: number | null | undefined) =>
   typeof value === "number" && Number.isFinite(value) ? bytes(value) : "Недоступно";
 const modeName = (mode: string) => connectionModes.find((item) => item.value === mode)?.label ?? "Текущее подключение";
@@ -120,6 +122,15 @@ function CgroupResources({ title, values, before, elapsed }: {
   );
 }
 
+function HistoryCell({ label, value }: { label: string; value: ReactNode }) {
+  return (
+    <td role="cell" data-label={label}>
+      <span className="diagnostics-cell-label" aria-hidden="true">{label}</span>
+      <span className="diagnostics-cell-value">{value}</span>
+    </td>
+  );
+}
+
 export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun; busy: boolean }) {
   const [history, setHistory] = useState<PerformanceHistoryEntry[]>(loadPerformanceHistory);
   useEffect(() => { setHistory(loadPerformanceHistory()); }, [result?.performance?.checkedAt]);
@@ -166,17 +177,17 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
         </div>
         {history.length > 0 ? (
           <div className="diagnostics-table-scroll">
-            <table className="diagnostics-table">
+            <table className="diagnostics-table" role="table">
               <caption className="sr-only">Сравнение замеров: скорость до Cloudflare и задержка HTTP.</caption>
-              <thead><tr><th scope="col">Время и подключение</th><th scope="col">Получение</th><th scope="col">Отправка</th><th scope="col">Задержка интернета</th><th scope="col">Задержка панели</th><th scope="col">Ошибки HTTP в интернете</th></tr></thead>
-              <tbody>{history.map((entry, index) => (
-                <tr key={`${entry.checkedAt}-${index}`}>
-                  <th scope="row"><span>{time(entry.checkedAt)}</span><span>{modeName(entry.mode)}</span></th>
-                  <td>{measured(entry.internet.downloadMbps, "Мбит/с")}</td>
-                  <td>{measured(entry.internet.uploadMbps, "Мбит/с")}</td>
-                  <td>{measured(entry.internet.latencyMs, "мс")}</td>
-                  <td>{measured(entry.panel.latencyMs, "мс")}</td>
-                  <td>{entry.internet.errorCount}</td>
+              <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">Время и подключение</th><th role="columnheader" scope="col">Получение</th><th role="columnheader" scope="col">Отправка</th><th role="columnheader" scope="col">Задержка интернета</th><th role="columnheader" scope="col">Задержка панели</th><th role="columnheader" scope="col">Ошибки HTTP в интернете</th></tr></thead>
+              <tbody role="rowgroup">{history.map((entry, index) => (
+                <tr role="row" key={`${entry.checkedAt}-${index}`}>
+                  <th role="rowheader" scope="row" data-label="Время и подключение"><span>{time(entry.checkedAt)}</span><span>{modeName(entry.mode)}</span></th>
+                  <HistoryCell label="Получение" value={measured(entry.internet.downloadMbps, "Мбит/с")} />
+                  <HistoryCell label="Отправка" value={measured(entry.internet.uploadMbps, "Мбит/с")} />
+                  <HistoryCell label="Задержка интернета" value={measured(entry.internet.latencyMs, "мс")} />
+                  <HistoryCell label="Задержка панели" value={measured(entry.panel.latencyMs, "мс")} />
+                  <HistoryCell label="Ошибки HTTP в интернете" value={entry.internet.errorCount} />
                 </tr>
               ))}</tbody>
             </table>

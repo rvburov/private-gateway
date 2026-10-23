@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { ErrorNotice } from "./ui";
-import { serializeDiagnosticJSON } from "./diagnosticJSON";
 import { formatDiagnosticText } from "./diagnosticText";
 import { HelpTip } from "./HelpTip";
 
@@ -13,19 +12,16 @@ export function DiagnosticReportDownload({ kind, report, checkedAt, busy }: {
 }) {
   const [error, setError] = useState<unknown>(null);
   const title = kind === "privacy" ? "Отчёт о безопасности" : "Отчёт о сервере";
-  function download(format: "txt" | "json") {
+  function download() {
     setError(null);
     try {
       const data = report();
-      const content = format === "txt"
-        ? "\ufeff" + formatDiagnosticText(kind, data)
-        : serializeDiagnosticJSON(data);
+      const content = "\ufeff" + formatDiagnosticText(kind, data);
       const date = new Date(checkedAt).toISOString().replaceAll(":", "-");
-      const type = format === "txt" ? "text/plain;charset=utf-8" : "application/json;charset=utf-8";
-      const url = URL.createObjectURL(new Blob([content], { type }));
+      const url = URL.createObjectURL(new Blob([content], { type: "text/plain;charset=utf-8" }));
       const link = document.createElement("a");
       link.href = url;
-      link.download = `private-gateway-${kind}-diagnostics-${date}.${format}`;
+      link.download = `private-gateway-${kind}-diagnostics-${date}.txt`;
       document.body.append(link);
       try { link.click(); } finally {
         link.remove();
@@ -48,17 +44,14 @@ export function DiagnosticReportDownload({ kind, report, checkedAt, busy }: {
                 : "Отчёт содержит результаты проверки сервера, показатели его работы, скорости и задержки."}{" "}
               Скачивается на ваше устройство; передавайте его только тому, кому доверяете.
             </p>
-            <p>Для чтения выберите текстовый отчёт по-русски. В JSON символы записаны кодами Unicode: программы восстанавливают исходный текст автоматически.</p>
+            <p>Отчёт открывается как обычный текстовый файл с русскими подписями показателей.</p>
           </HelpTip>
         </div>
-        <p className="hint">TXT — для чтения, JSON — для программ.</p>
+        <p className="hint">Текстовый файл на русском.</p>
       </div>
       <div className="button-group diagnostics-download-actions">
-        <button className="button primary" disabled={busy} onClick={() => download("txt")}>
-          Скачать отчёт по-русски
-        </button>
-        <button className="button" disabled={busy} onClick={() => download("json")}>
-          {kind === "privacy" ? "Скачать отчёт безопасности JSON" : "Скачать отчёт сервера JSON"}
+        <button className="button primary" disabled={busy} onClick={download}>
+          Скачать отчёт
         </button>
       </div>
       <ErrorNotice error={error} />

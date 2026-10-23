@@ -215,12 +215,15 @@ code,
   justify-content: center;
   gap: 8px;
   min-height: var(--tap);
-  padding: 0 16px;
+  max-width: 100%;
+  padding: 10px 16px;
   border-radius: var(--r-md);
   font-weight: 600;
   font-size: var(--fs-md);
   line-height: 1.2;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: center;
   transition: background 0.15s, border-color 0.15s;
 }
 .button.primary {
@@ -253,7 +256,9 @@ code,
   padding: 0 4px;
   color: var(--accent-ink);
   font-weight: 600;
-  white-space: nowrap;
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
   flex: none;
 }
 .text-button:hover:not(:disabled) {
@@ -643,13 +648,27 @@ textarea:focus {
   box-shadow: var(--shadow);
   min-width: 0;
 }
+.card p,
+.card dt,
+.card dd {
+  overflow-wrap: anywhere;
+}
 .card-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 12px;
   padding: 18px 20px;
   border-bottom: 1px solid var(--line);
+}
+.card-heading > div:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+.card-heading > .button,
+.card-heading > .text-button {
+  flex: 0 1 auto;
 }
 .card-heading h2 {
   font-size: var(--fs-lg);
@@ -1743,9 +1762,15 @@ textarea:focus {
 .diagnostics-title-with-help h2 {
   min-width: 0;
 }
-.card-heading > div:has(.diagnostics-title-with-help) {
-  flex: 1;
-  min-width: 0;
+/* Открытая справка занимает строку целиком: действия больше не сжимают её в колонку. */
+.card-heading:has(.help-tip-button[aria-expanded="true"]) > div:has(.help-tip) {
+  flex-basis: 100%;
+}
+.card-heading:has(.help-tip-button[aria-expanded="true"]) > svg {
+  display: none;
+}
+.check-run:has(.help-tip-button[aria-expanded="true"]) {
+  grid-template-columns: minmax(0, 1fr);
 }
 .help-tip {
   display: contents;
@@ -1782,6 +1807,8 @@ textarea:focus {
 }
 .help-tip-panel {
   grid-column: 1 / -1;
+  min-width: 0;
+  width: 100%;
   padding: 12px 14px;
   margin: 4px 0;
   border: 1px solid var(--line);
@@ -1835,6 +1862,9 @@ textarea:focus {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
+.measurement-unit {
+  white-space: nowrap;
+}
 .measurement-values div:last-child {
   grid-column: 1 / -1;
 }
@@ -1856,6 +1886,13 @@ textarea:focus {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--fs-sm);
+  table-layout: fixed;
+}
+.diagnostics-cell-label {
+  display: none;
+}
+.diagnostics-cell-value {
+  overflow-wrap: anywhere;
 }
 .diagnostics-table caption {
   text-align: left;
@@ -1864,9 +1901,10 @@ textarea:focus {
 }
 .diagnostics-table th,
 .diagnostics-table td {
-  padding: 12px 20px;
+  padding: 12px 16px;
   text-align: left;
   border-top: 1px solid var(--line);
+  overflow-wrap: anywhere;
 }
 .diagnostics-table thead th {
   color: var(--fg-2);
@@ -1874,7 +1912,7 @@ textarea:focus {
 }
 .diagnostics-table tbody th span {
   display: block;
-  white-space: nowrap;
+  white-space: normal;
 }
 .diagnostics-table tbody th span + span {
   font-weight: 400;
@@ -2047,11 +2085,80 @@ textarea:focus {
   gap: 14px 20px;
   padding: 18px 20px;
 }
+.diagnostics-export h2 {
+  font-size: var(--fs-lg);
+}
+.diagnostics-export:has(.help-tip-button[aria-expanded="true"]) > div:first-child {
+  flex-basis: 100%;
+}
 .diagnostics-export > div:first-child {
   flex: 1 1 300px;
 }
 .diagnostics-export .notice {
   flex-basis: 100%;
+}
+/* На планшете и узком рабочем окне все показатели истории видны без прокрутки по горизонтали. */
+@media (max-width: 1200px) {
+  .diagnostics-table-scroll {
+    overflow: visible;
+  }
+  .diagnostics-table {
+    display: block;
+  }
+  .diagnostics-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+    border: 0;
+  }
+  .diagnostics-table tbody {
+    display: grid;
+    gap: 12px;
+    padding: 16px;
+  }
+  .diagnostics-table tbody tr {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px 16px;
+    padding: 16px;
+    border: 1px solid var(--line);
+    border-radius: var(--r-md);
+  }
+  .diagnostics-table tbody th,
+  .diagnostics-table tbody td {
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    text-align: left;
+  }
+  .diagnostics-table tbody th {
+    grid-column: 1 / -1;
+  }
+  .diagnostics-table tbody td {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
+  .diagnostics-table tbody td:last-child {
+    grid-column: 1 / -1;
+  }
+  .diagnostics-cell-label {
+    display: block;
+    font-size: var(--fs-xs);
+    color: var(--fg-3);
+    font-weight: 400;
+  }
+  .diagnostics-cell-value {
+    font-size: var(--fs-md);
+    font-weight: 500;
+  }
 }
 @media (max-width: 700px) {
   .check-run-actions {
@@ -2070,7 +2177,11 @@ textarea:focus {
   }
   .diagnostics-table th,
   .diagnostics-table td {
-    padding: 10px 14px;
+    padding: 0;
+  }
+  .diagnostics-download-actions,
+  .diagnostics-download-actions > .button {
+    width: 100%;
   }
   .check-fingerprint dl {
     grid-template-columns: minmax(0, 1fr);

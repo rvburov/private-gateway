@@ -10,9 +10,7 @@ afterEach(() => {
 });
 
 describe("diagnostic report download", () => {
-  it.each([
-    ["privacy", "json"], ["server", "json"], ["privacy", "txt"], ["server", "txt"],
-  ] as const)("builds the %s %s report on click with portable bytes and lets Safari open it", async (kind, format) => {
+  it.each(["privacy", "server"] as const)("offers one readable %s report with portable bytes and lets Safari open it", async (kind) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-10-23T10:00:00Z"));
     const create = vi.fn((_blob: Blob | MediaSource) => "blob:local-diagnostic-report");
@@ -28,16 +26,15 @@ describe("diagnostic report download", () => {
     }));
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       expect(this.isConnected).toBe(true);
-      expect(this.download).toMatch(new RegExp(`^private-gateway-${kind}-diagnostics-.*\\.${format}$`));
+      expect(this.download).toMatch(new RegExp(`^private-gateway-${kind}-diagnostics-.*\\.txt$`));
     });
     render(<DiagnosticReportDownload kind={kind} report={report} checkedAt={Date.now()} busy={false} />);
     expect(report).not.toHaveBeenCalled();
     expect(create).not.toHaveBeenCalled();
+    expect(document.querySelectorAll(".diagnostics-download-actions button")).toHaveLength(1);
+    expect(screen.queryByText(/JSON/)).toBeNull();
     vi.advanceTimersByTime(5 * 60_000);
-    fireEvent.click(screen.getByRole("button", {
-      name: format === "txt" ? "Скачать отчёт по-русски"
-        : kind === "privacy" ? "Скачать отчёт безопасности JSON" : "Скачать отчёт сервера JSON",
-    }));
+    fireEvent.click(screen.getByRole("button", { name: "Скачать отчёт" }));
     expect(report).toHaveBeenCalledOnce();
     expect(report.mock.results[0].value.exportedAt).toBe("2026-10-23T10:05:00.000Z");
     expect(create).toHaveBeenCalledOnce();
@@ -47,7 +44,7 @@ describe("diagnostic report download", () => {
     vi.advanceTimersByTime(1_000);
     expect(revoke).toHaveBeenCalledWith("blob:local-diagnostic-report");
     const blob = create.mock.calls[0][0] as Blob;
-    expect(blob.type).toBe(format === "txt" ? "text/plain;charset=utf-8" : "application/json;charset=utf-8");
+    expect(blob.type).toBe("text/plain;charset=utf-8");
     const reader = new FileReader();
     const read = new Promise<Uint8Array>((resolve, reject) => {
       reader.onload = () => resolve(new Uint8Array(reader.result as ArrayBuffer));
@@ -56,17 +53,22 @@ describe("diagnostic report download", () => {
     reader.readAsArrayBuffer(blob);
     await vi.runAllTimersAsync();
     const bytes = await read;
-    if (format === "txt") {
-      expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
-      const text = new TextDecoder("utf-8").decode(bytes);
-      expect(text).toContain(kind === "privacy" ? "Русский текст, ё и 🙂." : "PostgreSQL отвечает.");
-      expect(text).not.toContain("Р‘Р°Р·Р°");
-    } else {
-      expect([...bytes].every((byte) => byte < 128)).toBe(true);
-      expect(bytes[0]).toBe(0x7b);
-      const decoded = JSON.parse(new TextDecoder("windows-1251").decode(bytes));
-      expect(decoded.server[0].title).toBe("База данных");
-      expect(decoded.browser[0].detail).toContain("Русский текст, ё и 🙂.");
-    }
+    expect([...bytes.slice(0, 3)]).toEqual([0xef, 0xbb, 0xbf]);
+    const text = new TextDecoder("utf-8").decode(bytes);
+    expect(text).toContain(kind === "privacy" ? "Русский текст, ё и 🙂." : "PostgreSQL отвечает.");
+    expect(text).not.toContain("Р‘Р°Р·Р°");
+  });
+
+  it("disables the only download action during a run and keeps failures visible", () => {
+    const report = vi.fn(() => { throw new Error("fixture failure"); });
+    const view = render(<DiagnosticReportDownload kind="server" report={report} checkedAt={Date.now()} busy />);
+    const download = screen.getByRole("button", { name: "Скачать отчёт" }) as HTMLButtonElement;
+    expect(download.disabled).toBe(true);
+    fireEvent.click(download);
+    expect(report).not.toHaveBeenCalled();
+    view.rerender(<DiagnosticReportDownload kind="server" report={report} checkedAt={Date.now()} busy={false} />);
+    fireEvent.click(download);
+    expect(report).toHaveBeenCalledOnce();
+    expect(screen.getByRole("alert").textContent).toContain("Не удалось скачать отчёт в этом браузере.");
   });
 });

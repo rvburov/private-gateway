@@ -1,8 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { AdvancedDiagnostics } from "./AdvancedDiagnostics";
 import type { ServerCheckRun } from "./ServerDiagnostics";
-import type { PathMeasurement, ServerSnapshot } from "./performance";
+import { savePerformanceHistory, type PathMeasurement, type ServerSnapshot } from "./performance";
 
 function snapshot(at: string, vpnAt: string, usage: number): ServerSnapshot {
   const cgroup = { memoryBytes: 1024, memoryLimitBytes: 2048, cpuQuotaCores: 1, cpuUsageUsec: usage, cpuThrottledUsec: usage / 10, cpuThrottledPeriods: 1 };
@@ -46,6 +46,28 @@ afterEach(() => {
 });
 
 describe("extended diagnostics", () => {
+  it("keeps the complete history in one semantic table with labelled mobile values", () => {
+    const before = snapshot("2026-10-23T10:00:00Z", "2026-10-23T10:00:00Z", 1_000_000);
+    const after = snapshot("2026-10-23T10:00:10Z", "2026-10-23T10:00:10Z", 2_000_000);
+    const check = result(before, after);
+    savePerformanceHistory(check.performance!);
+    render(<AdvancedDiagnostics result={check} busy={false} />);
+    const tables = screen.getAllByRole("table");
+    expect(tables).toHaveLength(1);
+    const entry = tables[0].querySelector("tbody tr") as HTMLElement;
+    const cells = within(entry).getAllByRole("cell");
+    expect(cells.map((cell) => cell.getAttribute("data-label"))).toEqual([
+      "Получение", "Отправка", "Задержка интернета", "Задержка панели", "Ошибки HTTP в интернете",
+    ]);
+    expect(cells.map((cell) => cell.querySelector(".diagnostics-cell-value")?.textContent)).toEqual([
+      "15 Мбит/с", "3 Мбит/с", "12 мс", "12 мс", "0",
+    ]);
+    expect(within(entry).getByRole("rowheader").textContent).toContain("Wi-Fi с VPN");
+    fireEvent.click(screen.getByRole("button", { name: "Очистить историю" }));
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.getByText("Пока нет сохранённых замеров.")).toBeTruthy();
+  });
+
   it("does not show zero CPU or traffic for repeated worker snapshots", () => {
     const first = snapshot("2026-10-23T10:00:00Z", "2026-10-23T10:00:00Z", 1_000_000);
     const last = snapshot("2026-10-23T10:00:10Z", "2026-10-23T10:00:00Z", 1_000_000);
