@@ -1,4 +1,4 @@
-import { Fragment, useState } from "react";
+import { useState } from "react";
 import { Icon } from "./icons";
 import { clientSteps } from "./GuideDetails";
 
@@ -305,12 +305,12 @@ export function detectPlatform(agent = navigator.userAgent, touchPoints = naviga
 
 function Source({ app }: { app: ClientApp }) {
   return app.link ? (
-    <a className="text-button" href={app.link} target="_blank" rel="noopener noreferrer">
+    <a className="button secondary-button guide-source" href={app.link} target="_blank" rel="noopener noreferrer">
       {app.source}
       <Icon name="external" size={15} />
     </a>
   ) : (
-    <span className="secondary small">{app.source}</span>
+    <span className="secondary small guide-source">{app.source}</span>
   );
 }
 
@@ -365,7 +365,7 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
           </div>
           {selectedClient ? (
             <div className="guide-client-detail">
-              <button type="button" className="text-button" onClick={() => setClientName(null)}>
+              <button type="button" className="button secondary-button" onClick={() => setClientName(null)}>
                 ← Все приложения для {platform.label}
               </button>
               <h3 className="guide-subtitle">{platform.label} → {selectedClient.name}</h3>
@@ -383,8 +383,10 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
                 <div className="guide-bat">
                   <h4>Программы вне браузера</h4>
                   <p>При подключённом Hiddify эти файлы задают локальный прокси 127.0.0.1:2334 для программ, которые поддерживают HTTP_PROXY и HTTPS_PROXY. После изменения постоянных переменных откройте новое окно программы. Это не системный VPN и не kill switch.</p>
-                  <a className="button secondary-button" href="/downloads/hiddify-proxy-on.bat" download="hiddify-proxy-on.bat">Скачать включение прокси</a>{" "}
-                  <a className="button secondary-button" href="/downloads/hiddify-proxy-off.bat" download="hiddify-proxy-off.bat">Скачать выключение прокси</a>
+                  <div className="button-group">
+                    <a className="button secondary-button" href="/downloads/hiddify-proxy-on.bat" download="hiddify-proxy-on.bat">Скачать включение прокси</a>
+                    <a className="button secondary-button" href="/downloads/hiddify-proxy-off.bat" download="hiddify-proxy-off.bat">Скачать выключение прокси</a>
+                  </div>
                   <details><summary>Показать содержимое BAT-файлов</summary>
                     <h5>hiddify-proxy-on.bat</h5>
                     <pre>{`@echo off\nchcp 65001 >nul\nset "HTTP_PROXY=http://127.0.0.1:2334"\nset "HTTPS_PROXY=http://127.0.0.1:2334"\nsetx HTTP_PROXY "%HTTP_PROXY%" >nul\nsetx HTTPS_PROXY "%HTTPS_PROXY%" >nul\necho Прокси включён. IP в этом окне:\ncurl.exe -4 -sS --max-time 15 https://ipinfo.io\necho(\npause`}</pre>
@@ -404,25 +406,27 @@ export function Guide({ onCheck }: { onCheck?: () => void }) {
                   {index + 1}
                 </span>
                 <div>
-                  <button type="button" className="guide-client-button" onClick={() => setClientName(app.name)}>{app.name} → Инструкция</button>
+                  <button type="button" className="button secondary-button guide-client-button" onClick={() => setClientName(app.name)}>{app.name} → Инструкция</button>
                   <span>{app.note}</span>
                 </div>
                 <Source app={app} />
               </li>
             ))}
           </ol>
-          <p className="guide-others">
-            Тоже подходят:{" "}
-            {platform.others.map((app, index) => (
-              <Fragment key={app.name}>
-                {index > 0 && ", "}
-                <button type="button" className="guide-client-button" onClick={() => setClientName(app.name)}>{app.name}</button>{" "}
-                ({app.note})
-                {app.link && <> · <Source app={app} /></>}
-              </Fragment>
-            ))}
-            .
-          </p>
+          <div className="guide-others">
+            <p>Тоже подходят:</p>
+            <ul className="guide-other-apps">
+              {platform.others.map((app) => (
+                <li key={app.name}>
+                  <div>
+                    <button type="button" className="button secondary-button guide-client-button" onClick={() => setClientName(app.name)}>{app.name}</button>
+                    <p>{app.note}</p>
+                  </div>
+                  {app.link && <Source app={app} />}
+                </li>
+              ))}
+            </ul>
+          </div>
           </>
           )}
           {onCheck && (

@@ -272,14 +272,14 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
             {!device.revoked_at && (
               <>
                 <button
-                  className="text-button"
+                  className="button secondary-button"
                   onClick={() => void reveal(device)}
                   disabled={profilePending !== null}
                 >
                   {profilePending === device.id ? "Загрузка…" : "Профиль"}
                 </button>
                 <button
-                  className="text-button danger-text"
+                  className="button secondary-button danger-text"
                   onClick={() => {
                     revoke.reset();
                     setRevoking(device);
@@ -291,7 +291,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
             )}
             {device.revoked_at && (
               <button
-                className="text-button danger-text"
+                className="button secondary-button danger-text"
                 onClick={() => {
                   removeDevice.reset();
                   setDeleting(device);
@@ -513,7 +513,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
                 <h2>Устройства</h2>
                 <p>Последние добавленные подключения</p>
               </div>
-              <button className="text-button" onClick={() => navigate("devices")}>
+              <button className="button secondary-button" onClick={() => navigate("devices")}>
                 Все устройства
                 <Icon name="arrow" size={16} />
               </button>

@@ -637,7 +637,7 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
           {sites.map((site) => (
             <li key={site.name}>
               <div>
-                <a href={site.url} target="_blank" rel="noopener noreferrer">
+                <a className="button secondary-button" href={site.url} target="_blank" rel="noopener noreferrer">
                   {site.name}
                   <Icon name="external" size={14} />
                 </a>

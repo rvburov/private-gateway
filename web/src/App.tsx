@@ -277,7 +277,7 @@ export default function App() {
             <Icon name="arrow" size={18} />
           </button>
           {loginStep !== "password" && (
-            <button type="button" className="login-back" onClick={backToPassword}>
+            <button type="button" className="button secondary-button login-back" onClick={backToPassword}>
               ← Назад к логину
             </button>
           )}

@@ -83,6 +83,30 @@ export function Shell({
   children: ReactNode;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
+  const tabbar = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const element = tabbar.current;
+    if (!element) return;
+    const style = document.documentElement.style;
+    const previous = style.getPropertyValue("--mobile-nav-height");
+    const update = () => {
+      const height = element.getBoundingClientRect().height;
+      if (height > 0) style.setProperty("--mobile-nav-height", `${Math.ceil(height)}px`);
+      else style.removeProperty("--mobile-nav-height");
+    };
+    update();
+    const observer = typeof ResizeObserver === "function" ? new ResizeObserver(update) : undefined;
+    // Safe area меняет отступы меню, поэтому отслеживаем всю рамку, а не только содержимое.
+    try { observer?.observe(element, { box: "border-box" }); }
+    catch { observer?.observe(element); }
+    window.addEventListener("resize", update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+      if (previous) style.setProperty("--mobile-nav-height", previous);
+      else style.removeProperty("--mobile-nav-height");
+    };
+  }, []);
   const moreButton = useRef<HTMLButtonElement>(null);
   const closeMore = useCallback(() => {
     setMoreOpen(false);
@@ -164,7 +188,7 @@ export function Shell({
           {children}
         </main>
       </div>
-      <nav className="tabbar" aria-label="Нижнее меню">
+      <nav ref={tabbar} className="tabbar" aria-label="Нижнее меню">
         {tabItems.map(tab)}
         <button type="button" className="tab tab-primary" onClick={onAdd} disabled={!canAdd}>
           <span className="tab-plus">

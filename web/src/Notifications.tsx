@@ -158,7 +158,7 @@ export function Notifications({ token, onInstall }: { token: string; onInstall?:
         <ErrorNotice error={subscriptions.error} />
         {known.length ? <ul className="notifications-list">{known.map((item) => <li className="notification-item" key={item.id}>
           <div className="notification-content"><h3>{item.device || "Браузер"}{item.id === current?.id ? " · это устройство" : ""}</h3><p>Подключено {date(item.created_at)}</p></div>
-          <button className="text-button" disabled={busy} onClick={() => pushAction.mutate({ action: item.id === current?.id ? "disable" : "revoke", item })} aria-label={`Отключить уведомления: ${item.device || "Браузер"}`}>Отключить</button>
+          <button className="button secondary-button" disabled={busy} onClick={() => pushAction.mutate({ action: item.id === current?.id ? "disable" : "revoke", item })} aria-label={`Отключить уведомления: ${item.device || "Браузер"}`}>Отключить</button>
         </li>)}</ul> : <p className="card-body hint">{subscriptions.isPending ? "Получаем устройства…" : "Уведомления ещё нигде не включены."}</p>}
       </section>
     </div>

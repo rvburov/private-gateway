@@ -157,7 +157,7 @@ export function ProfileDialog({
             Ссылку можно передать человеку, который будет подключаться. «Отозвать» отключает и
             ссылку, и доступ.
           </p>
-          <button type="button" className="text-button" onClick={onGuide}>
+          <button type="button" className="button secondary-button" onClick={onGuide}>
             Как добавить ссылку в приложение
             <Icon name="arrow" size={16} />
           </button>
