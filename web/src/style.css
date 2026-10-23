@@ -447,6 +447,71 @@ details[open] > summary {
   color: var(--fg-3);
 }
 
+/* Сведения об адресе: короткое резюме и подробности по запросу. */
+.ip-reputation-summary,
+.ip-reputation-details dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 24px;
+}
+.ip-reputation-summary > div,
+.ip-reputation-details dl > div {
+  min-width: 0;
+}
+.ip-reputation dt {
+  margin-bottom: 4px;
+  color: var(--fg-3);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.ip-reputation dd {
+  color: var(--fg);
+  font-size: var(--fs-md);
+  font-weight: 500;
+  overflow-wrap: anywhere;
+}
+.ip-reputation-source {
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+.ip-reputation-details {
+  margin-top: 18px;
+}
+.ip-reputation-details dl {
+  margin-top: 16px;
+}
+.ip-reputation .button-group {
+  margin-top: 18px;
+}
+.card-body.ip-lookup-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 14px;
+}
+.ip-lookup-field {
+  min-width: 0;
+}
+.ip-lookup-field label {
+  margin-top: 0;
+}
+.ip-lookup-form > .notice,
+.ip-lookup-form > .hint {
+  grid-column: 1 / -1;
+}
+@media (max-width: 700px) {
+  .ip-reputation-summary,
+  .ip-reputation-details dl,
+  .card-body.ip-lookup-form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .ip-reputation-summary,
+  .ip-reputation-details dl {
+    gap: 14px;
+  }
+}
+
 /* Каркас */
 .shell {
   min-height: 100vh;

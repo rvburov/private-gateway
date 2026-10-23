@@ -7,6 +7,11 @@ import { DiagnosticProgress, type DiagnosticStage } from "./DiagnosticProgress";
 import { HelpTip } from "./HelpTip";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
+import { IPReputation } from "./IPReputation";
+import { IPLookupManual, type ManualIPLookupState } from "./IPLookupManual";
+import type { IPLookupResult } from "./ipLookup";
+import { lookupIP } from "./ipLookupClient";
+import { manualIPDiagnosticReport } from "./ipLookupText";
 
 export type { CheckStatus, CheckResult } from "./CheckResults";
 
@@ -36,6 +41,7 @@ export interface CheckRun {
   browserFacts: BrowserFacts;
   device: DeviceDiagnostics;
   checkedAt: number;
+  ipLookups?: IPLookupResult[];
 }
 
 // Внешние сервисы проверки. ipleak.net сообщает адрес и сеть по IPv4 и по IPv6, узнаёт сеть
@@ -50,6 +56,12 @@ const publicDNS = /google|cloudflare|quad9|opendns|cisco|adguard|nextdns|control
 const addressPattern = /^[0-9a-f:.]+$/i;
 
 const sites = [
+  {
+    name: "IP2Location",
+    url: "https://www.ip2location.com/demo",
+    checks: "География, провайдер, тип сети и отметки VPN или прокси в базе.",
+    expect: "Сведения относятся к проверяемому IP; отсутствие отметки VPN не гарантирует доступ к сайтам.",
+  },
   {
     name: "ipleak.net",
     url: "https://ipleak.net/",
@@ -494,7 +506,7 @@ async function browserFacts(signal: AbortSignal, step: (label: string) => void):
   };
 }
 
-async function runChecks(nodeHost: string | undefined, signal: AbortSignal, onProgress: (stage: DiagnosticStage) => void): Promise<CheckRun> {
+async function runChecks(token: string, nodeHost: string | undefined, signal: AbortSignal, onProgress: (stage: DiagnosticStage) => void): Promise<CheckRun> {
   signal.throwIfAborted();
   let completed = 0;
   const step = (label: string) => {
@@ -506,14 +518,18 @@ async function runChecks(nodeHost: string | undefined, signal: AbortSignal, onPr
   step("Проверяем IP, DNS и WebRTC…");
   const facts = await browserFacts(signal, step);
   signal.throwIfAborted();
+  onProgress({ label: "Уточняем сведения об IP…", percent: 85 });
+  const measuredIPs = [...new Set([facts.ipv4?.ip, facts.ipv6?.ip].filter((ip): ip is string => !!ip))];
+  const ipLookups = await Promise.all(measuredIPs.map((ip) => lookupIP(token, ip, signal)));
+  signal.throwIfAborted();
   const serverIP = nodeHost && isIPAddress(nodeHost) ? nodeHost : null;
-  const result = { browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, checkedAt: Date.now() };
+  const result = { browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, ipLookups, checkedAt: Date.now() };
   step("Проверка завершена.");
   return result;
 }
 
 // Отчёт безопасности не включает замеры скорости, параметры VPS или сеанс входа.
-export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string) {
+export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string, manualIPLookup?: IPLookupResult | null) {
   return {
     format: "private-gateway-privacy-diagnostics",
     version: 1,
@@ -523,16 +539,19 @@ export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string) {
     browser: result.browser,
     browserFacts: result.browserFacts,
     device: result.device,
+    ipLookups: result.ipLookups ?? [],
+    manualIPLookup: manualIPLookup ?? null,
   };
 }
 
-export function Checks({ nodeHost }: { nodeHost?: string }) {
+export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }) {
   const client = useQueryClient();
+  const [manual, setManual] = useState<ManualIPLookupState>({ data: undefined, checkedAt: 0, busy: false });
   const [stopped, setStopped] = useState(false);
   const [progress, setProgress] = useState<DiagnosticStage>({ label: "Начинаем проверку…", percent: 0 });
   const run = useQuery({
     queryKey: ["privacy-checks"],
-    queryFn: ({ signal }) => runChecks(nodeHost, signal, setProgress),
+    queryFn: ({ signal }) => runChecks(token, nodeHost, signal, setProgress),
     enabled: false,
     retry: false,
     staleTime: Infinity,
@@ -551,6 +570,7 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
             <HelpTip label="О проверке безопасности">
               <p>Проверяем IP, DNS, IPv6, WebRTC, часовой пояс и сведения об устройстве, доступные сайтам. Скорость и состояние VPS — в разделе «Сервер».</p>
               <p>Проверка запускается только по кнопке на этом устройстве. Браузер обращается к ipleak.net (AirVPN) и STUN-серверам Google и Cloudflare. Они увидят внешний IP; токен входа и VPN-профиль им не передаются.</p>
+              <p>Измеренные IPv4 и IPv6 передаются через API панели в IP2Location.io для справки о сети и репутации. Ключ сервиса хранится на сервере.</p>
               <p>Процент показывает завершённые этапы, а не оставшееся время. 100% означает, что проверка закончена; её результат смотрите ниже.</p>
             </HelpTip>
           </div>
@@ -587,7 +607,7 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
                 ? `Найдено проблем: ${problems}${warnings ? `, замечаний: ${warnings}` : ""}. Подробности и что сделать — ниже.`
                 : warnings
                   ? `Проблем нет, замечаний: ${warnings}. Посмотрите их ниже.`
-                  : "По выполненным проверкам проблем не найдено."}{" "}
+                  : "По выполненным сетевым проверкам проблем не найдено."}{" "}
               Проверено в {new Date(result.checkedAt).toLocaleTimeString("ru-RU", { timeStyle: "short" })}.
             </span>
           </div>
@@ -620,16 +640,26 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
           </details>
         )}
       </section>
-      {result && <DiagnosticReportDownload
+      {result?.ipLookups?.map((lookup) => (
+        <IPReputation key={lookup.ip} result={lookup} title="IP и репутация"
+          description={`Текущий выход браузера по ${lookup.ip.includes(":") ? "IPv6" : "IPv4"}.`} />
+      ))}
+      {result && !result.ipLookups?.length && (
+        <IPReputation result={null} description="Текущий выход браузера не определён. Повторите проверку безопасности." />
+      )}
+      <IPLookupManual token={token} scope="privacy" busy={run.isFetching} onStateChange={setManual} />
+      {(result || manual.data) && <DiagnosticReportDownload
         kind="privacy"
-        report={() => privacyDiagnosticReport(result, window.location.origin)}
-        checkedAt={result.checkedAt}
-        busy={run.isFetching}
+        report={() => result
+          ? privacyDiagnosticReport(result, window.location.origin, manual.data)
+          : manualIPDiagnosticReport("privacy", manual.data!, manual.checkedAt, window.location.origin)}
+        checkedAt={result?.checkedAt ?? manual.checkedAt}
+        busy={run.isFetching || manual.busy}
       />}
       <section className="card">
         <div className="card-heading">
           <div>
-            <h2>10 сайтов для проверки</h2>
+            <h2>{sites.length} сайтов для проверки</h2>
             <p>Откройте с включённым VPN на устройстве, которое проверяете.</p>
           </div>
         </div>

@@ -37,13 +37,14 @@ type Browser interface {
 	Stop(context.Context) (browser.Status, error)
 }
 type Options struct {
-	Context        context.Context
-	Token          string
-	WebDir         string
-	XrayConfigured bool
-	StatsAddress   string
-	StatsBinary    string
-	Checks         ServerChecks
+	Context           context.Context
+	Token             string
+	WebDir            string
+	XrayConfigured    bool
+	StatsAddress      string
+	StatsBinary       string
+	Checks            ServerChecks
+	IP2LocationAPIKey string
 }
 type Server struct {
 	store          *storage.Store
@@ -58,6 +59,7 @@ type Server struct {
 	pending        map[string]*pendingLogin
 	loginAttempts  map[string]loginAttempts
 	notifications  *notificationService
+	ipLookups      *ipLookupService
 }
 
 type loginAttempts struct {
@@ -68,6 +70,7 @@ type loginAttempts struct {
 func New(store *storage.Store, xray Xray, browser Browser, options Options) http.Handler {
 	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]adminSession), browserTickets: make(map[string]string), pending: make(map[string]*pendingLogin), loginAttempts: make(map[string]loginAttempts)}
 	s.startNotifications(options.Context)
+	s.ipLookups = newIPLookupService(options.IP2LocationAPIKey)
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -117,6 +120,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Delete("/notifications/push-subscriptions/{id}", s.notificationUnsubscribe)
 			r.Post("/notifications/test", s.notificationTest)
 			r.Get("/checks", s.serverChecks)
+			r.Post("/ip-lookup", s.ipLookup)
 			r.Get("/checks/performance/ping", s.performancePing)
 			r.Get("/checks/performance/download", s.performanceDownload)
 			r.Post("/checks/performance/upload", s.performanceUpload)

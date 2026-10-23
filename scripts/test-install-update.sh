@@ -104,8 +104,9 @@ import hashlib
 from pathlib import Path
 import sys
 values = dict(line.split('=', 1) for line in Path(sys.argv[1]).read_text().splitlines() if '=' in line)
+values.setdefault('GATEWAY_IP2LOCATION_API_KEY', '')
 names = ('GATEWAY_MASTER_KEY', 'GATEWAY_REALITY_PRIVATE_KEY', 'GATEWAY_SHORT_ID',
-         'GATEWAY_API_TOKEN', 'POSTGRES_PASSWORD', 'BROWSER_WORKER_TOKEN')
+         'GATEWAY_API_TOKEN', 'POSTGRES_PASSWORD', 'BROWSER_WORKER_TOKEN', 'GATEWAY_IP2LOCATION_API_KEY')
 print(hashlib.sha256('\n'.join(values[name] for name in names).encode()).hexdigest())
 PY
   compose exec -T postgres psql -At -U gateway -d gateway -c \
@@ -121,6 +122,39 @@ http_redirect() {
 }
 check_identity() {
   [[ $(identity) == "$saved_identity" ]] || fail 'The device credentials, subscription or server keys changed.'
+}
+# Без ключа расширенная диагностика сообщает о настройке, сохраняя исправный API. Тестовый
+# заменитель ниже проверяет передачу только в API и сохранение при обновлениях, без вызовов провайдера.
+ip_lookup_configuration() {
+  compose exec -T api python3 - "${1:-empty}" <<'PY'
+import json
+import os
+import sys
+import urllib.request
+
+key = os.environ.get('GATEWAY_IP2LOCATION_API_KEY', '')
+if sys.argv[1] == 'configured':
+    assert key == 'integration-placeholder-not-a-real-key', 'The optional IP lookup key was not preserved.'
+else:
+    assert not key, 'A fresh installation unexpectedly configured an IP lookup key.'
+    request = urllib.request.Request(
+        'http://127.0.0.1:8080/api/v1/ip-lookup',
+        data=json.dumps({'ip': '8.8.8.8'}).encode(),
+        headers={'Authorization': 'Bearer ' + os.environ['GATEWAY_API_TOKEN'], 'Content-Type': 'application/json'},
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=5) as response:
+        assert response.status == 200
+        result = json.load(response)
+    assert result.get('status') == 'not_configured' and result.get('data') is None
+    assert result.get('ip') == '8.8.8.8' and result.get('source') == 'IP2Location.io'
+PY
+  compose config --format json | python3 -c '
+import json, sys
+services = json.load(sys.stdin)["services"]
+assert all("GATEWAY_IP2LOCATION_API_KEY" not in value.get("environment", {})
+           for name, value in services.items() if name != "api"), "The IP lookup key escaped the API container."
+'
 }
 # Проверяем установленный worker, общий файл состояния и чтение его API. Токен остаётся
 # внутри уже настроенного API-контейнера; ни ответ, ни переменные окружения не печатаются.
@@ -350,6 +384,15 @@ compose exec -T api /usr/local/bin/gatewayctl device add installation-test --nod
 compose exec -T api /usr/local/bin/gatewayctl config apply
 # Экспорт при первом smoke заполняет хеш подписки; снимок должен включать его.
 vless_works || fail 'Initial VLESS traffic is unavailable.'
+ip_lookup_configuration
+# Публичная тестовая строка, не действующий ключ. До следующего обновления API ещё работает без неё.
+sudo python3 - "$env_file" <<'PY'
+from pathlib import Path
+import sys
+
+with Path(sys.argv[1]).open('a') as output:
+    output.write('GATEWAY_IP2LOCATION_API_KEY=integration-placeholder-not-a-real-key\n')
+PY
 saved_identity=$(identity)
 check_stack
 
@@ -361,6 +404,7 @@ for service in postgres browser xray caddy edge; do
   [[ $(container "$service") == "${before[$service]}" ]] || fail "$service was recreated without a change."
 done
 [[ $(container api) != "${before[api]}" ]] || fail 'The changed API image was not installed.'
+ip_lookup_configuration configured
 check_stack
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/repeat-b.log"
 grep -Fx "Installed release verified: $version_b; panel=$(public_port panel); vpn=$(public_port vpn); updater=current" "$work/repeat-b.log" \
@@ -415,6 +459,7 @@ compose down --volumes --remove-orphans
 sudo rm -rf /etc/private-gateway-docker /opt/private-gateway-docker /var/lib/private-gateway-docker/xray
 seed_ca
 bootstrap "$version_i" "$work/release-3.tar.gz" 2>&1 | tee "$work/fresh8443.log"
+ip_lookup_configuration
 [[ $(public_port panel) == 8443 && $(public_port vpn) == 8443 ]] || fail 'Fresh installation did not select8443.'
 panel_ready
 browser_protected

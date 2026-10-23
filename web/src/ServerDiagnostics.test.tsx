@@ -19,7 +19,7 @@ const performanceResult = (): PerformanceRun => ({
   checkedAt: Date.parse("2026-10-23T10:00:00Z"), mode: "current",
   panel: measuredPath(), internet: measuredPath(), serverBefore: null, serverAfter: null, serverError: null,
 });
-const health: { checks: CheckResult[] } = { checks: [{ id: "traffic", title: "VLESS-трафик", status: "ok", detail: "VLESS работает, выход — 203.0.113.7.", ip: "203.0.113.7" }] };
+const health: { checks: CheckResult[] } = { checks: [{ id: "traffic", title: "VLESS-трафик", status: "ok", detail: "VLESS работает, выход — 8.8.4.4.", ip: "8.8.4.4" }] };
 const clients: QueryClient[] = [];
 let fetchMock: ReturnType<typeof vi.fn>;
 
@@ -33,7 +33,9 @@ function setup() {
 beforeEach(() => {
   localStorage.clear();
   vi.mocked(runPerformance).mockReset().mockImplementation(async (_token, mode) => ({ ...performanceResult(), mode }));
-  fetchMock = vi.fn().mockImplementation(async () => Response.json(health));
+  fetchMock = vi.fn().mockImplementation(async (path: string, options: RequestInit) => path === "/api/v1/ip-lookup"
+    ? Response.json({ ip: JSON.parse(options.body as string).ip, source: "IP2Location.io", status: "not_configured", checkedAt: null, detail: "Сервис сведений об IP не настроен.", data: null })
+    : Response.json(health));
   vi.stubGlobal("fetch", fetchMock);
 });
 
@@ -60,7 +62,7 @@ describe("server diagnostics", () => {
     fireEvent.change(screen.getByLabelText("Как подключены сейчас"), { target: { value: "mobile-vpn" } });
     fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
     await screen.findByRole("button", { name: "Проверить сервер снова" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/checks");
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization")).toBe("Bearer admin-test-session");
     expect(runPerformance).toHaveBeenCalledWith("admin-test-session", "mobile-vpn", expect.any(AbortSignal), expect.any(Function));
@@ -70,11 +72,11 @@ describe("server diagnostics", () => {
     const saved = localStorage.getItem("private-gateway-performance-v1");
     expect(saved).toContain("mobile-vpn");
     expect(JSON.parse(saved || "[]")).toHaveLength(2);
-    expect(saved).not.toMatch(/admin-test-session|203\.0\.113\.7/);
+    expect(saved).not.toMatch(/admin-test-session|8\.8\.4\.4/);
     view.unmount();
     render(component);
     expect(screen.getByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(runPerformance).toHaveBeenCalledTimes(1);
   });
 
@@ -197,7 +199,7 @@ describe("server diagnostics", () => {
     const report = serverDiagnosticReport(run, "https://gateway.example:8443");
     expect(report.format).toBe("private-gateway-server-diagnostics");
     expect(report.panelOrigin).toBe("https://gateway.example:8443");
-    expect(JSON.stringify(report)).toContain("203.0.113.7");
+    expect(JSON.stringify(report)).toContain("8.8.4.4");
     expect(JSON.stringify(report)).not.toMatch(/client-private-ip|private-device-fingerprint|session-secret|profile-secret|subscription-secret|browserFacts|device/);
   });
 });

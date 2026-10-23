@@ -725,6 +725,48 @@ paths:
         '404': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /api/v1/ip-lookup:
+    post:
+      operationId: lookupPublicIP
+      description: >-
+        Получить сведения о явно переданном публичном IPv4 или IPv6 через серверный
+        IP2Location.io. Не определяет адрес вызывающего браузера или сервера сам по себе.
+        Ключ берётся только из GATEWAY_IP2LOCATION_API_KEY на сервере; без него внешний
+        запрос не выполняется. Все штатные результаты, включая недоступность и лимит,
+        возвращаются с HTTP 200 и явным status. Внешний запрос ограничен 6 секундами,
+        ответ — 128 КиБ, редиректы запрещены. Общие счётчики процесса API: 12 запросов
+        в минутном окне, 200 в 24-часовом окне, не более двух запросов одновременно;
+        перезапуск сбрасывает счётчики. История IP и кеш ответов на сервере не ведутся.
+        Условия тарифа, стоимость и набор полей определяет провайдер.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [ip]
+              properties:
+                ip:
+                  type: string
+                  description: Публичный IP без URL, порта, zone или имени сайта. Частные, loopback, link-local, служебные и документационные сети отклоняются; IPv4-mapped IPv6 нормализуется в IPv4.
+                  anyOf:
+                    - {format: ipv4}
+                    - {format: ipv6}
+      responses:
+        '200':
+          description: Статус источника и разрешённые сведения; отсутствие данных не означает отрицательный признак прокси.
+          headers:
+            Retry-After:
+              description: При локальном status=rate_limited — число секунд до повторной попытки. Ограничение провайдера может не содержать этого заголовка.
+              schema: {type: integer, minimum: 1}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IPLookupResult'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '415': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
@@ -790,6 +832,211 @@ components:
               running: {type: boolean}
               url: {type: string, format: uri, description: Адрес noVNC по HTTPS под защитой cookie подтверждённого сеанса администратора}
   schemas:
+    IPLookupResult:
+      type: object
+      additionalProperties: false
+      required: [ip, source, status, checkedAt, detail, data]
+      properties:
+        ip: {type: string, description: 'Нормализованный IP из запроса, а не адрес вызывающего клиента.'}
+        source: {type: string, const: IP2Location.io}
+        status: {type: string, enum: [available, partial, not_configured, unavailable, rate_limited], description: available — полный валидный набор; partial — часть
+            полей неизвестна; остальные статусы не содержат данных.}
+        checkedAt: {type: [string, 'null'], format: date-time, description: Время получения валидного результата в UTC RFC3339Nano; при отсутствии data — null.}
+        detail: {type: string, description: 'Безопасное русское пояснение без ключа, полного URL и исходной ошибки провайдера.'}
+        data: {$ref: '#/components/schemas/IPLookupData'}
+      allOf:
+      - if:
+          properties:
+            status:
+              enum: [available, partial]
+        then:
+          properties:
+            checkedAt: {type: string, format: date-time}
+            data: {type: object}
+        else:
+          properties:
+            checkedAt: {type: 'null'}
+            data: {type: 'null'}
+    IPLookupText: {type: [string, 'null'], maxLength: 2048, description: 'Не более 2048 байт UTF-8. Пропуск, пустая строка, «-», управляющие символы или ключ сервиса
+        заменяются на null.'}
+    IPLookupFlag: {type: [boolean, 'null'], description: Только исходный JSON boolean. null — неизвестно; false не подставляется вместо отсутствующего поля.}
+    IPLookupData:
+      type: [object, 'null']
+      additionalProperties: false
+      required: [ip, country_code, country_name, region_name, district, city_name, latitude, longitude, zip_code, time_zone, asn, as, isp, domain, net_speed, idd_code,
+        area_code, weather_station_code, weather_station_name, mcc, mnc, mobile_brand, elevation, usage_type, address_type, ads_category, ads_category_name, as_info,
+        continent, country, region, city, time_zone_info, geotargeting, is_proxy, fraud_score, proxy]
+      properties:
+        ip: {$ref: '#/components/schemas/IPLookupText'}
+        country_code: {$ref: '#/components/schemas/IPLookupText'}
+        country_name: {$ref: '#/components/schemas/IPLookupText'}
+        region_name: {$ref: '#/components/schemas/IPLookupText'}
+        district: {$ref: '#/components/schemas/IPLookupText'}
+        city_name: {$ref: '#/components/schemas/IPLookupText'}
+        latitude: {type: [number, 'null'], minimum: -90, maximum: 90, description: Числовой показатель в указанном диапазоне; числовые строки провайдера нормализуются в JSON number.}
+        longitude: {type: [number, 'null'], minimum: -180, maximum: 180, description: Числовой показатель в указанном диапазоне; числовые строки провайдера нормализуются в JSON number.}
+        zip_code: {$ref: '#/components/schemas/IPLookupText'}
+        time_zone: {$ref: '#/components/schemas/IPLookupText'}
+        asn: {type: [integer, string, 'null'], minimum: 0, maximum: 4294967295, description: Число или исходная числовая строка в указанном диапазоне; неизвестное значение
+            — null.}
+        as: {$ref: '#/components/schemas/IPLookupText'}
+        isp: {$ref: '#/components/schemas/IPLookupText'}
+        domain: {$ref: '#/components/schemas/IPLookupText'}
+        net_speed: {type: [string, 'null'], description: 'Категория соединения в базе, например T1; не измеренная скорость.'}
+        idd_code: {$ref: '#/components/schemas/IPLookupText'}
+        area_code: {$ref: '#/components/schemas/IPLookupText'}
+        weather_station_code: {$ref: '#/components/schemas/IPLookupText'}
+        weather_station_name: {$ref: '#/components/schemas/IPLookupText'}
+        mcc: {$ref: '#/components/schemas/IPLookupText'}
+        mnc: {$ref: '#/components/schemas/IPLookupText'}
+        mobile_brand: {$ref: '#/components/schemas/IPLookupText'}
+        elevation: {type: [number, 'null'], minimum: -1000, maximum: 100000, description: Высота; числовые строки провайдера нормализуются в JSON number.}
+        usage_type: {type: [string, 'null'], description: 'Тип использования адреса, например DCH для дата-центра; сам по себе не означает утечку.'}
+        address_type: {$ref: '#/components/schemas/IPLookupText'}
+        ads_category: {$ref: '#/components/schemas/IPLookupText'}
+        ads_category_name: {$ref: '#/components/schemas/IPLookupText'}
+        as_info:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [as_number, as_name, as_domain, as_usage_type, as_cidr]
+          properties:
+            as_number: {type: [integer, string, 'null'], minimum: 0, maximum: 4294967295, description: Число или исходная числовая строка в указанном диапазоне; неизвестное
+                значение — null.}
+            as_name: {$ref: '#/components/schemas/IPLookupText'}
+            as_domain: {$ref: '#/components/schemas/IPLookupText'}
+            as_usage_type: {$ref: '#/components/schemas/IPLookupText'}
+            as_cidr: {$ref: '#/components/schemas/IPLookupText'}
+        continent:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [name, code, hemisphere, translation]
+          properties:
+            name: {$ref: '#/components/schemas/IPLookupText'}
+            code: {$ref: '#/components/schemas/IPLookupText'}
+            hemisphere:
+              type: [array, 'null']
+              minItems: 1
+              maxItems: 8
+              items: {type: string, minLength: 1, maxLength: 2048}
+            translation:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [lang, value]
+              properties:
+                lang: {$ref: '#/components/schemas/IPLookupText'}
+                value: {$ref: '#/components/schemas/IPLookupText'}
+        country:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [name, alpha3_code, numeric_code, demonym, flag, capital, total_area, population, currency, language, tld, translation]
+          properties:
+            name: {$ref: '#/components/schemas/IPLookupText'}
+            alpha3_code: {$ref: '#/components/schemas/IPLookupText'}
+            numeric_code: {type: [integer, string, 'null'], minimum: 0, maximum: 999, description: Число или исходная числовая строка в указанном диапазоне; неизвестное
+                значение — null.}
+            demonym: {$ref: '#/components/schemas/IPLookupText'}
+            flag: {$ref: '#/components/schemas/IPLookupText'}
+            capital: {$ref: '#/components/schemas/IPLookupText'}
+            total_area: {type: [number, 'null'], minimum: 0, maximum: 1000000000000, description: Площадь страны; числовые строки провайдера нормализуются в JSON number.}
+            population: {type: [integer, 'null'], minimum: 0, maximum: 1000000000000, description: Население; числовые строки провайдера нормализуются в JSON number.}
+            currency:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [code, name, symbol]
+              properties:
+                code: {$ref: '#/components/schemas/IPLookupText'}
+                name: {$ref: '#/components/schemas/IPLookupText'}
+                symbol: {$ref: '#/components/schemas/IPLookupText'}
+            language:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [code, name]
+              properties:
+                code: {$ref: '#/components/schemas/IPLookupText'}
+                name: {$ref: '#/components/schemas/IPLookupText'}
+            tld: {$ref: '#/components/schemas/IPLookupText'}
+            translation:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [lang, value]
+              properties:
+                lang: {$ref: '#/components/schemas/IPLookupText'}
+                value: {$ref: '#/components/schemas/IPLookupText'}
+        region:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [name, code, translation]
+          properties:
+            name: {$ref: '#/components/schemas/IPLookupText'}
+            code: {$ref: '#/components/schemas/IPLookupText'}
+            translation:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [lang, value]
+              properties:
+                lang: {$ref: '#/components/schemas/IPLookupText'}
+                value: {$ref: '#/components/schemas/IPLookupText'}
+        city:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [name, translation]
+          properties:
+            name: {$ref: '#/components/schemas/IPLookupText'}
+            translation:
+              type: [object, 'null']
+              additionalProperties: false
+              required: [lang, value]
+              properties:
+                lang: {$ref: '#/components/schemas/IPLookupText'}
+                value: {$ref: '#/components/schemas/IPLookupText'}
+        time_zone_info:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [olson, current_time, gmt_offset, is_dst, abbreviation, dst_start_date, dst_end_date, sunrise, sunset]
+          properties:
+            olson: {$ref: '#/components/schemas/IPLookupText'}
+            current_time: {$ref: '#/components/schemas/IPLookupText'}
+            gmt_offset: {type: [integer, 'null'], minimum: -86400, maximum: 86400, description: Смещение UTC в секундах; числовые строки провайдера нормализуются в JSON number.}
+            is_dst: {$ref: '#/components/schemas/IPLookupFlag'}
+            abbreviation: {$ref: '#/components/schemas/IPLookupText'}
+            dst_start_date: {$ref: '#/components/schemas/IPLookupText'}
+            dst_end_date: {$ref: '#/components/schemas/IPLookupText'}
+            sunrise: {$ref: '#/components/schemas/IPLookupText'}
+            sunset: {$ref: '#/components/schemas/IPLookupText'}
+        geotargeting:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [metro]
+          properties:
+            metro: {$ref: '#/components/schemas/IPLookupText'}
+        is_proxy: {$ref: '#/components/schemas/IPLookupFlag'}
+        fraud_score: {type: [integer, 'null'], minimum: 0, maximum: 99, description: Оценка риска IP2Location от 0 до 99; не оценка Claude и не гарантия доступа к сайтам.}
+        proxy:
+          type: [object, 'null']
+          additionalProperties: false
+          required: [last_seen, proxy_type, threat, provider, is_vpn, is_tor, is_data_center, is_public_proxy, is_web_proxy, is_web_crawler, is_ai_crawler, is_residential_proxy,
+            is_consumer_privacy_network, is_enterprise_private_network, is_spammer, is_scanner, is_botnet, is_bogon]
+          properties:
+            last_seen: {type: [integer, 'null'], minimum: 0, maximum: 1000000000, description: Давность наблюдения в целых днях; null — неизвестно.}
+            proxy_type: {$ref: '#/components/schemas/IPLookupText'}
+            threat: {$ref: '#/components/schemas/IPLookupText'}
+            provider: {$ref: '#/components/schemas/IPLookupText'}
+            is_vpn: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_tor: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_data_center: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_public_proxy: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_web_proxy: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_web_crawler: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_ai_crawler: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_residential_proxy: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_consumer_privacy_network: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_enterprise_private_network: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_spammer: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_scanner: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_botnet: {$ref: '#/components/schemas/IPLookupFlag'}
+            is_bogon: {$ref: '#/components/schemas/IPLookupFlag'}
+      description: Закрытый набор полей IP2Location.io с исходными именами. Все разрешённые ключи возвращаются; недоступные поля и группы — null. География приблизительна,
+        отметки не доказывают утечки или анонимность.
     Notification:
       type: object
       required: [id, category, title, body, created_at, read_at]

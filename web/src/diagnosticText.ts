@@ -1,3 +1,5 @@
+import { formatIPLookupText } from "./ipLookupText";
+
 type Row = Record<string, unknown>;
 
 const missing = "Недоступно";
@@ -57,6 +59,13 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
   add("Дата проверки", timestamp(source.checkedAt));
   add("Дата скачивания отчёта", timestamp(source.exportedAt));
   add("Адрес панели", text(source.panelOrigin));
+  if (source.mainCheckPerformed === false) {
+    lines.push("", kind === "privacy" ? "Основная проверка безопасности не запускалась." : "Основная проверка сервера не запускалась.");
+    section("Ручная проверка другого IP");
+    lines.push("Введённый адрес; не результат проверки текущего подключения.");
+    lines.push(formatIPLookupText(source.manualIPLookup));
+    return lines.join("\n").trimEnd() + "\n";
+  }
 
   function checks(value: unknown) {
     const items = list(value);
@@ -181,10 +190,16 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
       add(text(fact.label), text(fact.value));
     }
     for (const note of list(device.notes)) if (typeof note === "string") lines.push("", note);
+    section("IP и репутация текущего выхода браузера");
+    const lookups = list(source.ipLookups);
+    if (!lookups.length) lines.push("Сведения об измеренном IP не запрашивались или адрес не определён.");
+    for (const lookup of lookups) lines.push(formatIPLookupText(lookup));
   } else {
     section("Проверки работы сервера");
     checks(source.server);
     error(source.serverError);
+    section("IP выхода, измеренный серверной проверкой VLESS");
+    lines.push(source.serverIPLookup ? formatIPLookupText(source.serverIPLookup) : "Подтверждённый IP выхода недоступен; сведения об адресе не запрашивались.");
     const performance = row(source.performance);
     section("Замеры скорости и задержки");
     if (!Object.keys(performance).length) lines.push("Замеры недоступны.");
@@ -200,6 +215,11 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
     }
     error(source.performanceError);
     lines.push("", "Канал до панели может обходить VPN по исключению клиента. Замер до Cloudflare использует текущее подключение браузера; ближайший узел сервиса может меняться. HTTP-пробы не являются ICMP ping, а один запуск не доказывает замедление VPN оператором.");
+  }
+  if (source.manualIPLookup) {
+    section("Ручная проверка другого IP");
+    lines.push("Введённый адрес; не результат проверки текущего подключения.");
+    lines.push(formatIPLookupText(source.manualIPLookup));
   }
   return lines.join("\n").trimEnd() + "\n";
 }

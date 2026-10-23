@@ -28,6 +28,7 @@ type Config struct {
 	BrowserWorkerURL   string
 	BrowserWorkerToken string
 	BrowserPublicURL   string
+	IP2LocationAPIKey  string
 }
 
 func Load() (Config, error) {
@@ -93,6 +94,7 @@ func Load() (Config, error) {
 	c.BrowserWorkerURL = os.Getenv("GATEWAY_BROWSER_WORKER_URL")
 	c.BrowserWorkerToken = os.Getenv("GATEWAY_BROWSER_WORKER_TOKEN")
 	c.BrowserPublicURL = os.Getenv("GATEWAY_BROWSER_PUBLIC_URL")
+	c.IP2LocationAPIKey = os.Getenv("GATEWAY_IP2LOCATION_API_KEY")
 	return c, nil
 }
 func value(name, fallback string) string {

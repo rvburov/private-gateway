@@ -15,6 +15,11 @@ import {
   type PerformanceRun,
 } from "./performance";
 import { ErrorNotice } from "./ui";
+import { IPReputation } from "./IPReputation";
+import { IPLookupManual, type ManualIPLookupState } from "./IPLookupManual";
+import { isValidPublicIP, type IPLookupResult } from "./ipLookup";
+import { lookupIP } from "./ipLookupClient";
+import { manualIPDiagnosticReport } from "./ipLookupText";
 
 export interface ServerCheckRun {
   server: CheckResult[] | null;
@@ -22,10 +27,11 @@ export interface ServerCheckRun {
   performance: PerformanceRun | null;
   performanceError: string | null;
   checkedAt: number;
+  serverIPLookup?: IPLookupResult | null;
 }
 
 // Серверный отчёт не содержит сведений браузерной проверки, сеанса или профилей.
-export function serverDiagnosticReport(result: ServerCheckRun, panelOrigin: string) {
+export function serverDiagnosticReport(result: ServerCheckRun, panelOrigin: string, manualIPLookup?: IPLookupResult | null) {
   return {
     format: "private-gateway-server-diagnostics",
     version: 1,
@@ -36,6 +42,8 @@ export function serverDiagnosticReport(result: ServerCheckRun, panelOrigin: stri
     serverError: result.serverError,
     performance: result.performance,
     performanceError: result.performanceError,
+    serverIPLookup: result.serverIPLookup ?? null,
+    manualIPLookup: manualIPLookup ?? null,
   };
 }
 
@@ -56,6 +64,14 @@ async function runServerChecks(
     serverError = errorMessage(error);
   }
   signal.throwIfAborted();
+  const trafficIP = server?.find((check) => check.id === "traffic" &&
+    (check.status === "ok" || check.status === "warn") && check.ip && isValidPublicIP(check.ip))?.ip;
+  let serverIPLookup: IPLookupResult | null = null;
+  if (trafficIP) {
+    onProgress({ label: "Уточняем IP выхода сервера…", percent: 10 });
+    serverIPLookup = await lookupIP(token, trafficIP, signal);
+    signal.throwIfAborted();
+  }
   onProgress({ label: "Начинаем замеры…", percent: 20 });
   let performance: PerformanceRun | null = null;
   let performanceError: string | null = null;
@@ -70,11 +86,12 @@ async function runServerChecks(
     performanceError = errorMessage(error);
   }
   signal.throwIfAborted();
-  return { server, serverError, performance, performanceError, checkedAt: Date.now() };
+  return { server, serverError, performance, performanceError, serverIPLookup, checkedAt: Date.now() };
 }
 
 export function ServerDiagnostics({ token }: { token: string }) {
   const client = useQueryClient();
+  const [manual, setManual] = useState<ManualIPLookupState>({ data: undefined, checkedAt: 0, busy: false });
   const [mode, setMode] = useState<ConnectionMode>("current");
   const [progress, setProgress] = useState<DiagnosticStage>({ label: "Начинаем проверку…", percent: 0 });
   const [stopped, setStopped] = useState(false);
@@ -182,12 +199,17 @@ export function ServerDiagnostics({ token }: { token: string }) {
           <div className="card-body"><ErrorNotice error={new Error(result.serverError)} /></div>
         ) : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить сервер»."}</div>}
       </section>
+      {result && <IPReputation result={result.serverIPLookup ?? null} title="IP выхода сервера"
+        description={result.serverIPLookup ? "Выход, измеренный серверной проверкой VLESS; не IP браузера." : "IP выхода не подтверждён серверной проверкой VLESS. Сведения об адресе не запрашивались."} />}
       <AdvancedDiagnostics result={result} busy={run.isFetching} />
-      {result && <DiagnosticReportDownload
+      <IPLookupManual token={token} scope="server" busy={run.isFetching} onStateChange={setManual} />
+      {(result || manual.data) && <DiagnosticReportDownload
         kind="server"
-        report={() => serverDiagnosticReport(result, window.location.origin)}
-        checkedAt={result.checkedAt}
-        busy={run.isFetching}
+        report={() => result
+          ? serverDiagnosticReport(result, window.location.origin, manual.data)
+          : manualIPDiagnosticReport("server", manual.data!, manual.checkedAt, window.location.origin)}
+        checkedAt={result?.checkedAt ?? manual.checkedAt}
+        busy={run.isFetching || manual.busy}
       />}
     </>
   );

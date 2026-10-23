@@ -38,6 +38,32 @@ function serverReport() {
 }
 
 describe("readable Russian diagnostic report", () => {
+  it("keeps browser, measured server and manual IP lookups in their respective report scopes", () => {
+    const lookup = (ip: string) => ({
+      ip, source: "IP2Location.io", status: "partial", checkedAt: null,
+      detail: "Часть сведений недоступна.",
+      data: { ip, isp: "Проверочная сеть", fraud_score: 0, proxy: { is_vpn: false, is_data_center: true },
+        token: "must-not-export-ip-token", country: { translation: { lang: "ru", value: "Страна" } } },
+    });
+    const source = {
+      ...serverReport(), ipLookups: [lookup("8.8.8.8")], serverIPLookup: lookup("1.1.1.1"), manualIPLookup: lookup("9.9.9.9"),
+    };
+    const privacy = formatDiagnosticText("privacy", source);
+    const server = formatDiagnosticText("server", source);
+    expect(privacy).toContain("IP-адрес: 8.8.8.8");
+    expect(privacy).not.toContain("IP-адрес: 1.1.1.1");
+    expect(server).toContain("IP-адрес: 1.1.1.1");
+    expect(server).not.toContain("IP-адрес: 8.8.8.8");
+    for (const report of [privacy, server]) {
+      expect(report).toContain("Ручная проверка другого IP");
+      expect(report).toContain("IP-адрес: 9.9.9.9");
+      expect(report).toContain("Оценка риска IP2Location: 0");
+      expect(report).toContain("VPN: Не отмечен в базе");
+      expect(report).toContain("Переведённое название: Страна");
+      expect(report).not.toContain("must-not-export-ip-token");
+    }
+  });
+
   it("explains the server measurements in Russian and keeps unknown values distinct from zero", () => {
     const result = formatDiagnosticText("server", serverReport());
     expect(result).toContain("Отчёт о работе сервера");

@@ -220,6 +220,7 @@ func serve() error {
 		Context: stopCtx,
 		Token:   cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
 		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
+		IP2LocationAPIKey: cfg.IP2LocationAPIKey,
 		Checks: httpapi.ServerChecks{
 			XrayBinary: cfg.Xray.Binary, XrayConfigPath: cfg.Xray.ConfigPath,
 			XrayServer:    os.Getenv("GATEWAY_XRAY_SERVER_ADDRESS"),

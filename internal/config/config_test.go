@@ -19,9 +19,15 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 	}
 	t.Setenv("GATEWAY_PORT", "")
 	t.Setenv("GATEWAY_XRAY_PORT", "")
+	t.Setenv("GATEWAY_IP2LOCATION_API_KEY", "")
 	defaults, err := Load()
-	if err != nil || defaults.Node.Port != 8443 || defaults.Xray.Settings.Port != 443 {
+	if err != nil || defaults.Node.Port != 8443 || defaults.Xray.Settings.Port != 443 || defaults.IP2LocationAPIKey != "" {
 		t.Fatalf("invalid default public/internal ports: %v", err)
+	}
+	t.Setenv("GATEWAY_IP2LOCATION_API_KEY", "private-lookup-test-key")
+	withLookup, err := Load()
+	if err != nil || withLookup.IP2LocationAPIKey != "private-lookup-test-key" || withLookup.Node != defaults.Node {
+		t.Fatal("optional IP lookup key changed connection settings", err)
 	}
 	t.Setenv("GATEWAY_PORT", "443")
 	t.Setenv("GATEWAY_XRAY_RESTART", `["systemctl","--user","restart","xray"]`)

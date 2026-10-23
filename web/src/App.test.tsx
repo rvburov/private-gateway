@@ -88,6 +88,10 @@ beforeEach(() => {
     if (path === "/api/v1/notifications/preferences") return Response.json({ server: true, devices: true, configuration: true });
     if (path === "/api/v1/notifications/push-subscriptions") return Response.json({ items: [] });
     const about = (ip: string) => Response.json({ ip, ...networks[ip] });
+    if (path === "/api/v1/ip-lookup") return Response.json({
+      ip: JSON.parse(options.body as string).ip, source: "IP2Location.io", status: "not_configured",
+      checkedAt: null, detail: "Сервис сведений об IP не настроен.", data: null,
+    });
     if (path === "/api/v1/auth/restore")
       return rememberedSession ? Response.json({ session: "admin-token" }) : Response.json({ error: "unauthorized" }, { status: 401 });
     if (path === "https://ipv4.ipleak.net/json/") {
@@ -429,7 +433,7 @@ describe("administrator panel", () => {
     expect(screen.queryByText(/Браузер обращается к ipleak\.net/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    expect(await screen.findByText(/По выполненным проверкам проблем не найдено/)).toBeTruthy();
+    expect(await screen.findByText(/По выполненным сетевым проверкам проблем не найдено/)).toBeTruthy();
     expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
     expect(screen.getByText(/Ваши DNS-запросы видит Cloudflare, Inc\. — публичный DNS/)).toBeTruthy();
     expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();

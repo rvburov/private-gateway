@@ -623,7 +623,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       )}
       {page === "nodes" && <ServerDiagnostics token={token} />}
       {page === "guide" && <Guide onCheck={() => navigate("checks")} />}
-      {page === "checks" && <Checks nodeHost={nodeList[0]?.host} />}
+      {page === "checks" && <Checks token={token} nodeHost={nodeList[0]?.host} />}
       {page === "notifications" && <Notifications token={token} onInstall={onInstall} />}
       {page === "audit" && (
         <section className="card">
