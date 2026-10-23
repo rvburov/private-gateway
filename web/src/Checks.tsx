@@ -3,6 +3,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { collectDeviceDiagnostics, type DeviceDiagnostics } from "./deviceDiagnostics";
 import { CheckList, type CheckResult } from "./CheckResults";
 import { DiagnosticReportDownload } from "./DiagnosticReportDownload";
+import { DiagnosticProgress, type DiagnosticStage } from "./DiagnosticProgress";
+import { HelpTip } from "./HelpTip";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 
@@ -449,12 +451,18 @@ function webrtcAddresses(signal: AbortSignal, timeout = 4_000): Promise<{ public
   });
 }
 
-async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
+async function browserFacts(signal: AbortSignal, step: (label: string) => void): Promise<BrowserFacts> {
+  const probe = async <T,>(promise: Promise<T>): Promise<T> => {
+    const value = await promise;
+    signal.throwIfAborted();
+    step("Проверяем IP, DNS и WebRTC…");
+    return value;
+  };
   const [ipv4, ipv6, webrtc, dns] = await Promise.all([
-    exitNetwork(ipv4Service, signal),
-    exitNetwork(ipv6Service, signal),
-    webrtcAddresses(signal),
-    dnsServers(signal),
+    probe(exitNetwork(ipv4Service, signal)),
+    probe(exitNetwork(ipv6Service, signal)),
+    probe(webrtcAddresses(signal)),
+    probe(dnsServers(signal)),
   ]);
   // Один запрос на адрес: сети выходов уже известны, а DNS-серверы повторяются.
   const known = new Map<string, Promise<Network>>();
@@ -476,6 +484,7 @@ async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
     dns ? Promise.all(dns.slice(0, 12).map(find)) : null,
   ]);
   signal.throwIfAborted();
+  step("Готовим результат…");
   return {
     ipv4,
     ipv6,
@@ -485,13 +494,22 @@ async function browserFacts(signal: AbortSignal): Promise<BrowserFacts> {
   };
 }
 
-async function runChecks(nodeHost: string | undefined, signal: AbortSignal): Promise<CheckRun> {
+async function runChecks(nodeHost: string | undefined, signal: AbortSignal, onProgress: (stage: DiagnosticStage) => void): Promise<CheckRun> {
   signal.throwIfAborted();
+  let completed = 0;
+  const step = (label: string) => {
+    signal.throwIfAborted();
+    completed++;
+    onProgress({ label: completed === 5 ? "Уточняем данные сетей…" : label, percent: Math.floor(completed / 7 * 100) });
+  };
   const device = collectDeviceDiagnostics();
-  const facts = await browserFacts(signal);
+  step("Проверяем IP, DNS и WebRTC…");
+  const facts = await browserFacts(signal, step);
   signal.throwIfAborted();
   const serverIP = nodeHost && isIPAddress(nodeHost) ? nodeHost : null;
-  return { browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, checkedAt: Date.now() };
+  const result = { browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, checkedAt: Date.now() };
+  step("Проверка завершена.");
+  return result;
 }
 
 // Отчёт безопасности не включает замеры скорости, параметры VPS или сеанс входа.
@@ -511,9 +529,10 @@ export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string) {
 export function Checks({ nodeHost }: { nodeHost?: string }) {
   const client = useQueryClient();
   const [stopped, setStopped] = useState(false);
+  const [progress, setProgress] = useState<DiagnosticStage>({ label: "Начинаем проверку…", percent: 0 });
   const run = useQuery({
     queryKey: ["privacy-checks"],
-    queryFn: ({ signal }) => runChecks(nodeHost, signal),
+    queryFn: ({ signal }) => runChecks(nodeHost, signal, setProgress),
     enabled: false,
     retry: false,
     staleTime: Infinity,
@@ -522,19 +541,20 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
   const result = run.data;
   const problems = result?.browser.filter((check) => check.status === "fail").length ?? 0;
   const warnings = result?.browser.filter((check) => check.status === "warn").length ?? 0;
+  const previousResult = run.isFetching || stopped || run.isError;
   return (
     <>
       <section className="card check-run">
         <div className="check-run-text">
-          <h2>Проверить безопасность</h2>
-          <p>
-            Проверим внешний IP, DNS, IPv6, WebRTC, часовой пояс и сведения, которые браузер сообщает
-            сайтам об устройстве. Скорость, задержки и состояние VPS проверяются в разделе «Сервер».
-          </p>
-          <p className="hint">
-            Браузер обратится к ipleak.net (его держит VPN-сервис AirVPN) и к STUN-серверам Google и
-            Cloudflare. Эти сервисы увидят ваш внешний адрес. Токен входа и VPN-профиль им не передаются.
-          </p>
+          <div className="diagnostics-title-with-help">
+            <h2>Проверить безопасность</h2>
+            <HelpTip label="О проверке безопасности">
+              <p>Проверяем IP, DNS, IPv6, WebRTC, часовой пояс и сведения об устройстве, доступные сайтам. Скорость и состояние VPS — в разделе «Сервер».</p>
+              <p>Проверка запускается только по кнопке на этом устройстве. Браузер обращается к ipleak.net (AirVPN) и STUN-серверам Google и Cloudflare. Они увидят внешний IP; токен входа и VPN-профиль им не передаются.</p>
+              <p>Процент показывает завершённые этапы, а не оставшееся время. 100% означает, что проверка закончена; её результат смотрите ниже.</p>
+            </HelpTip>
+          </div>
+          <p>IP, DNS, WebRTC и данные браузера.</p>
         </div>
         <div className="check-run-actions">
           {run.isFetching ? (
@@ -545,21 +565,24 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
               <Icon name="close" size={18} />Остановить
             </button>
           ) : (
-            <button className="button primary" onClick={() => { setStopped(false); void run.refetch(); }}>
+            <button className="button primary" onClick={() => {
+              setStopped(false);
+              setProgress({ label: "Начинаем проверку…", percent: 0 });
+              void run.refetch();
+            }}>
               <Icon name="shield" size={18} />
               {result ? "Проверить снова" : "Проверить безопасность"}
             </button>
           )}
         </div>
-        {run.isFetching && <p className="check-progress" role="status" aria-live="polite">Проверяем IP, DNS, IPv6, WebRTC и сведения браузера…</p>}
-        {stopped && <p className="check-progress" role="status">Проверка безопасности остановлена.</p>}
         {result && (
           <div
-            className={`notice check-summary ${problems ? "error" : warnings ? "warning-notice" : "success-notice"}`}
+            className={`notice check-summary ${previousResult ? "" : problems ? "error" : warnings ? "warning-notice" : "success-notice"}`}
             role="status"
           >
-            <Icon name={problems ? "close" : warnings ? "alert" : "check"} size={17} />
+            <Icon name={previousResult ? "info" : problems ? "close" : warnings ? "alert" : "check"} size={17} />
             <span>
+              {previousResult && "Предыдущая проверка: "}
               {problems
                 ? `Найдено проблем: ${problems}${warnings ? `, замечаний: ${warnings}` : ""}. Подробности и что сделать — ниже.`
                 : warnings
@@ -570,6 +593,8 @@ export function Checks({ nodeHost }: { nodeHost?: string }) {
           </div>
         )}
         <ErrorNotice error={run.error} />
+        <DiagnosticProgress stage={progress} busy={run.isFetching} stopped={stopped} failed={run.isError}
+          complete={!!result} label="Ход проверки безопасности" stoppedLabel="Проверка безопасности остановлена." />
       </section>
       <section className="card">
         <div className="card-heading">

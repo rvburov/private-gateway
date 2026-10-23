@@ -4,6 +4,8 @@ import { errorMessage, request } from "./api";
 import { AdvancedDiagnostics } from "./AdvancedDiagnostics";
 import { CheckList, type CheckResult } from "./CheckResults";
 import { DiagnosticReportDownload } from "./DiagnosticReportDownload";
+import { DiagnosticProgress, type DiagnosticStage } from "./DiagnosticProgress";
+import { HelpTip } from "./HelpTip";
 import { Icon } from "./icons";
 import {
   connectionModes,
@@ -41,10 +43,10 @@ async function runServerChecks(
   token: string,
   mode: ConnectionMode,
   signal: AbortSignal,
-  onProgress: (phase: string) => void,
+  onProgress: (stage: DiagnosticStage) => void,
 ): Promise<ServerCheckRun> {
   signal.throwIfAborted();
-  onProgress("Проверяем работу сервера и VLESS…");
+  onProgress({ label: "Проверяем Xray и VLESS…", percent: 0 });
   let server: CheckResult[] | null = null;
   let serverError: string | null = null;
   try {
@@ -54,11 +56,15 @@ async function runServerChecks(
     serverError = errorMessage(error);
   }
   signal.throwIfAborted();
+  onProgress({ label: "Начинаем замеры…", percent: 20 });
   let performance: PerformanceRun | null = null;
   let performanceError: string | null = null;
   try {
     // Замер скорости начинается после проверки VLESS, чтобы они не занимали канал вместе.
-    performance = await runPerformance(token, mode, signal, onProgress);
+    performance = await runPerformance(token, mode, signal, (label, percent) => {
+      signal.throwIfAborted();
+      onProgress({ label, percent: 20 + Math.floor(percent * 0.8) });
+    });
   } catch (error) {
     signal.throwIfAborted();
     performanceError = errorMessage(error);
@@ -70,7 +76,7 @@ async function runServerChecks(
 export function ServerDiagnostics({ token }: { token: string }) {
   const client = useQueryClient();
   const [mode, setMode] = useState<ConnectionMode>("current");
-  const [progress, setProgress] = useState("");
+  const [progress, setProgress] = useState<DiagnosticStage>({ label: "Начинаем проверку…", percent: 0 });
   const [stopped, setStopped] = useState(false);
   const run = useQuery({
     queryKey: ["server-checks"],
@@ -88,22 +94,27 @@ export function ServerDiagnostics({ token }: { token: string }) {
   const result = run.data;
   const problems = result?.server?.filter((check) => check.status === "fail").length ?? 0;
   const warnings = result?.server?.filter((check) => check.status === "warn").length ?? 0;
+  const incompleteMeasurements = !!result && (!result.performance || !!result.performanceError || !!result.performance.serverError ||
+    [result.performance.panel, result.performance.internet].some((path) =>
+      path.download.mbps === null || path.upload.mbps === null || !!path.download.error || !!path.upload.error ||
+      path.latency.medianMs === null || path.latency.errorCount > 0 || !!path.latency.error));
+  const hasWarnings = warnings > 0 || !!result?.serverError || incompleteMeasurements;
+  const previousResult = run.isFetching || stopped || run.isError;
   return (
     <>
       <section className="card check-run" aria-label="Проверка сервера">
         <div className="check-run-text">
-          <h2>Проверить работу сервера</h2>
-          <p>
-            Проверим базу данных, конфигурацию и процесс Xray, маскировку REALITY, сертификат панели и
-            передачу VLESS-трафика. Затем измерим скорость, задержку и стабильность HTTP-запросов до
-            панели и Cloudflare, снимем доступные показатели нагрузки. До полутора минут и до 40 МБ
-            трафика на один запуск.
-          </p>
-          <p className="hint">
-            Замер до Cloudflare проверяет выход в интернет через текущее подключение браузера.
-            speed.cloudflare.com увидит ваш внешний адрес; токен входа и VPN-профиль ему не передаются.
-            Проверки IP, DNS, WebRTC и отпечатка браузера находятся в разделе «Проверка».
-          </p>
+          <div className="diagnostics-title-with-help">
+            <h2>Проверить работу сервера</h2>
+            <HelpTip label="О проверке сервера">
+              <p>Проверяем базу данных, Xray, REALITY, сертификат панели и VLESS-трафик. Затем измеряем скорость, задержку HTTP и нагрузку сервера.</p>
+              <p>Внешний замер идёт до speed.cloudflare.com через текущее подключение браузера. Сервис увидит внешний IP; токен входа и VPN-профиль ему не передаются. Проверки утечек и браузера — в разделе «Проверка».</p>
+              <p>Для сравнения повторите замер с VPN, без него и в другой сети. Переключайте подключение самостоятельно; закройте загрузки и видео. Выбранная подпись сохраняется с результатом.</p>
+              <p>Процент показывает завершённые этапы, а не оставшееся время. 100% означает завершение; недоступные замеры и ошибки отмечаются отдельно. Остановленный замер в историю не записывается.</p>
+            </HelpTip>
+          </div>
+          <p>Xray, скорость и задержки.</p>
+          <p className="hint">До 1,5 минуты · до 40 МБ за запуск.</p>
         </div>
         <div className="check-run-actions">
           <label htmlFor="server-connection-mode">Как подключены сейчас</label>
@@ -119,54 +130,57 @@ export function ServerDiagnostics({ token }: { token: string }) {
             <button className="button" onClick={() => {
               void client.cancelQueries({ queryKey: ["server-checks"] });
               setStopped(true);
-              setProgress("");
             }}>
               <Icon name="close" size={18} />Остановить
             </button>
           ) : (
-            <button className="button primary" onClick={() => { setStopped(false); void run.refetch(); }}>
+            <button className="button primary" onClick={() => {
+              setStopped(false);
+              setProgress({ label: "Начинаем проверку…", percent: 0 });
+              void run.refetch();
+            }}>
               <Icon name="server" size={18} />{result ? "Проверить сервер снова" : "Проверить сервер"}
             </button>
           )}
         </div>
-        <p className="hint check-comparison-note">
-          Для сравнения выполните отдельные замеры с VPN и без него, затем в другой сети. Переключайте
-          VPN и сеть самостоятельно; закройте загрузки и видео. Выбранная подпись сохраняется вместе с числами.
-        </p>
-        {run.isFetching && <p className="check-progress" role="status" aria-live="polite">{progress || "Начинаем проверку сервера…"}</p>}
-        {stopped && <p className="check-progress" role="status">Проверка сервера остановлена. Незавершённый замер не добавлен в историю.</p>}
         {result && (
-          <div className={`notice check-summary ${problems ? "error" : warnings || result.serverError ? "warning-notice" : "success-notice"}`} role="status">
-            <Icon name={problems ? "close" : warnings || result.serverError ? "alert" : "check"} size={17} />
+          <div className={`notice check-summary ${previousResult ? "" : problems ? "error" : hasWarnings ? "warning-notice" : "success-notice"}`} role="status">
+            <Icon name={previousResult ? "info" : problems ? "close" : hasWarnings ? "alert" : "check"} size={17} />
             <span>
+              {previousResult && "Предыдущая проверка: "}
               {result.serverError
                 ? "Не удалось завершить проверку работы сервера. Доступные результаты замеров приведены ниже."
                 : problems
                   ? `Проверки сервера: проблем — ${problems}${warnings ? `, замечаний — ${warnings}` : ""}. Подробности ниже.`
                   : warnings
                     ? `Проверки сервера: замечаний — ${warnings}. Подробности ниже.`
-                    : "По выполненным проверкам работы сервера проблем не найдено."}{" "}
+                    : incompleteMeasurements
+                      ? "Проверка закончена, часть замеров недоступна. Подробности ниже."
+                      : "По выполненным проверкам работы сервера проблем не найдено."}{" "}
               Проверено в {new Date(result.checkedAt).toLocaleTimeString("ru-RU", { timeStyle: "short" })}.
             </span>
           </div>
         )}
         <ErrorNotice error={run.error} />
+        <DiagnosticProgress stage={progress} busy={run.isFetching} stopped={stopped} failed={run.isError}
+          complete={!!result} label="Ход проверки сервера" stoppedLabel="Проверка сервера остановлена." />
       </section>
       <section className="card" aria-label="Работа сервера">
         <div className="card-heading">
-          <div><h2>Работа сервера</h2><p>Проверки, которые сервер выполняет сам.</p></div>
+          <div>
+            <div className="diagnostics-title-with-help">
+              <h2>Работа сервера</h2>
+              <HelpTip label="О проверке работы Xray">
+                <p>Эти проверки выполняет сам сервер. Для проверки трафика он подключается к Xray с профилем самого старого активного устройства: его счётчик вырастет на несколько килобайт. Профиль никуда не передаётся.</p>
+              </HelpTip>
+            </div>
+            <p>Состояние служб и VLESS.</p>
+          </div>
           <Icon name="server" size={23} />
         </div>
         {result?.server ? <CheckList checks={result.server} /> : result?.serverError ? (
           <div className="card-body"><ErrorNotice error={new Error(result.serverError)} /></div>
         ) : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить сервер»."}</div>}
-        <div className="card-footer">
-          <Icon name="lock" size={15} />
-          <span>
-            Для проверки трафика сервер подключается к Xray с профилем самого старого активного устройства:
-            его счётчик вырастет на несколько килобайт. Профиль никуда не передаётся.
-          </span>
-        </div>
       </section>
       <AdvancedDiagnostics result={result} busy={run.isFetching} />
       {result && <DiagnosticReportDownload

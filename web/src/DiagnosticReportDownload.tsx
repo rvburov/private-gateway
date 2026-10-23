@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ErrorNotice } from "./ui";
 import { serializeDiagnosticJSON } from "./diagnosticJSON";
 import { formatDiagnosticText } from "./diagnosticText";
+import { HelpTip } from "./HelpTip";
 
 // Каждый раздел передаёт только свой отчёт, собранный из явно перечисленных полей.
 export function DiagnosticReportDownload({ kind, report, checkedAt, busy }: {
@@ -38,17 +39,19 @@ export function DiagnosticReportDownload({ kind, report, checkedAt, busy }: {
   return (
     <section className="card diagnostics-export" aria-label={title}>
       <div>
-        <h2>{title}</h2>
-        <p className="hint">
-          {kind === "privacy"
-            ? "Отчёт содержит IP-адреса, результаты проверки безопасности и сведения об устройстве и браузере."
-            : "Отчёт содержит результаты проверки сервера, показатели его работы, скорости и задержки."}{" "}
-          Скачивается на ваше устройство; передавайте его только тому, кому доверяете.
-        </p>
-        <p className="hint">
-          Для чтения выберите текстовый отчёт по-русски. В JSON символы записаны кодами Unicode:
-          программы восстанавливают исходный текст автоматически.
-        </p>
+        <div className="diagnostics-title-with-help">
+          <h2>{title}</h2>
+          <HelpTip label={kind === "privacy" ? "Об отчёте о безопасности" : "Об отчёте о сервере"}>
+            <p>
+              {kind === "privacy"
+                ? "Отчёт содержит IP-адреса, результаты проверки безопасности и сведения об устройстве и браузере."
+                : "Отчёт содержит результаты проверки сервера, показатели его работы, скорости и задержки."}{" "}
+              Скачивается на ваше устройство; передавайте его только тому, кому доверяете.
+            </p>
+            <p>Для чтения выберите текстовый отчёт по-русски. В JSON символы записаны кодами Unicode: программы восстанавливают исходный текст автоматически.</p>
+          </HelpTip>
+        </div>
+        <p className="hint">TXT — для чтения, JSON — для программ.</p>
       </div>
       <div className="button-group diagnostics-download-actions">
         <button className="button primary" disabled={busy} onClick={() => download("txt")}>

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ServerCheckRun } from "./ServerDiagnostics";
+import { HelpTip } from "./HelpTip";
 import {
   clearPerformanceHistory,
   connectionModes,
@@ -127,7 +128,17 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
     <>
       <section className="card" aria-label="Скорость и задержка">
         <div className="card-heading">
-          <div><h2>Скорость и задержка</h2><p>{performance ? `${modeName(performance.mode)} · ${time(performance.checkedAt)}` : "Измеряем по нажатию «Проверить сервер»."}</p></div>
+          <div>
+            <div className="diagnostics-title-with-help">
+              <h2>Скорость и задержка</h2>
+              <HelpTip label="О замерах скорости и задержки">
+                <p>Клиент VPN может исключать адрес своего сервера из туннеля. Скорость до панели показывает доступность канала до VPS; она сама по себе не измеряет передачу через VLESS.</p>
+                <p>Внешний замер идёт до Cloudflare. Его ближайший узел может меняться после переключения VPN. Повторите замеры несколько раз в одинаковых условиях.</p>
+                <p>Задержки измеряются HTTP-запросами. Медиана — среднее по порядку значение; p95 — верхняя граница для 95% проб. Колебания задержки и ошибки HTTP помогают оценить стабильность, но не измеряют потерю IP-пакетов и не доказывают ограничение скорости оператором.</p>
+              </HelpTip>
+            </div>
+            <p>{performance ? `${modeName(performance.mode)} · ${time(performance.checkedAt)}` : "До панели и в интернет."}</p>
+          </div>
         </div>
         {performance ? (
           <>
@@ -137,22 +148,26 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
             </div>
             <ServerResources run={performance} />
           </>
-        ) : <div className="card-body"><p className="hint">{result?.performanceError || "Здесь появятся получение, отправка, задержки и ошибки запросов."}</p></div>}
-        <div className="diagnostics-notes">
-          <p>Клиент VPN может исключать адрес своего сервера из туннеля. Скорость до панели показывает доступность канала до VPS; она сама по себе не измеряет передачу через VLESS.</p>
-          <p>Внешний замер идёт до Cloudflare. Его ближайший узел может меняться после переключения VPN. Повторите замеры несколько раз в одинаковых условиях.</p>
-          <p>Задержки измеряются HTTP-запросами, p95 показывает верхнюю границу для 95% проб. Ошибки HTTP-проб и колебания задержек помогают оценить стабильность, но не измеряют потерю IP-пакетов и не доказывают ограничение скорости оператором.</p>
-        </div>
+        ) : <div className="card-body"><p className="hint">{result?.performanceError || "Нажмите «Проверить сервер», чтобы начать замер."}</p></div>}
       </section>
       <section className="card" aria-label="История замеров">
         <div className="card-heading">
-          <div><h2>История замеров</h2><p>До 12 последних завершённых запусков в этом браузере.</p></div>
+          <div>
+            <div className="diagnostics-title-with-help">
+              <h2>История замеров</h2>
+              <HelpTip label="Об истории замеров">
+                <p>Сравнивайте результаты в одинаковых условиях. Скорость измеряется до Cloudflare, задержка — HTTP-запросами.</p>
+                <p>В этом браузере сохраняются числа, время и подпись подключения. IP-адреса, сведения об устройстве и токен входа в историю не записываются.</p>
+              </HelpTip>
+            </div>
+            <p>Последние 12 замеров в этом браузере.</p>
+          </div>
           <button className="button" disabled={busy || history.length === 0} onClick={() => { clearPerformanceHistory(); setHistory([]); }}>Очистить историю</button>
         </div>
         {history.length > 0 ? (
           <div className="diagnostics-table-scroll">
             <table className="diagnostics-table">
-              <caption>Сравнение текущего подключения в разные моменты. Скорость — до Cloudflare, задержка — HTTP.</caption>
+              <caption className="sr-only">Сравнение замеров: скорость до Cloudflare и задержка HTTP.</caption>
               <thead><tr><th scope="col">Время и подключение</th><th scope="col">Получение</th><th scope="col">Отправка</th><th scope="col">Задержка интернета</th><th scope="col">Задержка панели</th><th scope="col">Ошибки HTTP в интернете</th></tr></thead>
               <tbody>{history.map((entry, index) => (
                 <tr key={`${entry.checkedAt}-${index}`}>
@@ -167,7 +182,6 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
             </table>
           </div>
         ) : <p className="card-body hint">Пока нет сохранённых замеров.</p>}
-        <p className="diagnostics-notes">Автоматически сохраняются только числа, время и выбранная подпись подключения. IP-адреса, сведения об устройстве и токен входа в историю не записываются.</p>
       </section>
     </>
   );

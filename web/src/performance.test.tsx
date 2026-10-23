@@ -59,8 +59,8 @@ describe("bounded performance checks", () => {
   });
 
   it("keeps panel credentials on same origin and caps adaptive payloads", async () => {
-    const progress: string[] = [];
-    const run = await runPerformance("private-session", "wifi-vpn", new AbortController().signal, (value) => progress.push(value));
+    const progress: number[] = [];
+    const run = await runPerformance("private-session", "wifi-vpn", new AbortController().signal, (_phase, percent) => progress.push(percent));
     expect(run.mode).toBe("wifi-vpn");
     expect(run.panel.latency).toMatchObject({ attempts: 8, successes: 8, medianMs: 20, jitterMs: 0, errorCount: 0 });
     expect(run.internet.latency.successes).toBe(8);
@@ -71,7 +71,7 @@ describe("bounded performance checks", () => {
     expect(run.serverBefore).toEqual(snapshot);
     expect(run.serverAfter).toEqual(snapshot);
     expect(run.panel.download.mbps).toBeCloseTo(4 * MIB * 8 / 20_000);
-    expect(progress.length).toBe(8);
+    expect(progress).toEqual([0, 5, 20, 35, 50, 65, 80, 95, 100]);
     for (const [input, options] of fetchMock.mock.calls as [string, RequestInit][]) {
       if (input.startsWith("https://")) {
         expect(new URL(input).origin).toBe("https://speed.cloudflare.com");
@@ -85,6 +85,48 @@ describe("bounded performance checks", () => {
         expect(new Headers(options.headers).get("Authorization")).toBe("Bearer private-session");
       }
     }
+  });
+
+  it("reports completion only after the final server snapshot settles", async () => {
+    let snapshots = 0;
+    let finishSnapshot!: (response: Response) => void;
+    let snapshotStarted!: () => void;
+    const waitingForSnapshot = new Promise<void>((resolve) => { snapshotStarted = resolve; });
+    fetchMock.mockImplementation(async (input, options) => {
+      if (String(input).endsWith("/server") && ++snapshots === 2) {
+        return new Promise<Response>((resolve) => {
+          finishSnapshot = resolve;
+          snapshotStarted();
+        });
+      }
+      return normalFetch(input, options);
+    });
+    const progress: number[] = [];
+    const pending = runPerformance("token", "current", new AbortController().signal, (_phase, percent) => progress.push(percent));
+    await waitingForSnapshot;
+    expect(progress.at(-1)).toBe(95);
+    expect(progress).not.toContain(100);
+    finishSnapshot(json(snapshot));
+    const result = await pending;
+    expect(result.serverAfter).toEqual(snapshot);
+    expect(progress.at(-1)).toBe(100);
+    expect(progress.filter((percent) => percent === 100)).toHaveLength(1);
+  });
+
+  it("does not report completion when cancelled during the final server snapshot", async () => {
+    const controller = new AbortController();
+    let snapshots = 0;
+    fetchMock.mockImplementation(async (input, options) => {
+      if (String(input).endsWith("/server") && ++snapshots === 2) {
+        queueMicrotask(() => controller.abort());
+        return new Promise<Response>(() => {});
+      }
+      return normalFetch(input, options);
+    });
+    const progress: number[] = [];
+    await expect(runPerformance("token", "current", controller.signal, (_phase, percent) => progress.push(percent))).rejects.toMatchObject({ name: "AbortError" });
+    expect(progress.at(-1)).toBe(95);
+    expect(progress).not.toContain(100);
   });
 
   it("stops increasing payloads once a useful sample lasts one second", async () => {
@@ -133,6 +175,7 @@ describe("bounded performance checks", () => {
   it("cancels a hanging response body and does not continue after user cancellation", async () => {
     const controller = new AbortController();
     const cancel = vi.fn();
+    const progress: number[] = [];
     fetchMock.mockImplementation(async (input, options) => {
       if (String(input).includes("/performance/download")) {
         const response = new Response(new ReadableStream({ cancel }));
@@ -141,9 +184,10 @@ describe("bounded performance checks", () => {
       }
       return normalFetch(input, options);
     });
-    await expect(runPerformance("token", "current", controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+    await expect(runPerformance("token", "current", controller.signal, (_phase, percent) => progress.push(percent))).rejects.toMatchObject({ name: "AbortError" });
     expect(cancel).toHaveBeenCalledOnce();
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes("/performance/upload"))).toBe(false);
+    expect(progress).toEqual([0, 5, 20]);
     expect(loadPerformanceHistory()).toEqual([]);
   });
 
@@ -152,7 +196,8 @@ describe("bounded performance checks", () => {
       if (String(input).startsWith("https://speed.cloudflare.com")) throw new TypeError("Blocked");
       return normalFetch(input, options);
     });
-    const result = await runPerformance("token", "current", new AbortController().signal);
+    const progress: number[] = [];
+    const result = await runPerformance("token", "current", new AbortController().signal, (_phase, percent) => progress.push(percent));
     expect(result.panel.download.mbps).not.toBeNull();
     expect(result.panel.upload.mbps).not.toBeNull();
     expect(result.internet.latency).toMatchObject({ attempts: 1, successes: 0, errorCount: 1 });
@@ -160,6 +205,7 @@ describe("bounded performance checks", () => {
     expect(result.internet.upload.mbps).toBeNull();
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("https://speed.cloudflare.com"))).toHaveLength(2);
     expect(result.serverAfter).toEqual(snapshot);
+    expect(progress).toEqual([0, 5, 20, 35, 50, 65, 80, 95, 100]);
   });
 
   it("does not report a failed warmup as failure of all successful measured probes", async () => {
@@ -185,11 +231,13 @@ describe("bounded performance checks", () => {
       if (String(input).includes("/performance/download")) queueMicrotask(() => total.abort(new DOMException("Time expired", "TimeoutError")));
       return result;
     });
-    const run = await runPerformance("token", "current", new AbortController().signal);
+    const progress: number[] = [];
+    const run = await runPerformance("token", "current", new AbortController().signal, (_phase, percent) => progress.push(percent));
     expect(run.panel.latency.successes).toBe(8);
     expect(run.internet.upload.mbps).toBeNull();
     expect(run.internet.upload.error).toContain("Лимит времени");
     expect(run.serverAfter).toBeNull();
+    expect(progress).toEqual([0, 5, 20, 35, 50, 65, 80, 95, 100]);
     vi.useRealTimers();
   });
 });

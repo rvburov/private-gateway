@@ -299,6 +299,12 @@ describe("administrator panel", () => {
     expect(screen.queryByLabelText("Как подключены сейчас")).toBeNull();
     expect(screen.queryByRole("region", { name: "Скорость и задержка" })).toBeNull();
     expect(screen.queryByRole("region", { name: "История замеров" })).toBeNull();
+    expect(screen.queryByText(/Браузер обращается к ipleak\.net/)).toBeNull();
+    const help = screen.getByRole("button", { name: "О проверке безопасности" });
+    fireEvent.click(help);
+    expect(within(screen.getByRole("note", { name: "О проверке безопасности" })).getByText(/Браузер обращается к ipleak\.net/)).toBeTruthy();
+    fireEvent.click(help);
+    expect(screen.queryByText(/Браузер обращается к ipleak\.net/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
     expect(await screen.findByText(/По выполненным проверкам проблем не найдено/)).toBeTruthy();
@@ -407,6 +413,78 @@ describe("administrator panel", () => {
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBe(stored);
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
     expect(await screen.findByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
+  });
+
+  it("shows completed privacy stages, preserves partial progress on cancellation and resets it on restart", async () => {
+    vi.stubGlobal("RTCPeerConnection", undefined);
+    await login();
+    const menu = screen.getByRole("navigation", { name: "Главное меню" });
+    fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
+    expect(screen.queryByRole("progressbar", { name: "Ход проверки безопасности" })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    const progress = () => screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement;
+    await waitFor(() => expect(progress().value).toBe(100));
+    expect(progress().max).toBe(100);
+
+    // Ответы проб удерживаем отдельно: процент меняется после ответа, а не по таймеру.
+    const pending: Array<{ path: string; resolve: (response: Response) => void }> = [];
+    const respond = fetchMock.getMockImplementation() as (path: string, options?: RequestInit) => Promise<Response>;
+    fetchMock.mockImplementation((path: string, options: RequestInit = {}) => {
+      if (path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/" &&
+          !/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path)) return respond(path, options);
+      return new Promise<Response>((resolve, reject) => {
+        pending.push({ path, resolve });
+        options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
+      });
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
+    await waitFor(() => expect(pending).toHaveLength(12));
+    // Собраны сведения об устройстве и завершена проверка недоступного WebRTC: 2 из 7 этапов.
+    await waitFor(() => expect(progress().value).toBe(28));
+    pending.find((request) => request.path === "https://ipv4.ipleak.net/json/")!.resolve(
+      Response.json({ ip: visibleIP, ...networks[visibleIP] }),
+    );
+    await waitFor(() => expect(progress().value).toBe(42));
+    fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
+    await screen.findByText("Проверка безопасности остановлена.");
+    expect(progress().value).toBe(42);
+    // Сохранённый результат не превращает остановленную повторную проверку в 100%.
+    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
+    await waitFor(() => expect(pending).toHaveLength(24));
+    await waitFor(() => expect(progress().value).toBe(28));
+    for (const request of pending.slice(12)) {
+      request.resolve(Response.json(request.path === "https://ipv4.ipleak.net/json/"
+        ? { ip: visibleIP, ...networks[visibleIP] }
+        : request.path === "https://ipv6.ipleak.net/json/"
+          ? {}
+          : { session: "test", ip: Object.fromEntries(dnsResolvers.map((ip) => [ip, 1])) }));
+    }
+    await waitFor(() => expect(progress().value).toBe(100));
+    expect(progress().getAttribute("aria-valuetext")).toContain("100%. Проверка завершена.");
+  });
+
+  it("does not present cached success as a completed new check after a device probe fails", async () => {
+    await login();
+    fireEvent.click(within(screen.getByRole("navigation", { name: "Главное меню" })).getByRole("button", { name: "Проверка" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
+    expect((screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement).value).toBe(100);
+    const collect = vi.spyOn(deviceDiagnostics, "collectDeviceDiagnostics").mockImplementationOnce(() => {
+      throw new Error("Device diagnostic failed");
+    });
+    try {
+      fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
+      expect((await screen.findByRole("alert")).textContent).toContain("Device diagnostic failed");
+      expect(screen.getByText("Не удалось завершить проверку.")).toBeTruthy();
+      expect((screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement).value).toBe(0);
+      const previous = screen.getByText(/Предыдущая проверка:/).closest(".check-summary");
+      expect(previous?.classList.contains("success-notice")).toBe(false);
+      expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
+    } finally {
+      collect.mockRestore();
+    }
   });
 
   it("keeps server health when speed services fail and clears only measurement history", async () => {

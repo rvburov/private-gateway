@@ -319,11 +319,16 @@ export async function runPerformance(
   token: string,
   mode: ConnectionMode,
   signal: AbortSignal,
-  onProgress?: (phase: string) => void,
+  onProgress?: (phase: string, percent: number) => void,
 ): Promise<PerformanceRun> {
   aborted(signal);
   const deadline = AbortSignal.any([signal, AbortSignal.timeout(TOTAL_TIMEOUT_MS)]);
   let serverError: string | null = null;
+  // Процент отражает завершённые этапы, включая недоступные замеры, а не прошедшее время.
+  function progress(phase: string, percent: number): void {
+    aborted(signal);
+    onProgress?.(phase, percent);
+  }
   async function snapshot(): Promise<ServerSnapshot | null> {
     if (deadline.aborted) { serverError = FINISHED; return null; }
     try {
@@ -334,32 +339,32 @@ export async function runPerformance(
       return null;
     }
   }
-  onProgress?.("Состояние сервера перед замером");
+  progress("Состояние сервера", 0);
   const serverBefore = await snapshot();
-  onProgress?.("Задержка до панели сервера");
+  progress("Задержка до панели", 5);
   const panelLatency = await measureLatency("/api/v1/checks/performance/ping", deadline, signal, token);
   const unavailable = (latency: LatencyMeasurement) => emptyTransfer(latency.error ?? "Служба измерений не ответила на пробы задержки.");
-  onProgress?.("Скорость получения данных от сервера");
+  progress("Получение от сервера", 20);
   const panelDownload = panelLatency.successes
     ? await measureTransfer("/api/v1/checks/performance/download", [4 * MIB], false, deadline, signal, token)
     : unavailable(panelLatency);
-  onProgress?.("Скорость отправки данных на сервер");
+  progress("Отправка на сервер", 35);
   const panelUpload = panelLatency.successes
     ? await measureTransfer("/api/v1/checks/performance/upload", [MIB], true, deadline, signal, token)
     : unavailable(panelLatency);
-  onProgress?.("Задержка до внешней сети Cloudflare");
+  progress("Задержка интернета", 50);
   const internetLatency = await measureLatency(`${CLOUDFLARE}/__down?bytes=0`, deadline, signal);
-  onProgress?.("Скорость получения данных из интернета");
+  progress("Получение из интернета", 65);
   const internetDownload = internetLatency.successes
     ? await measureTransfer(`${CLOUDFLARE}/__down`, [MIB, 4 * MIB, 16 * MIB], false, deadline, signal)
     : unavailable(internetLatency);
-  onProgress?.("Скорость отправки данных в интернет");
+  progress("Отправка в интернет", 80);
   const internetUpload = internetLatency.successes
     ? await measureTransfer(`${CLOUDFLARE}/__up`, [MIB / 4, MIB, 4 * MIB], true, deadline, signal)
     : unavailable(internetLatency);
-  onProgress?.("Состояние сервера после замера");
+  progress("Итоговое состояние сервера", 95);
   const serverAfter = await snapshot();
-  aborted(signal);
+  progress("Замеры завершены", 100);
   return {
     checkedAt: Date.now(), mode,
     panel: { latency: panelLatency, download: panelDownload, upload: panelUpload },

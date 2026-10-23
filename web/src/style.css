@@ -1689,13 +1689,122 @@ textarea:focus {
 .check-run-actions select {
   width: 100%;
 }
-.check-comparison-note,
 .check-progress {
   grid-column: 1 / -1;
+  min-width: 0;
+  padding-top: 4px;
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  font-weight: 400;
 }
-.check-progress {
+.check-progress-caption {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+.check-progress-percent {
+  flex: none;
   color: var(--accent-ink);
-  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.check-progress progress {
+  display: block;
+  width: 100%;
+  height: 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 999px;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--line);
+  color: var(--accent);
+}
+.check-progress progress::-webkit-progress-bar {
+  background: var(--line);
+  border-radius: 999px;
+}
+.check-progress progress::-webkit-progress-value {
+  background: var(--accent);
+  border-radius: 999px;
+}
+.check-progress progress::-moz-progress-bar {
+  background: var(--accent);
+  border-radius: 999px;
+}
+/* Справка открывается по нажатию и занимает строку внутри карточки, в том числе на телефоне. */
+.diagnostics-title-with-help {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+}
+.diagnostics-title-with-help h2 {
+  min-width: 0;
+}
+.card-heading > div:has(.diagnostics-title-with-help) {
+  flex: 1;
+  min-width: 0;
+}
+.help-tip {
+  display: contents;
+}
+.help-tip-button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 50%;
+  color: var(--fg-3);
+  flex: none;
+}
+.help-tip-button span {
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border: 1.5px solid currentColor;
+  border-radius: 50%;
+  font-size: 13px;
+  line-height: 1;
+  font-weight: 500;
+}
+.help-tip-button:hover,
+.help-tip-button[aria-expanded="true"] {
+  color: var(--accent-ink);
+  background: var(--accent-soft);
+}
+.help-tip-button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.help-tip-panel {
+  grid-column: 1 / -1;
+  padding: 12px 14px;
+  margin: 4px 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--surface-2);
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+.help-tip-panel p,
+.check-run-text .help-tip-panel p {
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.help-tip-panel p + p,
+.check-run-text .help-tip-panel p + p {
+  margin-top: 8px;
+}
+.check-run-text > p {
+  font-size: var(--fs-sm);
 }
 .measurement-columns {
   display: grid;
@@ -1735,15 +1844,6 @@ textarea:focus {
 }
 .measurement .hint {
   margin-top: 12px;
-}
-.diagnostics-notes {
-  padding: 14px 20px;
-  border-top: 1px solid var(--line);
-  font-size: var(--fs-sm);
-  color: var(--fg-2);
-}
-.diagnostics-notes p + p {
-  margin-top: 8px;
 }
 .diagnostics-subheading {
   font-size: var(--fs-md);
