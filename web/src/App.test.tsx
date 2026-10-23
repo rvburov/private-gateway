@@ -37,6 +37,7 @@ let rememberedSession = false;
 let performanceBlocked = false;
 let privacyBlocked = false;
 let performanceUnavailable = false;
+let statusFailure: (() => Response) | null = null;
 // Что отвечает ipleak.net, внешний сервис раздела «Проверка».
 let visibleIP = "203.0.113.7";
 let visibleIPv6: string | null = null;
@@ -68,6 +69,7 @@ beforeEach(() => {
   performanceBlocked = false;
   privacyBlocked = false;
   performanceUnavailable = false;
+  statusFailure = null;
   visibleIP = "203.0.113.7";
   visibleIPv6 = null;
   dnsResolvers = ["162.158.1.10"];
@@ -146,7 +148,8 @@ beforeEach(() => {
         vpn: { status: "unavailable", detail: "Показатели VPN недоступны.", scope: "Контейнер VPN.", running: null, cgroup: null, network: null, tcp: null },
       });
     }
-    if (path === "/api/v1/status")
+    if (path === "/api/v1/status") {
+      if (statusFailure) return statusFailure();
       return Response.json({
         database: "ok",
         node_id: "n1",
@@ -156,6 +159,7 @@ beforeEach(() => {
         applied_revision: appliedRevision,
         xray_configured: true,
       });
+    }
     if (path === "/api/v1/nodes")
       return Response.json({
         nodes: [
@@ -254,6 +258,76 @@ async function login() {
 }
 
 describe("administrator panel", () => {
+  it("distinguishes rejected sessions from server outages and opens sign-in without logging out", async () => {
+    await login();
+    await screen.findByText("API подключён");
+    statusFailure = () => Response.json({ error: "unauthorized" }, { status: 401 });
+    await queryClient.invalidateQueries({ queryKey: ["status"] });
+    expect(await screen.findByText("Нужен вход")).toBeTruthy();
+    expect(screen.getByRole("alert", { name: "Нужно войти снова" }).textContent).toContain("HTTP 401");
+    expect(screen.queryByText("API недоступен")).toBeNull();
+    expect(screen.queryByText("Нет связи")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Войти снова" }));
+    expect(await screen.findByLabelText("Логин")).toBeTruthy();
+    expect(screen.getByRole("alert").textContent).toContain("Сервер не принял сеанс входа");
+    expect(queryClient.getQueryCache().getAll()).toHaveLength(0);
+    expect(fetchMock.mock.calls.some(([path]) => path === "/api/v1/auth/logout")).toBe(false);
+    expect(fetchMock.mock.calls.some(([path, options]) => path.includes("push-subscriptions") && options?.method === "DELETE")).toBe(false);
+  });
+
+  it.each([
+    ["fetch", () => { throw new TypeError("Failed to fetch"); }, "Нет связи", "Нет связи с панелью"],
+    ["timeout", () => { throw new DOMException("Timeout", "TimeoutError"); }, "Нет ответа", "Панель не ответила вовремя"],
+    ["HTTP 503", () => Response.json({ error: "database unavailable" }, { status: 503 }), "Ошибка API", "API вернул ошибку"],
+    ["invalid JSON", () => new Response("<html>proxy page</html>"), "Неверный ответ", "Не удалось прочитать ответ панели"],
+    ["body timeout", () => {
+      const response = Response.json({});
+      vi.spyOn(response, "json").mockRejectedValue(new DOMException("Body timeout", "TimeoutError"));
+      return response;
+    }, "Нет ответа", "Панель не ответила вовремя"],
+    ["body connection reset", () => {
+      const response = Response.json({});
+      vi.spyOn(response, "json").mockRejectedValue(new TypeError("Body connection reset"));
+      return response;
+    }, "Нет связи", "Нет связи с панелью"],
+  ] as const)("shows the actual %s failure and recovers with read-only requests", async (_kind, fail, label, title) => {
+    await login();
+    await screen.findByText("API подключён");
+    statusFailure = fail;
+    await queryClient.invalidateQueries({ queryKey: ["status"] });
+    expect(await screen.findByText(label)).toBeTruthy();
+    const alert = screen.getByRole("alert", { name: title });
+    if (label === "Ошибка API") {
+      expect(alert.textContent).toContain("HTTP 503");
+      expect(alert.textContent).toContain("База данных панели недоступна");
+    }
+    expect(screen.queryByText("API подключён")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Войти снова" })).toBeNull();
+    const requestCount = fetchMock.mock.calls.length;
+    statusFailure = null;
+    fireEvent.click(screen.getByRole("button", { name: "Проверить связь" }));
+    expect(await screen.findByText("API подключён")).toBeTruthy();
+    expect(screen.queryByRole("alert", { name: title })).toBeNull();
+    expect(fetchMock.mock.calls.slice(requestCount).every(([, options]) => !options?.method || options.method === "GET")).toBe(true);
+  });
+
+  it("shows device offline independently of the last successful API response", async () => {
+    await login();
+    await screen.findByText("API подключён");
+    const online = vi.spyOn(navigator, "onLine", "get").mockReturnValue(false);
+    try {
+      fireEvent(window, new Event("offline"));
+      expect(await screen.findByText("Нет сети")).toBeTruthy();
+      expect(screen.getByRole("alert", { name: "Браузер сообщает, что устройство не в сети" }).textContent).toContain("Состояние сервера сейчас неизвестно");
+      expect((screen.getByRole("button", { name: "Проверить связь" }) as HTMLButtonElement).disabled).toBe(true);
+      online.mockReturnValue(true);
+      fireEvent(window, new Event("online"));
+      expect(await screen.findByText("API подключён")).toBeTruthy();
+    } finally {
+      online.mockRestore();
+    }
+  });
+
   it("offers installation before login without starting a permission request", async () => {
     render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
     await screen.findByLabelText("Логин");

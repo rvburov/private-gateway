@@ -149,7 +149,12 @@ export default function App() {
   if (restoring) return <div className="login-page"><p>Проверяем сохранённый вход…</p></div>;
   if (token) return <>
     <ErrorNotice error={error} />
-    <Dashboard token={token} onLogout={() => { void logout(); }} onInstall={() => setInstallOpen(true)} />
+    <Dashboard token={token} onLogout={() => { void logout(); }} onInstall={() => setInstallOpen(true)} onSignIn={() => {
+      void queryClient.cancelQueries();
+      queryClient.clear();
+      setToken("");
+      setError(new Error("Сервер не принял сеанс входа. Введите логин, пароль и код аутентификации снова."));
+    }} />
     {installOpen && <InstallApp onClose={() => setInstallOpen(false)} />}
   </>;
   return (

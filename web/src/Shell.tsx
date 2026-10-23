@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./icons";
 import type { ThemePreference } from "./theme";
+import { connectionLabels, type ConnectionState } from "./ConnectionStatus";
 
 export type Page = "overview" | "devices" | "nodes" | "audit" | "guide" | "checks" | "notifications";
 type NavItem = { page: Page; label: string; short: string; icon: IconName };
@@ -71,7 +72,7 @@ export function Shell({
   page: Page;
   onNavigate: (page: Page) => void;
   deviceCount?: number;
-  api: "ok" | "pending" | "error";
+  api: ConnectionState;
   canAdd: boolean;
   onAdd: () => void;
   onLogout: () => void;
@@ -153,9 +154,9 @@ export function Shell({
           </div>
           <div className="topbar-actions">
             {notifications}
-            <span className={`connection ${api === "error" ? "offline" : api}`}>
+            <span className={`connection ${api === "auth" ? "warning" : api === "ok" || api === "pending" ? api : "offline"}`} role="status">
               <span className="dot" />
-              {api === "error" ? "API недоступен" : api === "pending" ? "Подключение…" : "API подключён"}
+              {connectionLabels[api]}
             </span>
           </div>
         </header>

@@ -3,14 +3,20 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hkdf"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +24,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/rvburov/private-gateway/internal/secure"
 	"github.com/rvburov/private-gateway/internal/storage"
+	"github.com/rvburov/private-gateway/internal/xray"
 )
 
 func notificationTestKeys(t *testing.T) (string, string) {
@@ -51,6 +58,155 @@ func TestPushEndpointAndKeyValidation(t *testing.T) {
 	}
 	if !validPushDevice("iPhone — Safari") || validPushDevice(strings.Repeat("я", 81)) || validPushDevice("Windows\nChrome") || validPushDevice("   ") {
 		t.Fatal("device label bounds invalid")
+	}
+}
+
+func TestNotificationPushPayloadIsSpecificAndDoesNotExposePrivateData(t *testing.T) {
+	private := "vless://device-secret@192.0.2.4:8443/#Личный телефон"
+	seen := map[string]bool{}
+	for _, message := range notificationMessages {
+		payload := notificationPayload(storage.Notification{ID: private, Category: message.category, Title: message.title, Body: private}, false)
+		if payload.Event == "notification" || seen[payload.Event] || payload.Title != message.title || payload.Body == "" || payload.Test {
+			t.Fatalf("event did not retain its concrete safe content: %+v", payload)
+		}
+		seen[payload.Event] = true
+		data, err := json.Marshal(payload)
+		if err != nil || bytes.Contains(data, []byte(private)) || payload.URL != "/?page=notifications" || payload.Tag != "private-gateway-"+payload.Event {
+			t.Fatalf("unsafe push metadata: %s; %v", data, err)
+		}
+	}
+	for _, event := range []string{"device-added", "device-revoked", "device-deleted", "subscription-renewed", "configuration-apply-failed", "configuration-applied", "database-unavailable", "database-recovered", "xray-check-failed", "xray-configuration-pending", "xray-recovered", "configuration-check-failed", "configuration-pending", "configuration-recovered"} {
+		if !seen[event] {
+			t.Errorf("event %q is missing", event)
+		}
+	}
+	// Неизвестный текст или заголовок из другой категории не становятся содержимым push.
+	for _, item := range []storage.Notification{
+		{Category: "devices", Title: private, Body: private},
+		{Category: "devices", Title: "База данных не отвечает", Body: private},
+		{Category: private, Title: private, Body: private},
+	} {
+		payload := notificationPayload(item, false)
+		data, _ := json.Marshal(payload)
+		if bytes.Contains(data, []byte(private)) || payload.Event != "notification" || payload.Title != "Новое уведомление" {
+			t.Fatalf("unrecognized content escaped the closed catalog: %s", data)
+		}
+	}
+	// Тестовое сообщение явно отличается от серверной ошибки, в том числе в JSON.
+	payload := notificationPayload(storage.Notification{Category: "server", Title: "База данных не отвечает", Body: private}, true)
+	data, _ := json.Marshal(payload)
+	if payload.Title != "Проверка уведомлений" || payload.Event != "notification-test" || !payload.Test || !strings.Contains(payload.Body, "тестовое") || bytes.Contains(data, []byte(private)) || !bytes.Contains(data, []byte(`"test":true`)) {
+		t.Fatalf("test push is ambiguous or exposes event data: %s", data)
+	}
+}
+
+func TestNotificationHealthTransitionsAreSpecificAndDeduplicated(t *testing.T) {
+	good := notificationHealth{database: "ok", xray: "ok", configuration: "ok"}
+	state, events := notificationHealthChanges(notificationHealth{}, good)
+	if state != good || len(events) != 0 {
+		t.Fatal("first successful observation was presented as recovery", events)
+	}
+	bad := notificationHealth{database: "fail", xray: "warn", configuration: "warn"}
+	state, events = notificationHealthChanges(state, bad)
+	expectEvents := func(want ...string) {
+		t.Helper()
+		if len(events) != len(want) {
+			t.Fatalf("got %d transition events, want %v: %+v", len(events), want, events)
+		}
+		for index, event := range events {
+			payload := notificationPayload(event, false)
+			if payload.Event != want[index] || event.Category != "server" || event.Body == "" {
+				t.Fatalf("transition %d = %+v, want %q", index, event, want[index])
+			}
+		}
+	}
+	expectEvents("database-unavailable", "xray-configuration-pending", "configuration-pending")
+	state, events = notificationHealthChanges(state, bad)
+	expectEvents()
+	// Новый вид проблемы процесса виден, даже если остальные службы всё ещё неисправны.
+	bad.xray = "fail"
+	state, events = notificationHealthChanges(state, bad)
+	expectEvents("xray-check-failed")
+	state, events = notificationHealthChanges(state, notificationHealth{database: "unknown", xray: "skip", configuration: "unknown"})
+	expectEvents()
+	if state != bad {
+		t.Fatal("unknown observations erased known failures", state)
+	}
+	// Восстановление БД не превращается в сообщение о восстановлении всего VPN.
+	bad.database = "ok"
+	state, events = notificationHealthChanges(state, bad)
+	expectEvents("database-recovered")
+	state, events = notificationHealthChanges(state, good)
+	expectEvents("xray-recovered", "configuration-recovered")
+	_, events = notificationHealthChanges(state, good)
+	expectEvents()
+	// Неудача чтения версий отличается от наличия неприменённых изменений.
+	_, events = notificationHealthChanges(good, notificationHealth{database: "ok", xray: "ok", configuration: "fail"})
+	expectEvents("configuration-check-failed")
+}
+
+func TestNotificationHealthReadsIndependentLocalServicesPostgreSQL(t *testing.T) {
+	store, _, node, _ := integrationStore(t)
+	ctx := context.Background()
+	if err := store.Configure(ctx, true, func(context.Context, []xray.Client) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	path := filepath.Join(directory, "xray.json")
+	config := []byte(`{"inbounds":[]}`)
+	if err := os.WriteFile(path, config, 0600); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, _ := json.Marshal(map[string]any{"running": true, "mtime_ns": info.ModTime().UnixNano(), "sha256": fmt.Sprintf("%x", sha256.Sum256(config))})
+	statusPath := filepath.Join(directory, "xray.status.json")
+	if err = os.WriteFile(statusPath, status, 0600); err != nil {
+		t.Fatal(err)
+	}
+	api := &Server{store: store, options: Options{XrayConfigured: true, Checks: ServerChecks{XrayConfigPath: path}}}
+	api.startNotifications(nil)
+	if state := api.notifications.health(ctx); state != (notificationHealth{database: "ok", xray: "ok", configuration: "ok"}) {
+		t.Fatal("healthy local services were not recognized", state)
+	}
+	if _, err = store.Create(ctx, "test", node.ID); err != nil {
+		t.Fatal(err)
+	}
+	if state := api.notifications.health(ctx); state != (notificationHealth{database: "ok", xray: "ok", configuration: "warn"}) {
+		t.Fatal("pending configuration was mistaken for a process failure", state)
+	}
+	if err = os.WriteFile(statusPath, []byte(`{"running":false,"error":"private error details"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if state := api.notifications.health(ctx); state != (notificationHealth{database: "ok", xray: "fail", configuration: "warn"}) {
+		t.Fatal("process failure masked pending configuration", state)
+	}
+	// Xray может продолжать работать при отказе БД; локальную проверку не пропускаем.
+	if err = os.WriteFile(statusPath, status, 0600); err != nil {
+		t.Fatal(err)
+	}
+	store.Close()
+	if state := api.notifications.health(ctx); state != (notificationHealth{database: "fail", xray: "ok", configuration: "unknown"}) {
+		t.Fatal("database outage was presented as a VPN outage or configuration failure", state)
+	}
+}
+
+func TestNotificationInboxUsesOnlyControlledTextsPostgreSQL(t *testing.T) {
+	store, _, _, _ := integrationStore(t)
+	api := &Server{store: store}
+	api.startNotifications(nil)
+	private := "vless://secret@192.0.2.4:8443/#Личный телефон"
+	api.emitNotification("devices", "Добавлено устройство", private)
+	api.emitNotification("server", private, private)
+	items, unread, err := store.Notifications(context.Background())
+	if err != nil || len(items) != 2 || unread != 2 {
+		t.Fatal("notification center did not preserve both safe events", items, unread, err)
+	}
+	data, _ := json.Marshal(items)
+	if bytes.Contains(data, []byte(private)) || !bytes.Contains(data, []byte("Добавлено устройство")) || !bytes.Contains(data, []byte("Новое уведомление")) {
+		t.Fatalf("notification center content was not normalized: %s", data)
 	}
 }
 
@@ -203,6 +359,113 @@ type notificationHTTPClient func(*http.Request) (*http.Response, error)
 
 func (f notificationHTTPClient) Do(r *http.Request) (*http.Response, error) { return f(r) }
 
+// Расшифровываем захваченный запрос ключом тестового получателя, не обращаясь к push-сервису.
+func notificationReceivedPayload(t *testing.T, request *http.Request, recipient *ecdh.PrivateKey, auth []byte) notificationPushPayload {
+	t.Helper()
+	data, err := io.ReadAll(request.Body)
+	if err != nil || request.Header.Get("Content-Encoding") != "aes128gcm" || len(data) < 102 || data[20] != 65 {
+		t.Fatal("invalid encrypted Web Push record", err)
+	}
+	server, err := ecdh.P256().NewPublicKey(data[21:86])
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, err := recipient.ECDH(server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := append([]byte("WebPush: info\x00"), recipient.PublicKey().Bytes()...)
+	info = append(info, server.Bytes()...)
+	ikm, err := hkdf.Key(sha256.New, shared, auth, string(info), 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := hkdf.Key(sha256.New, ikm, data[:16], "Content-Encoding: aes128gcm\x00", 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce, err := hkdf.Key(sha256.New, ikm, data[:16], "Content-Encoding: nonce\x00", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := gcm.Open(nil, nonce, data[86:], nil)
+	if err != nil {
+		t.Fatal("recipient cannot decrypt push payload", err)
+	}
+	plain = bytes.TrimRight(plain, "\x00")
+	if len(plain) == 0 || plain[len(plain)-1] != 2 {
+		t.Fatal("push final-record delimiter missing")
+	}
+	var payload notificationPushPayload
+	if err = json.Unmarshal(plain[:len(plain)-1], &payload); err != nil {
+		t.Fatal(err)
+	}
+	return payload
+}
+
+func TestNotificationTestRouteAndEventDeliveryHaveDistinctEncryptedPayloadsPostgreSQL(t *testing.T) {
+	store, _, _, _ := integrationStore(t)
+	ctx := context.Background()
+	api := &Server{store: store}
+	api.startNotifications(nil)
+	recipient, err := ecdh.P256().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := bytes.Repeat([]byte{7}, 16)
+	secret := storage.PushSecret{Endpoint: "https://fcm.googleapis.com/fcm/send/test-selected-device", P256dh: base64.RawURLEncoding.EncodeToString(recipient.PublicKey().Bytes()), Auth: base64.RawURLEncoding.EncodeToString(auth)}
+	device, err := store.SavePushSubscription(ctx, secret, "Phone", sha256.Sum256([]byte("test-session")), 0, time.Now().Add(time.Hour), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var received []notificationPushPayload
+	api.notifications.client = notificationHTTPClient(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != secret.Endpoint {
+			t.Fatal("test delivered to another device")
+		}
+		received = append(received, notificationReceivedPayload(t, request, recipient, auth))
+		return &http.Response{StatusCode: 201, Body: io.NopCloser(strings.NewReader(""))}, nil
+	})
+	probe := func(id string) int {
+		t.Helper()
+		request := httptest.NewRequest("POST", "/api/v1/notifications/test", strings.NewReader(`{"subscription_id":"`+id+`"}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		api.notificationTest(response, request)
+		return response.Code
+	}
+	if code := probe(uuid.NewString()); code != 404 || len(received) != 0 {
+		t.Fatal("unknown test destination sent a push", code)
+	}
+	if code := probe(device.ID); code != 200 || len(received) != 1 {
+		t.Fatal("selected test destination not delivered", code)
+	}
+	if received[0].Title != "Проверка уведомлений" || received[0].Event != "notification-test" || !received[0].Test {
+		t.Fatal("decrypted test was not explicitly marked", received[0])
+	}
+	if code := probe(device.ID); code != 429 || len(received) != 1 {
+		t.Fatal("test rate limit did not prevent duplicate delivery", code)
+	}
+	event := storage.Notification{Category: "devices", Title: "Доступ устройства отозван", Body: "vless://private-profile-secret"}
+	if err = api.notifications.send(ctx, storage.PushDelivery{PushDevice: device, Secret: secret}, false, event); err != nil || len(received) != 2 {
+		t.Fatal("regular event delivery failed", err)
+	}
+	if received[1].Title != event.Title || received[1].Event != "device-revoked" || received[1].Test || strings.Contains(received[1].Body, event.Body) || !strings.Contains(received[1].Body, "Примените конфигурацию") {
+		t.Fatal("concrete encrypted event lost its meaning or exposed a profile", received[1])
+	}
+	if items, _, err := store.Notifications(ctx); err != nil || len(items) != 0 {
+		t.Fatal("test delivery created a misleading notification-center event", items, err)
+	}
+}
+
 func TestNotificationDeliveryRechecksConsentAndRevocationPostgreSQL(t *testing.T) {
 	store, pool, _, _ := integrationStore(t)
 	ctx := context.Background()
@@ -235,16 +498,16 @@ func TestNotificationDeliveryRechecksConsentAndRevocationPostgreSQL(t *testing.T
 	if err = store.SaveNotificationPreferences(ctx, storage.NotificationPreferences{Server: false, Devices: true, Configuration: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err = api.notifications.send(ctx, stale, false, "server"); err != nil || calls != 0 {
+	if err = api.notifications.send(ctx, stale, false, storage.Notification{Category: "server", Title: "База данных не отвечает"}); err != nil || calls != 0 {
 		t.Fatal("queued category bypassed disabled preferences", err)
 	}
-	if err = api.notifications.send(ctx, stale, false, "devices"); err != nil || calls != 1 {
+	if err = api.notifications.send(ctx, stale, false, storage.Notification{Category: "devices", Title: "Добавлено устройство"}); err != nil || calls != 1 {
 		t.Fatal("allowed category not sent", err)
 	}
 	if err = store.DeletePushSubscription(ctx, device.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err = api.notifications.send(ctx, stale, true, ""); err == nil || calls != 1 {
+	if err = api.notifications.send(ctx, stale, true, storage.Notification{}); err == nil || calls != 1 {
 		t.Fatal("stale target sent after logout/revoke")
 	}
 	device, err = store.SavePushSubscription(ctx, stale.Secret, "Chrome", identity, 0, time.Now().Add(time.Hour), false)
@@ -253,7 +516,7 @@ func TestNotificationDeliveryRechecksConsentAndRevocationPostgreSQL(t *testing.T
 	}
 	stale.ID = device.ID
 	status = 410
-	if err = api.notifications.send(ctx, stale, true, ""); err == nil {
+	if err = api.notifications.send(ctx, stale, true, storage.Notification{}); err == nil {
 		t.Fatal("expired push endpoint accepted")
 	}
 	var count int

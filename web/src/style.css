@@ -568,6 +568,33 @@ textarea:focus {
   background: var(--surface-2);
   color: var(--fg-2);
 }
+.connection.warning {
+  background: var(--warn-soft);
+  color: var(--warn-ink);
+}
+.connection-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 16px;
+}
+.connection-notice > div {
+  flex: 1 1 240px;
+  min-width: 0;
+}
+.connection-notice h2 {
+  font-size: var(--fs-md);
+  margin: 0 0 4px;
+}
+.connection-notice p {
+  margin: 0;
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+.connection-notice .button {
+  flex: 0 1 auto;
+}
 .view {
   width: 100%;
   max-width: var(--content-max);

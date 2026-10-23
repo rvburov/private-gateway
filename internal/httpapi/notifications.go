@@ -32,6 +32,58 @@ type notificationService struct {
 	active bool
 }
 
+type notificationMessage struct {
+	category string
+	event    string
+	title    string
+	body     string
+}
+
+// В push и центре уведомлений используются только эти тексты: имена устройств, адреса,
+// профили и произвольные подробности ошибок на экран блокировки не попадают.
+var notificationMessages = []notificationMessage{
+	{"devices", "device-added", "Добавлено устройство", "В шлюзе создан новый профиль подключения."},
+	{"devices", "device-revoked", "Доступ устройства отозван", "Примените конфигурацию, чтобы отключить доступ устройства."},
+	{"devices", "device-deleted", "Устройство удалено", "Отозванный профиль удалён из списка устройств."},
+	{"devices", "subscription-renewed", "Ссылка-подписка обновлена", "Для устройства выпущена новая ссылка; прежняя больше не действует."},
+	{"configuration", "configuration-apply-failed", "Не удалось применить конфигурацию", "Откройте панель и проверьте состояние Xray."},
+	{"configuration", "configuration-applied", "Конфигурация применена", "Xray работает с обновлёнными настройками доступа."},
+	{"server", "database-unavailable", "База данных не отвечает", "API не смог подключиться к PostgreSQL. Работа VPN проверяется отдельно в разделе «Сервер»."},
+	{"server", "database-recovered", "Связь с базой данных восстановлена", "PostgreSQL снова отвечает API. Это не подтверждает работу VPN на вашем устройстве."},
+	{"server", "xray-check-failed", "Проверка Xray выявила проблему", "Локальная проверка процесса Xray не прошла. VPN может не работать; откройте раздел «Сервер»."},
+	{"server", "xray-configuration-pending", "Настройки Xray ещё не загружены", "Xray ещё не работает с последней конфигурацией. Повторите проверку в разделе «Сервер»."},
+	{"server", "xray-recovered", "Xray снова работает", "Локальная проверка процесса Xray снова проходит. Подключение с вашего устройства проверяется отдельно."},
+	{"server", "configuration-check-failed", "Не удалось проверить конфигурацию Xray", "API не смог прочитать версии конфигурации. Откройте раздел «Сервер» и повторите проверку."},
+	{"server", "configuration-pending", "Есть неприменённые изменения Xray", "Новые устройства и отзывы доступа ещё не действуют. Примените конфигурацию на «Обзоре»."},
+	{"server", "configuration-recovered", "Конфигурация Xray актуальна", "Желаемая и применённая версии конфигурации снова совпадают. Состояние процесса Xray проверяется отдельно."},
+}
+
+func notificationContent(item storage.Notification) notificationMessage {
+	for _, message := range notificationMessages {
+		if item.Category == message.category && item.Title == message.title {
+			return message
+		}
+	}
+	return notificationMessage{category: item.Category, event: "notification", title: "Новое уведомление", body: "В панели есть новое уведомление. Откройте раздел «Уведомления»."}
+}
+
+type notificationPushPayload struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+	Tag   string `json:"tag"`
+	URL   string `json:"url"`
+	Event string `json:"event"`
+	Test  bool   `json:"test"`
+}
+
+func notificationPayload(item storage.Notification, test bool) notificationPushPayload {
+	message := notificationContent(item)
+	if test {
+		message = notificationMessage{event: "notification-test", title: "Проверка уведомлений", body: "Это тестовое сообщение. Доставка уведомлений на это устройство работает."}
+	}
+	return notificationPushPayload{Title: message.title, Body: message.body, Tag: "private-gateway-" + message.event, URL: "/?page=notifications", Event: message.event, Test: test}
+}
+
 // startNotifications не выполняет внешних запросов: доставка начинается только после подписки.
 // nil отключает фоновые задачи в тестах; сохранение центра уведомлений работает и без них.
 func (s *Server) startNotifications(ctx context.Context) {
@@ -55,7 +107,8 @@ func (s *Server) emitNotification(category, title, body string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	item, created, err := s.store.AddNotification(ctx, category, title, body)
+	message := notificationContent(storage.Notification{Category: category, Title: title, Body: body})
+	item, created, err := s.store.AddNotification(ctx, message.category, message.title, message.body)
 	if err != nil || !created || !s.notifications.active {
 		return
 	}
@@ -336,14 +389,14 @@ func (s *Server) notificationTest(w http.ResponseWriter, r *http.Request) {
 	}
 	n.tests[input.SubscriptionID] = time.Now()
 	n.mu.Unlock()
-	if err = n.send(r.Context(), *selected, true, ""); err != nil {
+	if err = n.send(r.Context(), *selected, true, storage.Notification{}); err != nil {
 		fail(w, 503, "test notification could not be delivered; check browser permission and try again")
 		return
 	}
 	respond(w, 200, map[string]bool{"ok": true})
 }
 
-func (n *notificationService) send(ctx context.Context, delivery storage.PushDelivery, test bool, category string) error {
+func (n *notificationService) send(ctx context.Context, delivery storage.PushDelivery, test bool, event storage.Notification) error {
 	active, err := n.server.store.PushSubscriptionActive(ctx, delivery.ID)
 	if err != nil {
 		return err
@@ -356,7 +409,7 @@ func (n *notificationService) send(ctx context.Context, delivery storage.PushDel
 		if err != nil {
 			return err
 		}
-		if !(category == "server" && prefs.Server || category == "devices" && prefs.Devices || category == "configuration" && prefs.Configuration) {
+		if !(event.Category == "server" && prefs.Server || event.Category == "devices" && prefs.Devices || event.Category == "configuration" && prefs.Configuration) {
 			return nil
 		}
 	}
@@ -367,11 +420,7 @@ func (n *notificationService) send(ctx context.Context, delivery storage.PushDel
 	if err != nil {
 		return err
 	}
-	body := "Есть новое уведомление. Откройте приложение."
-	if test {
-		body = "Уведомления на этом устройстве работают."
-	}
-	payload, _ := json.Marshal(map[string]any{"title": "Private Gateway", "body": body, "tag": "private-gateway", "url": "/?page=notifications"})
+	payload, _ := json.Marshal(notificationPayload(event, test))
 	requestCtx, cancel := context.WithTimeout(ctx, 8*time.Second)
 	defer cancel()
 	response, err := webpush.SendNotificationWithContext(requestCtx, payload, &webpush.Subscription{Endpoint: delivery.Secret.Endpoint, Keys: webpush.Keys{Auth: delivery.Secret.Auth, P256dh: delivery.Secret.P256dh}}, &webpush.Options{
@@ -407,13 +456,10 @@ func (n *notificationService) run(ctx context.Context) {
 			if ctx.Err() != nil {
 				return
 			}
-			if current != previous {
-				if current == "ok" {
-					n.server.emitNotification("server", "Работа сервера восстановлена", "Службы снова отвечают. Подробности — в разделе «Сервер».")
-				} else if current != "unknown" {
-					n.server.emitNotification("server", "Нужна проверка сервера", "Одна из служб не отвечает или требует внимания. Откройте раздел «Сервер».")
-				}
-				previous = current
+			var events []storage.Notification
+			previous, events = notificationHealthChanges(previous, current)
+			for _, event := range events {
+				n.server.emitNotification(event.Category, event.Title, event.Body)
 			}
 		case event := <-n.queue:
 			deliveryCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
@@ -423,7 +469,7 @@ func (n *notificationService) run(ctx context.Context) {
 					if deliveryCtx.Err() != nil {
 						break
 					}
-					_ = n.send(deliveryCtx, item, false, event.Category)
+					_ = n.send(deliveryCtx, item, false, event)
 				}
 			}
 			cancel()
@@ -431,24 +477,65 @@ func (n *notificationService) run(ctx context.Context) {
 	}
 }
 
-// Фоновая проверка читает только локальную БД и состояние Xray, без внешних тестов скорости.
-func (n *notificationService) health(ctx context.Context) string {
+type notificationHealth struct {
+	database      string
+	xray          string
+	configuration string
+}
+
+// Неизменные состояния не создают повторов. Пропуск проверки не означает восстановления и
+// не стирает последнюю известную неисправность; первое успешное наблюдение не считается сбоем.
+func notificationHealthChanges(previous, current notificationHealth) (notificationHealth, []storage.Notification) {
+	next := previous
+	var events []storage.Notification
+	for _, component := range []struct {
+		before string
+		after  string
+		next   *string
+		titles map[string]string
+	}{
+		{previous.database, current.database, &next.database, map[string]string{
+			"fail": "База данных не отвечает", "ok": "Связь с базой данных восстановлена",
+		}},
+		{previous.xray, current.xray, &next.xray, map[string]string{
+			"fail": "Проверка Xray выявила проблему", "warn": "Настройки Xray ещё не загружены", "ok": "Xray снова работает",
+		}},
+		{previous.configuration, current.configuration, &next.configuration, map[string]string{
+			"fail": "Не удалось проверить конфигурацию Xray", "warn": "Есть неприменённые изменения Xray", "ok": "Конфигурация Xray актуальна",
+		}},
+	} {
+		title, known := component.titles[component.after]
+		if !known {
+			continue
+		}
+		*component.next = component.after
+		if component.before == component.after || component.after == "ok" && component.before != "fail" && component.before != "warn" {
+			continue
+		}
+		message := notificationContent(storage.Notification{Category: "server", Title: title})
+		events = append(events, storage.Notification{Category: message.category, Title: message.title, Body: message.body})
+	}
+	return next, events
+}
+
+// Фоновая проверка читает только локальную БД и состояние Xray, без внешних запросов. При
+// отказе БД сохранить и доставить уведомление нельзя; переход сохраняется в памяти до её
+// восстановления. Процесс Xray проверяется независимо: он может работать без PostgreSQL.
+func (n *notificationService) health(ctx context.Context) notificationHealth {
 	probe, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
+	result := notificationHealth{database: "ok", xray: "unknown", configuration: "unknown"}
 	if n.server.store.Ping(probe) != nil {
-		return "database"
+		result.database = "fail"
 	}
 	if !n.server.options.XrayConfigured {
-		return "unknown"
+		return result
 	}
-	state := n.server.checkXrayProcess(probe)
-	if state.Status == "fail" || state.Status == "warn" {
-		return "xray"
+	result.xray = n.server.checkXrayProcess(probe).Status
+	if result.database == "ok" {
+		result.configuration = n.server.checkConfiguration(probe).Status
 	}
-	if state.Status == "skip" {
-		return "unknown"
-	}
-	return "ok"
+	return result
 }
 
 // Контакт VAPID берётся из конфигурации, а не из недоверенного заголовка Host.

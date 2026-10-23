@@ -14,6 +14,7 @@ import {
 import { Checks } from "./Checks";
 import { ServerDiagnostics } from "./ServerDiagnostics";
 import { Notifications, NotificationBell } from "./Notifications";
+import { ConnectionNotice, connectionState } from "./ConnectionStatus";
 import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
@@ -55,7 +56,7 @@ function PageIntro({ page, action }: { page: Page; action?: ReactNode }) {
   );
 }
 
-export function Dashboard({ token, onLogout, onInstall }: { token: string; onLogout: () => void; onInstall: () => void }) {
+export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: string; onLogout: () => void; onInstall: () => void; onSignIn: () => void }) {
   const queryClient = useQueryClient();
   const [theme, setTheme] = useTheme();
   const [page, setPage] = useState<Page>(() => new URLSearchParams(window.location.search).get("page") === "notifications" ? "notifications" : "overview");
@@ -75,6 +76,16 @@ export function Dashboard({ token, onLogout, onInstall }: { token: string; onLog
   const [name, setName] = useState("");
   const [nodeID, setNodeID] = useState("");
   const [notice, setNotice] = useState("");
+  const [offline, setOffline] = useState(() => navigator.onLine === false);
+  useEffect(() => {
+    const update = () => setOffline(navigator.onLine === false);
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
   const status = useQuery({
     queryKey: ["status"],
     queryFn: ({ signal }) => request<Status>(token, "/status", { signal }),
@@ -198,6 +209,9 @@ export function Dashboard({ token, onLogout, onInstall }: { token: string; onLog
   const list = devices.data?.devices ?? [];
   const nodeList = nodes.data?.nodes ?? [];
   const currentStatus = status.data;
+  // Общую связь определяет свежий запрос статуса, а не ошибка прежнего действия.
+  const connectionError = status.error;
+  const connection = connectionState(connectionError, status.isPending, offline);
   const pending = currentStatus && currentStatus.desired_revision !== currentStatus.applied_revision;
   const browserURL = browserURLForPanel(browser.data?.url, window.location.origin);
   const publicBrowser = browserURL?.startsWith("https://") ?? false;
@@ -299,7 +313,7 @@ export function Dashboard({ token, onLogout, onInstall }: { token: string; onLog
       page={page}
       onNavigate={navigate}
       deviceCount={currentStatus?.devices}
-      api={status.isError ? "error" : status.isPending ? "pending" : "ok"}
+      api={connection}
       canAdd={nodeList.length > 0}
       onAdd={startAdding}
       onLogout={onLogout}
@@ -321,7 +335,9 @@ export function Dashboard({ token, onLogout, onInstall }: { token: string; onLog
           </button>
         </div>
       )}
-      <ErrorNotice error={status.error || devices.error || nodes.error || profileError} />
+      <ConnectionNotice state={connection} error={connectionError} checking={status.isFetching}
+        onRetry={() => void refresh()} onSignIn={onSignIn} />
+      {connection === "ok" && <ErrorNotice error={devices.error || nodes.error || profileError} />}
       {page === "overview" && (
         <>
           <div className="stats-grid">
