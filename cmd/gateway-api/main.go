@@ -214,8 +214,11 @@ func serve() error {
 			return err
 		}
 	}
+	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{
-		Token: cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
+		Context: stopCtx,
+		Token:   cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
 		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
 		Checks: httpapi.ServerChecks{
 			XrayBinary: cfg.Xray.Binary, XrayConfigPath: cfg.Xray.ConfigPath,
@@ -230,8 +233,6 @@ func serve() error {
 	if err != nil {
 		return errors.New("cannot bind API loopback address; verify port availability")
 	}
-	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	done := make(chan error, 1)
 	go func() { slog.Info("gateway API listening", "address", cfg.Listen); done <- server.Serve(listener) }()
 	select {

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   browserURLForPanel,
@@ -13,6 +13,7 @@ import {
 } from "./api";
 import { Checks } from "./Checks";
 import { ServerDiagnostics } from "./ServerDiagnostics";
+import { Notifications, NotificationBell } from "./Notifications";
 import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
@@ -39,6 +40,7 @@ const intros: Record<Page, [string, string]> = {
     "Проверка безопасности",
     "Что видят сайты о вашем подключении и устройстве.",
   ],
+  notifications: ["Уведомления", "События шлюза и уведомления на ваших устройствах."],
 };
 
 function PageIntro({ page, action }: { page: Page; action?: ReactNode }) {
@@ -53,10 +55,17 @@ function PageIntro({ page, action }: { page: Page; action?: ReactNode }) {
   );
 }
 
-export function Dashboard({ token, onLogout }: { token: string; onLogout: () => void }) {
+export function Dashboard({ token, onLogout, onInstall }: { token: string; onLogout: () => void; onInstall: () => void }) {
   const queryClient = useQueryClient();
   const [theme, setTheme] = useTheme();
-  const [page, setPage] = useState<Page>("overview");
+  const [page, setPage] = useState<Page>(() => new URLSearchParams(window.location.search).get("page") === "notifications" ? "notifications" : "overview");
+  useEffect(() => {
+    const openNotifications = (event: MessageEvent) => {
+      if (event.data?.type === "gateway-notification-open") setPage("notifications");
+    };
+    navigator.serviceWorker?.addEventListener("message", openNotifications);
+    return () => navigator.serviceWorker?.removeEventListener("message", openNotifications);
+  }, []);
   const [adding, setAdding] = useState(false);
   const [revoking, setRevoking] = useState<Device | null>(null);
   const [deleting, setDeleting] = useState<Device | null>(null);
@@ -174,6 +183,10 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
   }
   function navigate(next: Page) {
     setPage(next);
+    const destination = new URL(window.location.href);
+    if (next === "notifications") destination.searchParams.set("page", "notifications");
+    else destination.searchParams.delete("page");
+    window.history.replaceState(null, "", destination.pathname + destination.search + destination.hash);
     setNotice("");
     setProfileError(null);
   }
@@ -292,6 +305,8 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       onLogout={onLogout}
       theme={theme}
       onTheme={setTheme}
+      onInstall={onInstall}
+      notifications={<NotificationBell token={token} onOpen={() => navigate("notifications")} />}
     >
       <PageIntro
         page={page}
@@ -593,6 +608,7 @@ export function Dashboard({ token, onLogout }: { token: string; onLogout: () => 
       {page === "nodes" && <ServerDiagnostics token={token} />}
       {page === "guide" && <Guide onCheck={() => navigate("checks")} />}
       {page === "checks" && <Checks nodeHost={nodeList[0]?.host} />}
+      {page === "notifications" && <Notifications token={token} onInstall={onInstall} />}
       {page === "audit" && (
         <section className="card">
           <div className="card-heading">

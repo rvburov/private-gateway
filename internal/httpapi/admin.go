@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base32"
+	"errors"
 	"net"
 	"net/http"
 	"net/url"
@@ -386,11 +387,23 @@ func (s *Server) validSession(token string, generation int64) bool {
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if err := s.revokeBrowserPush(r.Context(), r.Header.Get("X-Gateway-Push-Hash")); err != nil {
+		if errors.Is(err, storage.ErrInvalid) {
+			fail(w, 400, "invalid browser push fingerprint")
+		} else {
+			fail(w, 503, "cannot revoke browser push; retry logout")
+		}
+		return
+	}
+	if err := s.revokeSessionPush(r.Context(), value); err != nil {
+		fail(w, 503, "cannot revoke push subscriptions; retry logout")
+		return
+	}
 	if err := s.forgetRememberedLogin(r.Context(), r); err != nil {
 		fail(w, 503, "authentication unavailable")
 		return
 	}
-	value := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
 	var rememberedKey [32]byte
 	name, _ := rememberedLoginCookie(r)
 	if cookie, err := r.Cookie(name); err == nil {

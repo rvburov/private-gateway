@@ -37,6 +37,7 @@ type Browser interface {
 	Stop(context.Context) (browser.Status, error)
 }
 type Options struct {
+	Context        context.Context
 	Token          string
 	WebDir         string
 	XrayConfigured bool
@@ -56,6 +57,7 @@ type Server struct {
 	browserTickets map[string]string
 	pending        map[string]*pendingLogin
 	loginAttempts  map[string]loginAttempts
+	notifications  *notificationService
 }
 
 type loginAttempts struct {
@@ -65,6 +67,7 @@ type loginAttempts struct {
 
 func New(store *storage.Store, xray Xray, browser Browser, options Options) http.Handler {
 	s := &Server{store: store, xray: xray, browser: browser, options: options, sessions: make(map[string]adminSession), browserTickets: make(map[string]string), pending: make(map[string]*pendingLogin), loginAttempts: make(map[string]loginAttempts)}
+	s.startNotifications(options.Context)
 	r := chi.NewRouter()
 	r.Use(middleware.Recoverer)
 	r.Use(securityHeaders)
@@ -104,6 +107,15 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Post("/devices/{id}/revoke", s.revoke)
 			r.Delete("/devices/{id}", s.deleteDevice)
 			r.Get("/audit", s.audit)
+			r.Get("/notifications", s.notificationList)
+			r.Post("/notifications/read", s.notificationRead)
+			r.Get("/notifications/preferences", s.notificationPreferences)
+			r.Put("/notifications/preferences", s.notificationPreferences)
+			r.Get("/notifications/push-key", s.notificationPushKey)
+			r.Get("/notifications/push-subscriptions", s.notificationSubscriptions)
+			r.Post("/notifications/push-subscriptions", s.notificationSubscriptions)
+			r.Delete("/notifications/push-subscriptions/{id}", s.notificationUnsubscribe)
+			r.Post("/notifications/test", s.notificationTest)
 			r.Get("/checks", s.serverChecks)
 			r.Get("/checks/performance/ping", s.performancePing)
 			r.Get("/checks/performance/download", s.performanceDownload)
@@ -146,7 +158,7 @@ func securityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		// «Проверка» панели только по кнопке спрашивает у этих сервисов, какие адреса, сети и
 		// DNS-серверы видят сайты, и измеряет скорость до независимого узла.
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' "+strings.Join(checkServices, " ")+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; worker-src 'self'; manifest-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self' "+strings.Join(checkServices, " ")+"; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -246,6 +258,7 @@ func (s *Server) create(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
+	s.emitNotification("devices", "Добавлено устройство", "В шлюзе создан новый профиль подключения.")
 	respond(w, 201, result)
 }
 func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
@@ -254,6 +267,7 @@ func (s *Server) revoke(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
+	s.emitNotification("devices", "Доступ устройства отозван", "Примените конфигурацию, чтобы отключить доступ устройства.")
 	respond(w, 200, result)
 }
 func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
@@ -261,6 +275,7 @@ func (s *Server) deleteDevice(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
+	s.emitNotification("devices", "Устройство удалено", "Отозванный профиль удалён из списка устройств.")
 	respond(w, 200, map[string]string{"status": "deleted"})
 }
 func (s *Server) export(w http.ResponseWriter, r *http.Request) {
@@ -285,6 +300,7 @@ func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
+	s.emitNotification("devices", "Ссылка-подписка обновлена", "Для устройства выпущена новая ссылка; прежняя больше не действует.")
 	respond(w, 200, map[string]string{"subscription_path": path})
 }
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
@@ -312,6 +328,9 @@ func (s *Server) configure(w http.ResponseWriter, r *http.Request, apply bool) {
 		operation = s.xray.Apply
 	}
 	if err := s.store.Configure(ctx, apply, operation); err != nil {
+		if apply {
+			s.emitNotification("configuration", "Не удалось применить конфигурацию", "Откройте панель и проверьте состояние Xray.")
+		}
 		if errors.Is(err, storage.ErrStaleConfig) {
 			fail(w, 409, err.Error())
 			return
@@ -324,6 +343,7 @@ func (s *Server) configure(w http.ResponseWriter, r *http.Request, apply bool) {
 	status := "valid"
 	if apply {
 		status = "applied"
+		s.emitNotification("configuration", "Конфигурация применена", "Xray работает с обновлёнными настройками доступа.")
 	}
 	respond(w, 200, map[string]string{"status": status})
 }
@@ -362,6 +382,13 @@ func (s *Server) web(w http.ResponseWriter, r *http.Request) {
 	if _, err := os.Stat(filepath.Join(s.options.WebDir, "index.html")); err != nil {
 		fail(w, 404, "web panel not built")
 		return
+	}
+	if r.URL.Path == "/manifest.webmanifest" {
+		w.Header().Set("Content-Type", "application/manifest+json; charset=utf-8")
+	}
+	if r.URL.Path == "/sw.js" {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		w.Header().Set("Service-Worker-Allowed", "/")
 	}
 	http.FileServer(http.Dir(s.options.WebDir)).ServeHTTP(w, r)
 }

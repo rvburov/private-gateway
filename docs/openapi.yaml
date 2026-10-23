@@ -126,6 +126,13 @@ paths:
   /api/v1/auth/logout:
     post:
       operationId: adminLogout
+      description: Отозвать текущий сеанс, сохранённый вход и связанные push-подписки. Отпечаток текущей подписки браузера помогает отозвать и прежнюю подписку после перезапуска API или нового входа.
+      parameters:
+        - name: X-Gateway-Push-Hash
+          in: header
+          required: false
+          description: Первые 8 байт SHA-256 endpoint текущей push-подписки в hex. Это необязательный несекретный отпечаток, а не адрес доставки или токен доступа; авторизация Bearer по-прежнему обязательна.
+          schema: {type: string, pattern: '^[0-9a-f]{16}$'}
       responses:
         '200': {description: Текущий сеанс и сохранённый вход этого браузера отозваны}
   /healthz:
@@ -550,6 +557,174 @@ paths:
             text/plain:
               schema: {type: string}
         default: {$ref: '#/components/responses/Error'}
+  /api/v1/notifications:
+    get:
+      operationId: listNotifications
+      description: Общий центр администратора; до 200 последних сообщений за 30 дней, сначала новые. Число непрочитанных относится к возвращённым сообщениям.
+      responses:
+        '200':
+          description: Сообщения и счётчик непрочитанных.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, unread]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 200
+                    items: {$ref: '#/components/schemas/Notification'}
+                  unread: {type: integer, minimum: 0, maximum: 200}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/notifications/read:
+    post:
+      operationId: readNotifications
+      description: Отметить выбранные сообщения прочитанными. Отсутствующее поле ids, ids со значением null или пустой список означает все сообщения. Неизвестные корректные UUID игнорируются.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ids:
+                  type: [array, 'null']
+                  maxItems: 200
+                  items: {type: string, format: uuid}
+      responses:
+        '200': {$ref: '#/components/responses/NotificationSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/notifications/preferences:
+    get:
+      operationId: notificationPreferences
+      description: Общие настройки категорий центра и push на всех устройствах. По умолчанию все три категории включены.
+      responses:
+        '200':
+          description: Настройки категорий.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPreferences'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+    put:
+      operationId: saveNotificationPreferences
+      description: Заменить все три настройки. Выключенная категория не создаёт новых сообщений в центре и push; существующие сообщения сохраняются.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotificationPreferences'}
+      responses:
+        '200':
+          description: Сохранённые настройки.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPreferences'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/notifications/push-key:
+    get:
+      operationId: notificationPushKey
+      description: Публичный ключ VAPID для подписки браузера. Пара ключей создаётся автоматически и хранится зашифрованной в базе; закрытый ключ не возвращается.
+      responses:
+        '200':
+          description: Ключ в base64url.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [public_key]
+                properties:
+                  public_key: {type: string}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/notifications/push-subscriptions:
+    get:
+      operationId: listNotificationPushSubscriptions
+      description: До 16 действующих подписок текущего поколения администратора. Возвращается короткий отпечаток адреса доставки, сам адрес и ключи браузера не раскрываются.
+      responses:
+        '200':
+          description: Браузеры с действующей подпиской.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    maxItems: 16
+                    items: {$ref: '#/components/schemas/NotificationPushDevice'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+    post:
+      operationId: subscribeNotificationPush
+      description: >-
+        Создать или обновить подписку по адресу доставки. Нужны HTTPS endpoint
+        доверенного браузерного push-сервиса, валидный ключ P-256 и 16-байтный auth.
+        Подписка привязывается к хешу текущего входа, поколению администратора и сроку
+        входа: до 8 часов или оставшегося срока сохранённого входа до 30 дней.
+        Выход и смена учётных данных отзывают соответствующий доступ. Адрес и ключи
+        доставки сохраняются зашифрованными. При превышении 16 подписок удаляются
+        самые старые. Подписка сама по себе не запрашивает разрешение браузера.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/NotificationPushSubscription'}
+      responses:
+        '200':
+          description: Метаданные сохранённой подписки.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/NotificationPushDevice'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/notifications/push-subscriptions/{id}:
+    delete:
+      operationId: revokeNotificationPushSubscription
+      description: Администратор отзывает любую подписку по UUID. Повторный отзыв неизвестного корректного UUID также успешен; браузерный unsubscribe выполняется отдельно.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: {type: string, format: uuid}
+      responses:
+        '200': {$ref: '#/components/responses/NotificationSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /api/v1/notifications/test:
+    post:
+      operationId: testNotificationPush
+      description: >-
+        Отправить тест на выбранную действующую подписку, не чаще раза в минуту
+        на подписку. Успешный ответ подтверждает приём сервисом доставки, а не
+        показ уведомления на устройстве. Ответ сервиса 404 или 410 удаляет
+        недействующую подписку. Тест не добавляет сообщение в центр.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [subscription_id]
+              properties:
+                subscription_id: {type: string, format: uuid}
+      responses:
+        '200': {$ref: '#/components/responses/NotificationSuccess'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
 components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
@@ -572,6 +747,15 @@ components:
       required: true
       schema: {type: string, format: uuid}
   responses:
+    NotificationSuccess:
+      description: Операция выполнена.
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [ok]
+            properties:
+              ok: {type: boolean, const: true}
     Error:
       description: Нет доступа, неверные данные, служба недоступна или операция не удалась
       content:
@@ -606,6 +790,51 @@ components:
               running: {type: boolean}
               url: {type: string, format: uri, description: Адрес noVNC по HTTPS под защитой cookie подтверждённого сеанса администратора}
   schemas:
+    Notification:
+      type: object
+      required: [id, category, title, body, created_at, read_at]
+      properties:
+        id: {type: string, format: uuid}
+        category: {type: string, enum: [server, devices, configuration]}
+        title: {type: string}
+        body: {type: string}
+        created_at: {type: string, format: date-time}
+        read_at: {type: [string, 'null'], format: date-time}
+    NotificationPreferences:
+      type: object
+      additionalProperties: false
+      required: [server, devices, configuration]
+      properties:
+        server: {type: boolean, default: true, description: Состояние локальных служб и восстановление}
+        devices: {type: boolean, default: true, description: Изменения устройств и доступа}
+        configuration: {type: boolean, default: true, description: Применение конфигурации}
+    NotificationPushDevice:
+      type: object
+      required: [id, endpoint_hash, device, created_at, last_sent_at]
+      properties:
+        id: {type: string, format: uuid}
+        endpoint_hash: {type: string, pattern: '^[0-9a-f]{16}$', description: Первые 8 байт SHA-256 адреса доставки в hex}
+        device: {type: string, maxLength: 80}
+        created_at: {type: string, format: date-time}
+        last_sent_at: {type: [string, 'null'], format: date-time}
+    NotificationPushSubscription:
+      type: object
+      additionalProperties: false
+      required: [endpoint, keys, device]
+      properties:
+        endpoint:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: HTTPS URL FCM, Mozilla, Apple или Windows Push с непустым путём, без порта, userinfo, fragment, IP-адреса и редиректов.
+        device: {type: string, minLength: 1, maxLength: 80, description: Непустая подпись браузера без управляющих символов}
+        keys:
+          type: object
+          additionalProperties: false
+          required: [p256dh, auth]
+          properties:
+            p256dh: {type: string, pattern: '^[A-Za-z0-9_-]{87}$', description: 65-байтный несжатый ключ на кривой P-256 в base64url без padding}
+            auth: {type: string, pattern: '^[A-Za-z0-9_-]{22}$', description: 16-байтный секрет подписки в base64url без padding}
     ResourceDiagnostics:
       type: [object, 'null']
       description: Ограниченные показатели группы ресурсов; scope присутствует у API, отсутствует у вложенного vpn.cgroup.

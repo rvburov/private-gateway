@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from "react"
 import { Icon, type IconName } from "./icons";
 import type { ThemePreference } from "./theme";
 
-export type Page = "overview" | "devices" | "nodes" | "audit" | "guide" | "checks";
+export type Page = "overview" | "devices" | "nodes" | "audit" | "guide" | "checks" | "notifications";
 type NavItem = { page: Page; label: string; short: string; icon: IconName };
 
 const items: Record<Page, NavItem> = {
@@ -12,16 +12,18 @@ const items: Record<Page, NavItem> = {
   audit: { page: "audit", label: "Журнал действий", short: "Журнал", icon: "history" },
   guide: { page: "guide", label: "Инструкции", short: "Инструкции", icon: "book" },
   checks: { page: "checks", label: "Проверка", short: "Проверка", icon: "shield" },
+  notifications: { page: "notifications", label: "Уведомления", short: "Уведомления", icon: "bell" },
 };
 const sidebarGroups = [
   { label: "Управление", items: [items.overview, items.devices, items.nodes, items.audit] },
   { label: "Подключение", items: [items.guide, items.checks] },
+  { label: "Приложение", items: [items.notifications] },
 ];
 // Нижние вкладки на телефоне, как в ai_agent_capper: круглая кнопка посередине добавляет
 // устройство, а разделы, которые не поместились, уходят в шторку «Ещё».
 const tabItems = [items.overview, items.devices];
 const tabItemsAfterAdd = [items.checks];
-const moreItems = [items.guide, items.audit, items.nodes];
+const moreItems = [items.guide, items.audit, items.nodes, items.notifications];
 const themes: { value: ThemePreference; label: string; icon: IconName }[] = [
   { value: "system", label: "Авто", icon: "monitor" },
   { value: "light", label: "Светлая", icon: "sun" },
@@ -62,6 +64,8 @@ export function Shell({
   onLogout,
   theme,
   onTheme,
+  onInstall,
+  notifications,
   children,
 }: {
   page: Page;
@@ -73,6 +77,8 @@ export function Shell({
   onLogout: () => void;
   theme: ThemePreference;
   onTheme: (theme: ThemePreference) => void;
+  onInstall: () => void;
+  notifications: ReactNode;
   children: ReactNode;
 }) {
   const [moreOpen, setMoreOpen] = useState(false);
@@ -128,6 +134,9 @@ export function Shell({
             ))}
           </nav>
           <div className="sidebar-foot">
+            <button type="button" className="nav-link" onClick={onInstall}>
+              <Icon name="download" />Установить приложение
+            </button>
             <ThemeSwitch theme={theme} onTheme={onTheme} />
             <button type="button" className="nav-link danger" onClick={onLogout}>
               <Icon name="logout" />
@@ -142,10 +151,13 @@ export function Shell({
           <div className="topbar-title">
             <h1>{items[page].label}</h1>
           </div>
-          <span className={`connection ${api === "error" ? "offline" : api}`}>
-            <span className="dot" />
-            {api === "error" ? "API недоступен" : api === "pending" ? "Подключение…" : "API подключён"}
-          </span>
+          <div className="topbar-actions">
+            {notifications}
+            <span className={`connection ${api === "error" ? "offline" : api}`}>
+              <span className="dot" />
+              {api === "error" ? "API недоступен" : api === "pending" ? "Подключение…" : "API подключён"}
+            </span>
+          </div>
         </header>
         <main className="view" id="view" tabIndex={-1}>
           {children}
@@ -184,6 +196,7 @@ export function Shell({
           onLogout={onLogout}
           theme={theme}
           onTheme={onTheme}
+          onInstall={() => { setMoreOpen(false); onInstall(); }}
         />
       )}
     </div>
@@ -197,6 +210,7 @@ function MoreSheet({
   onLogout,
   theme,
   onTheme,
+  onInstall,
 }: {
   page: Page;
   onNavigate: (page: Page) => void;
@@ -204,6 +218,7 @@ function MoreSheet({
   onLogout: () => void;
   theme: ThemePreference;
   onTheme: (theme: ThemePreference) => void;
+  onInstall: () => void;
 }) {
   const closeButton = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -242,6 +257,9 @@ function MoreSheet({
             {item.label}
           </button>
         ))}
+        <button type="button" className="nav-link" onClick={onInstall}>
+          <Icon name="download" />Установить приложение
+        </button>
         <ThemeSwitch theme={theme} onTheme={onTheme} />
         <button type="button" className="nav-link danger" onClick={onLogout}>
           <Icon name="logout" />

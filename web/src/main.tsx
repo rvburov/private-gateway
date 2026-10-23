@@ -8,9 +8,12 @@ import "@fontsource/golos-text/700.css";
 import App from "./App";
 import { applyTheme, readTheme } from "./theme";
 import "./style.css";
+import { listenInstallEvents, registerGatewayWorker } from "./pwa/runtime";
 
 // Выбранная тема применяется до первой отрисовки, чтобы страница не мелькала другой темой.
 applyTheme(readTheme());
+listenInstallEvents();
+void registerGatewayWorker();
 
 const queryClient = new QueryClient({
   defaultOptions: {

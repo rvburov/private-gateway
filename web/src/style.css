@@ -1880,6 +1880,165 @@ textarea:focus {
   font-weight: 400;
   color: var(--fg-2);
 }
+/* Установка и уведомления сохраняют короткую основную форму на телефоне. */
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.install-app-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding-top: 12px;
+}
+.install-app-body > p,
+.install-app-steps {
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+.install-app-brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+.install-app-brand img {
+  flex: none;
+  border-radius: 12px;
+}
+.install-app-brand h3 {
+  font-size: var(--fs-lg);
+}
+.install-app-steps {
+  display: grid;
+  gap: 12px;
+  padding-left: 24px;
+}
+.install-login {
+  margin-top: 8px;
+  color: var(--fg-2);
+}
+.notifications-bell {
+  position: relative;
+  flex: none;
+}
+.notifications-count {
+  position: absolute;
+  top: 0;
+  right: -3px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid var(--surface);
+  border-radius: 999px;
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+}
+.notifications-layout {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.notifications-layout .card-heading {
+  flex-wrap: wrap;
+}
+.notifications-layout .card-heading > div {
+  flex: 1 1 200px;
+}
+.notifications-layout .card > .notice {
+  margin: 12px 20px;
+}
+.notifications-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  max-height: 520px;
+  overflow-y: auto;
+}
+.notification-item {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 16px 20px;
+  border-top: 1px solid var(--line);
+}
+.notification-item:first-child {
+  border-top: 0;
+}
+.notification-unread {
+  background: var(--accent-soft);
+}
+.notification-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.notification-content h3 {
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+.notification-content p,
+.notification-content time {
+  display: block;
+  margin-top: 4px;
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+.notification-content time {
+  color: var(--fg-3);
+  font-size: var(--fs-xs);
+}
+.notification-item > button {
+  flex: none;
+}
+.notification-preferences {
+  display: grid;
+  gap: 16px;
+}
+.notification-preference {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 0;
+  min-height: 44px;
+  font-weight: 400;
+}
+.notification-preference input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  margin-top: 3px;
+  flex: none;
+  accent-color: var(--accent);
+}
+.notification-preference strong {
+  display: block;
+  font-size: var(--fs-md);
+  font-weight: 500;
+}
+.notification-preference span span {
+  display: block;
+  color: var(--fg-3);
+  font-size: var(--fs-sm);
+  font-weight: 400;
+}
+@media (max-width: 700px) {
+  .topbar-actions {
+    gap: 6px;
+  }
+  .notification-item {
+    padding: 14px 16px;
+  }
+  .notifications-layout .card > .notice {
+    margin: 12px 16px;
+  }
+}
 .diagnostics-export {
   display: flex;
   justify-content: space-between;

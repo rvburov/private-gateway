@@ -51,6 +51,7 @@ const networks: Record<string, { as_number: number; isp_name: string; country_co
 };
 
 beforeEach(() => {
+  window.history.replaceState(null, "", "/");
   window.localStorage.clear();
   document.documentElement.removeAttribute("data-theme");
   revoked = false;
@@ -81,6 +82,9 @@ beforeEach(() => {
     this.removeAttribute("open");
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
+    if (path === "/api/v1/notifications") return Response.json({ items: [], unread: 0 });
+    if (path === "/api/v1/notifications/preferences") return Response.json({ server: true, devices: true, configuration: true });
+    if (path === "/api/v1/notifications/push-subscriptions") return Response.json({ items: [] });
     const about = (ip: string) => Response.json({ ip, ...networks[ip] });
     if (path === "/api/v1/auth/restore")
       return rememberedSession ? Response.json({ session: "admin-token" }) : Response.json({ error: "unauthorized" }, { status: 401 });
@@ -250,6 +254,50 @@ async function login() {
 }
 
 describe("administrator panel", () => {
+  it("offers installation before login without starting a permission request", async () => {
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    await screen.findByLabelText("Логин");
+    fireEvent.click(screen.getByRole("button", { name: "Установить приложение" }));
+    const install = await screen.findByRole("dialog", { name: "Установить приложение" });
+    expect(within(install).getByRole("heading", { name: "Private Gateway" })).toBeTruthy();
+    expect(within(install).queryByRole("button", { name: "Включить уведомления" })).toBeNull();
+    fireEvent.click(within(install).getByText("Закрыть", { selector: "button" }));
+    expect(screen.queryByRole("dialog", { name: "Установить приложение" })).toBeNull();
+    expect(fetchMock.mock.calls.some(([path]) => path.includes("/notifications"))).toBe(false);
+  });
+
+  it("opens installation and notifications from the phone More menu and the header bell", async () => {
+    await login();
+    const tabs = screen.getByRole("navigation", { name: "Нижнее меню" });
+    fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "Ещё" })).getByRole("button", { name: "Установить приложение" }));
+    expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
+    const install = await screen.findByRole("dialog", { name: "Установить приложение" });
+    fireEvent.click(within(install).getByText("Закрыть", { selector: "button" }));
+    fireEvent.click(screen.getByRole("banner").querySelector(".notifications-bell") as HTMLButtonElement);
+    expect(await screen.findByRole("region", { name: "Центр уведомлений" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Уведомления на этом устройстве" })).toBeTruthy();
+    expect(window.location.search).toBe("?page=notifications");
+    expect(await screen.findByRole("checkbox", { name: /Состояние сервера/ })).toBeTruthy();
+    fireEvent.click(within(tabs).getByRole("button", { name: "Обзор" }));
+    expect(window.location.search).toBe("");
+  });
+
+  it("retains a notification destination clicked while the login page is open", async () => {
+    const worker = new EventTarget();
+    vi.stubGlobal("navigator", { userAgent: navigator.userAgent, maxTouchPoints: navigator.maxTouchPoints, serviceWorker: worker });
+    render(<QueryClientProvider client={queryClient}><App /></QueryClientProvider>);
+    await screen.findByLabelText("Логин");
+    worker.dispatchEvent(new MessageEvent("message", { data: { type: "gateway-notification-open" } }));
+    expect(window.location.search).toBe("?page=notifications");
+    fireEvent.change(screen.getByLabelText("Логин"), { target: { value: "admin" } });
+    fireEvent.change(screen.getByLabelText("Пароль"), { target: { value: "long-password" } });
+    fireEvent.click(screen.getByRole("button", { name: "Продолжить" }));
+    fireEvent.change(await screen.findByLabelText("Код аутентификации"), { target: { value: "123456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
+    expect(await screen.findByRole("region", { name: "Центр уведомлений" })).toBeTruthy();
+  });
+
   it("switches between the system, light and dark themes and remembers only the choice", async () => {
     await login();
     const themes = screen.getByRole("group", { name: "Тема оформления" });

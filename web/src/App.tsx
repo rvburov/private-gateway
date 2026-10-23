@@ -2,6 +2,8 @@ import { useEffect, useState, type FormEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { request, type Status } from "./api";
 import { Dashboard } from "./Dashboard";
+import { InstallApp } from "./InstallApp";
+import { cleanupBrowserPush, currentPushHashForLogout } from "./push";
 import { Icon } from "./icons";
 import { ErrorNotice, ProfileQRCode } from "./ui";
 
@@ -19,6 +21,17 @@ export default function App() {
   const [setupURI, setSetupURI] = useState("");
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
+  const [installOpen, setInstallOpen] = useState(false);
+  useEffect(() => {
+    const rememberDestination = (event: MessageEvent) => {
+      if (event.data?.type !== "gateway-notification-open") return;
+      const destination = new URL(window.location.href);
+      destination.searchParams.set("page", "notifications");
+      window.history.replaceState(null, "", destination.pathname + destination.search + destination.hash);
+    };
+    navigator.serviceWorker?.addEventListener("message", rememberDestination);
+    return () => navigator.serviceWorker?.removeEventListener("message", rememberDestination);
+  }, []);
   useEffect(() => {
     let active = true;
     void fetch("/api/v1/auth/restore", { credentials: "same-origin" })
@@ -107,10 +120,11 @@ export default function App() {
   async function logout() {
     try {
       if (token) {
+        const pushHash = await currentPushHashForLogout();
         const response = await fetch("/api/v1/auth/logout", {
           method: "POST",
           credentials: "same-origin",
-          headers: { Authorization: `Bearer ${token}` },
+          headers: { Authorization: `Bearer ${token}`, ...(pushHash ? { "X-Gateway-Push-Hash": pushHash } : {}) },
         });
         if (!response.ok) throw new Error("Не удалось завершить вход. Повторите попытку.");
       }
@@ -118,6 +132,8 @@ export default function App() {
       setError(new Error("Не удалось завершить вход. Повторите попытку."));
       return;
     }
+    // Сервер уже отозвал разрешение доставки; локальная отписка дополняет этот отзыв.
+    void cleanupBrowserPush().catch(() => {});
     queryClient.clear();
     setToken("");
     setError(null);
@@ -131,7 +147,11 @@ export default function App() {
     setError(null);
   }
   if (restoring) return <div className="login-page"><p>Проверяем сохранённый вход…</p></div>;
-  if (token) return <><ErrorNotice error={error} /><Dashboard token={token} onLogout={() => { void logout(); }} /></>;
+  if (token) return <>
+    <ErrorNotice error={error} />
+    <Dashboard token={token} onLogout={() => { void logout(); }} onInstall={() => setInstallOpen(true)} />
+    {installOpen && <InstallApp onClose={() => setInstallOpen(false)} />}
+  </>;
   return (
     <div className="login-page">
       <div className="login-intro">
@@ -264,8 +284,12 @@ export default function App() {
                 : "Без сохранения входа сеанс хранится только в памяти вкладки."}
             </span>
           </div>
+          <button type="button" className="button full install-login" onClick={() => setInstallOpen(true)}>
+            <Icon name="download" size={18} />Установить приложение
+          </button>
         </form>
       </div>
+      {installOpen && <InstallApp onClose={() => setInstallOpen(false)} />}
     </div>
   );
 }
