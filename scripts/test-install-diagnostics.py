@@ -16,6 +16,10 @@ PREAMBLE = SOURCE.split("\narchive=", 1)[0]
 # их упрощённую копию: изменение наследования trap проверяется на рабочем коде.
 COLLECTORS = "watch_xray_status() {" + SOURCE.split("\nwatch_xray_status() {", 1)[1].split("\nfinish() {", 1)[0]
 START_COLLECTORS = 'mkdir "$work/logs"\n' + SOURCE.split('\nmkdir "$work/logs"\n', 1)[1].split("\n# Шаг выкладки", 1)[0]
+COMPOSE = "compose() {" + SOURCE.split("\ncompose() {", 1)[1].split("\n# Неудачная установка", 1)[0]
+PANEL = "panel_ready() {" + SOURCE.split("\npanel_ready() {", 1)[1].split("\nbrowser_protected() {", 1)[0]
+BROWSER = "browser_protected() {" + SOURCE.split("\nbrowser_protected() {", 1)[1].split("\nvless_works() {", 1)[0]
+VLESS = "vless_works() {" + SOURCE.split("\nvless_works() {", 1)[1].split("\nxhttp_works() {", 1)[0]
 
 
 class InstallationDiagnosticsTests(unittest.TestCase):
@@ -84,6 +88,72 @@ class InstallationDiagnosticsTests(unittest.TestCase):
                     self.assertEqual(result.returncode, 0)
                     self.assertEqual(result.stdout, "main-script-success\n")
                     self.assertEqual(result.stderr, "")
+
+    def test_compose_checks_root_only_overlay_with_same_privileges_as_config(self):
+        body = ('env_file=/tmp/unused-test.env\n'
+                'sudo() {\n'
+                ' case "$1" in\n'
+                '  test) [[ "$2" == -f && "$3" == */compose.xhttp.yml ]];;\n'
+                '  grep) [[ "$overlay_enabled" == true ]];;\n'
+                '  docker) if [[ " $* " == *compose.xhttp.yml* ]]; then printf "overlay\\n"; else printf "base\\n"; fi;;\n'
+                '  *) return 90;;\n'
+                ' esac\n'
+                '}\n' + COMPOSE + '\n'
+                'overlay_enabled=true\ncompose config --format json\n'
+                'overlay_enabled=false\ncompose config --format json\n')
+        result = self.run_fixture(body)
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "overlay\nbase\n")
+        self.assertEqual(result.stderr, "")
+
+    def test_panel_port_resolution_failure_does_not_attempt_an_invalid_url(self):
+        result = self.run_fixture('domain=example.com\n'
+                                  'public_port() { return 7; }\n'
+                                  'curl() { printf "unexpected request\\n"; return 90; }\n' + PANEL + '\n'
+                                  'if panel_ready; then exit 91; fi\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("reason=port-resolution", result.stderr)
+        self.assertNotIn("request-failed", result.stderr)
+
+    def test_browser_and_vless_stop_on_port_reader_failure(self):
+        for definition, name in ((BROWSER, "browser_protected"), (VLESS, "vless_works")):
+            with self.subTest(name=name):
+                result = self.run_fixture('domain=example.com\n'
+                                          'public_port() { return 7; }\n'
+                                          'curl() { printf "unexpected request\\n"; return 90; }\n'
+                                          'sudo() { printf "unexpected smoke\\n"; return 90; }\n' + definition + '\n'
+                                          'if ' + name + '; then exit 91; fi\n')
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "")
+                self.assertEqual(result.stderr, "")
+
+    def test_panel_failure_reports_numbers_without_proxy_or_response_secrets(self):
+        result = self.run_fixture('domain=example.com\n'
+                                  'HTTPS_PROXY=https://test-user:test-proxy-secret@example.org\n'
+                                  'public_port() { printf "8443\\n"; }\n'
+                                  'curl() { printf "503 0"; return 22; }\n' + PANEL + '\n'
+                                  'if panel_ready; then exit 91; fi\n')
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("port=8443; http_status=503; tls_status=0; curl_exit=22; proxy_configured=true", result.stderr)
+        self.assertNotIn("test-proxy-secret", result.stderr)
+        self.assertNotIn("example.com", result.stderr)
+        self.assertNotIn("example.org", result.stderr)
+
+    def test_panel_requires_http_200_and_verified_tls(self):
+        for response, curl_status, accepted in (("200 0", 0, True), ("204 0", 0, False),
+                                                ("200 20", 60, False), ("private-response-text", 0, False)):
+            with self.subTest(response=response):
+                result = self.run_fixture('domain=example.com\n'
+                                          'public_port() { printf "8443\\n"; }\n'
+                                          'curl() { printf %s ' + shlex.quote(response) + '; return ' + str(curl_status) + '; }\n' + PANEL + '\n'
+                                          'if panel_ready; then printf "accepted\\n"; else printf "rejected\\n"; fi\n')
+                self.assertEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, "accepted\n" if accepted else "rejected\n")
+                if accepted:
+                    self.assertEqual(result.stderr, "")
+                self.assertNotIn("private-response-text", result.stderr)
 
 
 if __name__ == "__main__":

@@ -40,7 +40,7 @@ collector=''
 compose() {
   local release=/opt/private-gateway-docker/current/docker
   local files=(-f "$release/compose.yml")
-  if [[ -f $release/compose.xhttp.yml ]] && sudo grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+  if sudo test -f "$release/compose.xhttp.yml" && sudo grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
     files+=(-f "$release/compose.xhttp.yml")
   fi
   sudo docker compose --env-file "$env_file" "${files[@]}" "$@"
@@ -110,18 +110,46 @@ public_port() {
   compose config --format json | python3 "$repository/deploy/docker/release-ports.py" --field "$1"
 }
 panel_ready() {
-  local port=${1:-$(public_port panel)}
-  curl --fail --silent --show-error --max-time 10 --output /dev/null \
-    --resolve "$domain:$port:127.0.0.1" "https://$domain:$port/readyz"
+  local port response code=0 http_status=unknown tls_status=unknown proxy_configured=false
+  if [[ -n ${1:-} ]]; then
+    port=$1
+  elif ! port=$(public_port panel); then
+    printf '::error file=scripts/test-install-update.sh,title=HTTPS panel probe::reason=port-resolution\n' >&2
+    return 1
+  fi
+  if [[ ! $port =~ ^[0-9]{1,5}$ ]]; then
+    printf '::error file=scripts/test-install-update.sh,title=HTTPS panel probe::reason=invalid-port\n' >&2
+    return 1
+  fi
+  port=$((10#$port))
+  if ((port < 1 || port > 65535)); then
+    printf '::error file=scripts/test-install-update.sh,title=HTTPS panel probe::reason=invalid-port\n' >&2
+    return 1
+  fi
+  response=$(curl --fail --silent --show-error --max-time 10 --output /dev/null \
+    --write-out '%{http_code} %{ssl_verify_result}' \
+    --resolve "$domain:$port:127.0.0.1" "https://$domain:$port/readyz") || code=$?
+  if ((code == 0)) && [[ $response == '200 0' ]]; then return 0; fi
+  if [[ $response =~ ^([0-9]{3})\ ([0-9]{1,3})$ ]]; then
+    http_status=${BASH_REMATCH[1]}
+    tls_status=${BASH_REMATCH[2]}
+  fi
+  if [[ -n ${https_proxy:-}${HTTPS_PROXY:-}${all_proxy:-}${ALL_PROXY:-} ]]; then proxy_configured=true; fi
+  # Только числа и фиксированные категории: не печатать адрес, тело ответа или proxy URL.
+  printf '::error file=scripts/test-install-update.sh,title=HTTPS panel probe::reason=request-failed; port=%s; http_status=%s; tls_status=%s; curl_exit=%s; proxy_configured=%s\n' \
+    "$port" "$http_status" "$tls_status" "$code" "$proxy_configured" >&2
+  return 1
 }
 browser_protected() {
-  local port=${1:-$(public_port panel)} status
+  local port status
+  port=${1:-$(public_port panel)} || return
   status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 10 \
     --resolve "$domain:$port:127.0.0.1" "https://$domain:$port/browser/vnc.html")
   [[ $status == 403 ]] || fail "noVNC is not protected on $port."
 }
 vless_works() {
-  local attempt port=${1:-$(public_port vpn)}
+  local attempt port
+  port=${1:-$(public_port vpn)} || return
   for attempt in 1 2 3; do
     if sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --port "$port"; then return 0; fi
     ((attempt == 3)) || sleep 5
