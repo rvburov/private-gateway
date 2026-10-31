@@ -18,6 +18,8 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
+from urllib.parse import urlsplit
 
 
 ENV = Path("/etc/private-gateway-docker/stack.env")
@@ -28,19 +30,33 @@ LOCK = Path("/run/lock/private-gateway-docker-install.lock")
 NAMES = ("GATEWAY_XHTTP_ENABLED", "GATEWAY_XHTTP_PORT", "GATEWAY_XHTTP_PRIVATE_KEY",
          "GATEWAY_XHTTP_SHORT_ID", "GATEWAY_XHTTP_PATH")
 STAGES = frozenset(("preflight", "keygen", "compose-validation", "compose-start", "config-apply",
-                    "tcp-smoke", "xhttp-smoke", "rollback"))
+                    "tcp-smoke", "xhttp-smoke", "panel-ready", "rollback"))
 
 
 def safe_stage(value, fallback="preflight"):
     return value if isinstance(value, str) and value in STAGES else fallback
 
 
+def safe_code(value, maximum):
+    return value if type(value) is int and 0 <= value <= maximum else None
+
+
+def curl_probe_result(output):
+    match = re.fullmatch(r"(000|[1-5][0-9]{2}) ([0-9]{1,3})\n?", output) if isinstance(output, str) else None
+    return (int(match[1]), int(match[2])) if match else (None, None)
+
+
 class ConfigurationError(Exception):
-    def __init__(self, message, *, stage="preflight", restored=False, rollback_stage=None):
+    def __init__(self, message, *, stage="preflight", restored=False, rollback_stage=None,
+                 http_status=None, curl_exit=None, rollback_http_status=None, rollback_curl_exit=None):
         super().__init__(message)
         self.stage = safe_stage(stage)
         self.restored = restored is True
         self.rollback_stage = None if rollback_stage is None else safe_stage(rollback_stage, "rollback")
+        self.http_status = safe_code(http_status, 599)
+        self.curl_exit = safe_code(curl_exit, 255)
+        self.rollback_http_status = safe_code(rollback_http_status, 599)
+        self.rollback_curl_exit = safe_code(rollback_curl_exit, 255)
 
 
 def report_error(error, *, github_actions=None):
@@ -53,6 +69,11 @@ def report_error(error, *, github_actions=None):
         state = "; rollback=failed; rollback_stage=" + safe_stage(rollback_stage, "rollback")
     elif getattr(error, "restored", False) is True:
         state = "; rollback=restored"
+    for name, maximum in (("http_status", 599), ("curl_exit", 255),
+                          ("rollback_http_status", 599), ("rollback_curl_exit", 255)):
+        value = safe_code(getattr(error, name, None), maximum)
+        if value is not None:
+            state += f"; {name}={value}"
     if github_actions is None:
         github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
     if github_actions:
@@ -70,7 +91,10 @@ def run(command, timeout=120):
         raise ConfigurationError("configuration command could not complete") from error
     if result.returncode:
         # Сообщения дочерних команд могут включать конфигурацию; наружу идёт только категория.
-        raise ConfigurationError("configuration command failed; command output suppressed")
+        http_status = curl_probe_result(result.stdout)[0] if command[0] == "curl" else None
+        raise ConfigurationError("configuration command failed; command output suppressed",
+                                 curl_exit=result.returncode if command[0] == "curl" else None,
+                                 http_status=http_status)
     return result.stdout
 
 
@@ -159,7 +183,7 @@ def atomic_write(path, content, metadata=None):
 
 
 def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
-              backups=BACKUPS, xray_config=None, execute=run):
+              backups=BACKUPS, xray_config=None, execute=run, clock=time.monotonic, pause=time.sleep):
     active_stage = "preflight"
 
     def execute_at(stage, arguments, *, timeout):
@@ -173,7 +197,8 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         except Exception as error:
             # Исполнитель и дочерняя программа не определяют текст публичной ошибки.
             raise ConfigurationError("configuration command failed; command output suppressed",
-                                     stage=active_stage) from error
+                                     stage=active_stage, http_status=getattr(error, "http_status", None),
+                                     curl_exit=getattr(error, "curl_exit", None)) from error
 
     if not compose.is_file() or "GATEWAY_XHTTP_ENABLED" not in compose.read_text():
         raise ConfigurationError("install a verified release with XHTTP support first")
@@ -239,6 +264,45 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         if "VLESS traffic OK:" not in result:
             raise ConfigurationError("the transport traffic check did not pass", stage=stage)
 
+    def check_panel():
+        # Проверяется публичный TLS-маршрут через edge/Caddy, а не только localhost API.
+        # Полный Compose JSON содержит env и остаётся только в памяти этого процесса.
+        deadline = clock() + 60
+        config = execute_at("panel-ready", command() + ["config", "--format", "json"], timeout=20)
+        try:
+            value = json.loads(config)["services"]["api"]["environment"]["GATEWAY_BROWSER_PUBLIC_URL"]
+            endpoint = urlsplit(value)
+            host = endpoint.hostname
+            port = endpoint.port if endpoint.port is not None else 443
+            if (endpoint.scheme != "https" or endpoint.username is not None or endpoint.password is not None or
+                    not host or len(host) > 253 or not 1 <= port <= 65535 or
+                    any(not re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", label)
+                        for label in host.split("."))):
+                raise ValueError("invalid panel endpoint")
+        except (KeyError, TypeError, ValueError, AttributeError) as error:
+            raise ConfigurationError("canonical HTTPS panel endpoint could not be read", stage="panel-ready") from error
+        http_status = None
+        curl_exit = None
+        while (remaining := deadline - clock()) > 0:
+            duration = min(4, remaining)
+            probe = ["curl", "--noproxy", "*", "--silent", "--show-error", "--output", "/dev/null",
+                     "--max-time", str(duration), "--connect-timeout", str(min(3, duration)),
+                     "--resolve", f"{host}:{port}:127.0.0.1", "--write-out", "%{http_code} %{ssl_verify_result}\n",
+                     f"https://{host}:{port}/readyz"]
+            try:
+                result = execute_at("panel-ready", probe, timeout=min(5, remaining))
+                http_status, verified = curl_probe_result(result)
+                curl_exit = 0
+                if http_status == 200 and verified == 0:
+                    return
+            except ConfigurationError as error:
+                http_status, curl_exit = error.http_status, error.curl_exit
+            remaining = deadline - clock()
+            if remaining > 0:
+                pause(min(1, remaining))
+        raise ConfigurationError("public HTTPS panel did not become ready within 60 seconds", stage="panel-ready",
+                                 http_status=http_status, curl_exit=curl_exit)
+
     atomic_write(env, after, metadata)
     try:
         execute_at("compose-validation", command() + ["config", "--quiet"], timeout=20)
@@ -246,6 +310,7 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
             start_and_apply()
             for transport in (["tcp", "xhttp"] if enabled else ["tcp"]):
                 check_traffic(transport)
+            check_panel()
     except BaseException as error:
         failure_stage = safe_stage(getattr(error, "stage", active_stage))
         active_stage = "rollback"
@@ -260,12 +325,17 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
                 check_traffic("tcp")
                 if parse_env(before).get("GATEWAY_XHTTP_ENABLED") == "1":
                     check_traffic("xhttp")
+                check_panel()
         except BaseException as rollback_error:
             rollback_stage = safe_stage(getattr(rollback_error, "stage", active_stage), "rollback")
             raise ConfigurationError(f"configuration and rollback failed; inspect backup {backup}",
-                                     stage=failure_stage, rollback_stage=rollback_stage) from rollback_error
+                                     stage=failure_stage, rollback_stage=rollback_stage,
+                                     http_status=getattr(error, "http_status", None), curl_exit=getattr(error, "curl_exit", None),
+                                     rollback_http_status=getattr(rollback_error, "http_status", None),
+                                     rollback_curl_exit=getattr(rollback_error, "curl_exit", None)) from rollback_error
         raise ConfigurationError(f"configuration failed; previous settings restored; backup {backup}",
-                                 stage=failure_stage, restored=True) from error
+                                 stage=failure_stage, restored=True, http_status=getattr(error, "http_status", None),
+                                 curl_exit=getattr(error, "curl_exit", None)) from error
     action = "applied and checked" if apply else "prepared for the next release; use --apply to activate"
     return f"XHTTP settings {action}; backup {backup}"
 

@@ -8,6 +8,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
@@ -44,6 +45,7 @@ class ConfigureXHTTPTests(unittest.TestCase):
         self.config.write_bytes(b'{"inbounds": [{"tag": "vless-reality"}]}\n')
         self.config.chmod(0o600)
         self.calls = []
+        self.panel_url = "https://example.com:9443/browser/vnc.html"
 
     def execute(self, command, timeout):
         self.calls.append(command)
@@ -51,6 +53,10 @@ class ConfigureXHTTPTests(unittest.TestCase):
             return json.dumps({"reality_private_key": KEY})
         if command[-1] == "status":
             return "ACTIVE DEVICES 1\n"
+        if command[-3:] == ["config", "--format", "json"]:
+            return json.dumps({"services": {"api": {"environment": {"GATEWAY_BROWSER_PUBLIC_URL": self.panel_url}}}})
+        if command[0] == "curl":
+            return "200 0\n"
         if "vpn-smoke.py" in command[1]:
             return "VLESS traffic OK: TLSv1.3\n"
         return ""
@@ -127,7 +133,8 @@ class ConfigureXHTTPTests(unittest.TestCase):
         self.assertEqual(self.env.read_bytes(), self.original)
         self.assertEqual(self.config.read_bytes(), config_before)
         self.assertEqual(sum(command[-2:] == ["config", "apply"] for command in self.calls), 2)
-        self.assertEqual(self.calls[-1][-1], "tcp")
+        self.assertEqual([command[-1] for command in self.calls if "vpn-smoke.py" in command[1]][-1], "tcp")
+        self.assertEqual(self.calls[-1][0], "curl")
         starts = [command for command in self.calls if "up" in command]
         self.assertIn(str(self.overlay), starts[0])
         self.assertNotIn(str(self.overlay), starts[-1])
@@ -163,7 +170,8 @@ class ConfigureXHTTPTests(unittest.TestCase):
         starts = [command for command in self.calls if "up" in command]
         self.assertNotIn(str(self.overlay), starts[0])
         self.assertIn(str(self.overlay), starts[-1])
-        self.assertEqual(self.calls[-1][-1], "xhttp")
+        self.assertEqual([command[-1] for command in self.calls if "vpn-smoke.py" in command[1]][-1], "xhttp")
+        self.assertEqual(self.calls[-1][0], "curl")
 
     def test_duplicate_variables_and_old_release_are_rejected(self):
         self.env.write_bytes(self.original + b"GATEWAY_PORT=8443\n")
@@ -340,6 +348,158 @@ class ConfigureXHTTPTests(unittest.TestCase):
             self.configure()
         self.assertEqual(caught.exception.stage, "keygen")
         self.assertNotIn(secret, str(caught.exception))
+
+    def clock(self):
+        elapsed = [0.0]
+
+        def pause(duration):
+            self.assertGreater(duration, 0)
+            self.assertLessEqual(duration, 1)
+            elapsed[0] += duration
+
+        return elapsed, lambda: elapsed[0], pause
+
+    def test_panel_readiness_waits_for_public_route_and_keeps_tls_verification(self):
+        execute_before = self.execute
+        attempts = 0
+
+        def execute(command, timeout):
+            nonlocal attempts
+            result = execute_before(command, timeout)
+            if command[0] == "curl":
+                attempts += 1
+                self.assertEqual(command[command.index("--noproxy") + 1], "*")
+                self.assertEqual(command[command.index("--resolve") + 1], "example.com:9443:127.0.0.1")
+                self.assertEqual(command[-1], "https://example.com:9443/readyz")
+                self.assertEqual(command[command.index("--output") + 1], "/dev/null")
+                self.assertNotIn("--insecure", command)
+                self.assertNotIn("-k", command)
+                self.assertLessEqual(timeout, 5)
+                return "503 0\n" if attempts == 1 else result
+            return result
+
+        elapsed, clock, pause = self.clock()
+        self.execute = execute
+        self.assertIn("applied and checked", self.configure(apply=True, clock=clock, pause=pause))
+        self.assertEqual(attempts, 2)
+        self.assertEqual(elapsed[0], 1)
+        self.assertEqual(self.calls[-1][0], "curl")
+
+    def test_permanent_panel_failure_rolls_back_and_checks_restored_https(self):
+        execute_before = self.execute
+        observed_enabled = []
+
+        def execute(command, timeout):
+            result = execute_before(command, timeout)
+            if command[0] == "curl":
+                enabled = xhttp.parse_env(self.env.read_bytes()).get("GATEWAY_XHTTP_ENABLED") == "1"
+                observed_enabled.append(enabled)
+                return "503 0\n" if enabled else result
+            return result
+
+        elapsed, clock, pause = self.clock()
+        self.execute = execute
+        with self.assertRaisesRegex(xhttp.ConfigurationError, "previous settings restored") as caught:
+            self.configure(apply=True, clock=clock, pause=pause)
+        self.assertEqual(elapsed[0], 60)
+        self.assertEqual(observed_enabled[-1], False)
+        self.assertTrue(all(observed_enabled[:-1]))
+        self.assertEqual(self.env.read_bytes(), self.original)
+        self.assertEqual(caught.exception.stage, "panel-ready")
+        self.assertEqual(caught.exception.http_status, 503)
+        self.assertEqual(caught.exception.curl_exit, 0)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            xhttp.report_error(caught.exception, github_actions=True)
+        self.assertIn("stage=panel-ready; rollback=restored; http_status=503; curl_exit=0", output.getvalue())
+        for secret in ("example.com", self.panel_url, str(self.root), KEY, OLD_KEY):
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_unavailable_restored_panel_marks_rollback_as_failed(self):
+        execute_before = self.execute
+        self.execute = lambda command, timeout: ("503 0\n" if command[0] == "curl"
+                                                  else execute_before(command, timeout))
+        elapsed, clock, pause = self.clock()
+        with self.assertRaisesRegex(xhttp.ConfigurationError, "configuration and rollback failed") as caught:
+            self.configure(apply=True, clock=clock, pause=pause)
+        self.assertEqual(elapsed[0], 120)
+        self.assertEqual(caught.exception.stage, "panel-ready")
+        self.assertEqual(caught.exception.rollback_stage, "panel-ready")
+        self.assertEqual(caught.exception.rollback_http_status, 503)
+        self.assertEqual(caught.exception.rollback_curl_exit, 0)
+        self.assertEqual(self.env.read_bytes(), self.original)
+
+    def test_unknown_http_or_unverified_tls_is_not_accepted(self):
+        execute_before = self.execute
+        for response in ("private-response-text", "200 0 private-response-text", "204 0\n", "200 1\n", "600 0\n"):
+            with self.subTest(response=response):
+                self.env.write_bytes(self.original)
+                elapsed, clock, pause = self.clock()
+
+                def execute(command, timeout):
+                    result = execute_before(command, timeout)
+                    if (command[0] == "curl" and
+                            xhttp.parse_env(self.env.read_bytes()).get("GATEWAY_XHTTP_ENABLED") == "1"):
+                        return response
+                    return result
+
+                self.execute = execute
+                with self.assertRaises(xhttp.ConfigurationError) as caught:
+                    self.configure(apply=True, clock=clock, pause=pause)
+                self.assertEqual(caught.exception.stage, "panel-ready")
+                self.assertTrue(caught.exception.restored)
+                self.assertEqual(elapsed[0], 60)
+                self.assertNotIn("private-response-text", str(caught.exception))
+
+    def test_curl_failure_codes_are_numeric_and_command_output_is_suppressed(self):
+        execute_before = self.execute
+        secret = "private-curl-stderr https://example.com/private-path-0123456789"
+
+        def execute(command, timeout):
+            result = execute_before(command, timeout)
+            if (command[0] == "curl" and
+                    xhttp.parse_env(self.env.read_bytes()).get("GATEWAY_XHTTP_ENABLED") == "1"):
+                raise xhttp.ConfigurationError(secret, http_status=0, curl_exit=60)
+            return result
+
+        self.execute = execute
+        _, clock, pause = self.clock()
+        with self.assertRaises(xhttp.ConfigurationError) as caught:
+            self.configure(apply=True, clock=clock, pause=pause)
+        self.assertEqual(caught.exception.http_status, 0)
+        self.assertEqual(caught.exception.curl_exit, 60)
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            xhttp.report_error(caught.exception, github_actions=True)
+        self.assertIn("http_status=0; curl_exit=60", output.getvalue())
+        self.assertNotIn(secret, output.getvalue())
+        self.assertNotIn(secret, str(caught.exception))
+
+    def test_run_curl_failure_preserves_only_numeric_results(self):
+        secret = "private-curl-stderr https://example.com/private-path-0123456789"
+        result = subprocess.CompletedProcess(["curl"], 60, stdout="000 20\n", stderr=secret)
+        with mock.patch.object(xhttp.subprocess, "run", return_value=result):
+            with self.assertRaises(xhttp.ConfigurationError) as caught:
+                xhttp.run(["curl", "--output", "/dev/null"], timeout=4)
+        self.assertEqual(caught.exception.http_status, 0)
+        self.assertEqual(caught.exception.curl_exit, 60)
+        self.assertNotIn(secret, str(caught.exception))
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            xhttp.report_error(caught.exception, github_actions=True)
+        self.assertIn("http_status=0; curl_exit=60", output.getvalue())
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_invalid_canonical_panel_endpoint_is_rejected_without_echoing_value(self):
+        for endpoint in ("http://example.com/browser", "https://secret-user:secret-password@example.com/browser",
+                         "https://example.com:65536/browser", "https://invalid_host.example.com/browser"):
+            with self.subTest(endpoint=endpoint):
+                self.env.write_bytes(self.original)
+                self.panel_url = endpoint
+                with self.assertRaises(xhttp.ConfigurationError) as caught:
+                    self.configure(apply=True)
+                self.assertEqual(caught.exception.stage, "panel-ready")
+                self.assertNotIn(endpoint, str(caught.exception))
 
 
 if __name__ == "__main__":
