@@ -60,8 +60,13 @@ build_checks_image() {
 # этой копии; порт 8080 одновременно обслуживает стек только одной копии.
 dev=.local/dev
 dev_compose() {
+  local -a dev_files=(--file "$dev/release/docker/compose.yml")
+  if [[ -f "$dev/release/docker/compose.xhttp.yml" ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$dev/stack.env"; then
+    dev_files+=(--file "$dev/release/docker/compose.xhttp.yml")
+  fi
+  dev_files+=(--file deploy/dev/compose.yml)
   docker compose --project-name "private-gateway-dev-$checkout_name" --env-file "$dev/stack.env" \
-    --file "$dev/release/docker/compose.yml" --file deploy/dev/compose.yml "$@"
+    "${dev_files[@]}" "$@"
 }
 require_dev_stack() {
   if [[ ! -f $dev/stack.env || ! -f $dev/release/docker/compose.yml ]]; then

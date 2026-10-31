@@ -29,6 +29,11 @@ func helperCommand(args []string) int {
 		if err != nil || !json.Valid(data) {
 			return 2
 		}
+		if os.Getenv("PRIVATE_GATEWAY_XRAY_TEST_ECHO_CONFIG") == "1" {
+			fmt.Fprintln(os.Stderr, string(data))
+			fmt.Fprintln(os.Stderr, os.Getenv("PRIVATE_GATEWAY_XRAY_TEST_ERROR_TEXT"))
+			return 3
+		}
 		if os.Getenv("PRIVATE_GATEWAY_XRAY_TEST_INVALID") == "1" {
 			fmt.Fprintln(os.Stderr, testSettings().PrivateKey, testID)
 			return 3

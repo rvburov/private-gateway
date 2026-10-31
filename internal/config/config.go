@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"strconv"
+	"strings"
 
 	"github.com/rvburov/private-gateway/internal/adminauth"
 	"github.com/rvburov/private-gateway/internal/model"
@@ -76,8 +77,32 @@ func Load() (Config, error) {
 	}
 	c.Node = model.Node{ID: storage.LocalNodeID, Name: "local", Host: value("GATEWAY_HOST", "vpn.example.com"), Port: vpnPort, ServerName: value("GATEWAY_SERVER_NAME", "www.cloudflare.com"), PublicKey: publicKey, ShortID: os.Getenv("GATEWAY_SHORT_ID")}
 	settings := xray.Settings{PrivateKey: privateKey, Listen: value("GATEWAY_XRAY_LISTEN", "0.0.0.0"), Port: xrayPort, StatsPort: statsPort, ServerName: c.Node.ServerName, Target: value("GATEWAY_REALITY_TARGET", "www.cloudflare.com:443"), ShortID: c.Node.ShortID}
+	switch value("GATEWAY_XHTTP_ENABLED", "0") {
+	case "0":
+	case "1":
+		xhttpPort, err := integer("GATEWAY_XHTTP_PORT", 8444)
+		if err != nil || xhttpPort < 1 || xhttpPort > 65535 || xhttpPort == vpnPort ||
+			xhttpPort == xrayPort || xhttpPort == statsPort || xhttpPort == p ||
+			xhttpPort == 80 || xhttpPort == 443 || xhttpPort == 8443 {
+			return c, errors.New("GATEWAY_XHTTP_PORT must be valid and distinct from existing service ports")
+		}
+		xhttpPrivate := os.Getenv("GATEWAY_XHTTP_PRIVATE_KEY")
+		xhttpPublic, err := xray.PublicKey(xhttpPrivate)
+		if err != nil || xhttpPublic == publicKey {
+			return c, errors.New("GATEWAY_XHTTP_PRIVATE_KEY must be a separate X25519 private key")
+		}
+		xhttpShortID := strings.ToLower(os.Getenv("GATEWAY_XHTTP_SHORT_ID"))
+		xhttpPath := os.Getenv("GATEWAY_XHTTP_PATH")
+		settings.XHTTP = &xray.XHTTPSettings{Port: xhttpPort, PrivateKey: xhttpPrivate, ShortID: xhttpShortID, Path: xhttpPath}
+		c.Node.XHTTP = &model.XHTTPNode{Port: xhttpPort, PublicKey: xhttpPublic, ShortID: xhttpShortID, Path: xhttpPath, Mode: "auto"}
+	default:
+		return c, errors.New("GATEWAY_XHTTP_ENABLED must be 0 or 1")
+	}
 	rendered, err := xray.Render(settings, nil)
 	if err != nil {
+		if settings.XHTTP != nil {
+			return c, errors.New("invalid Xray settings; verify TCP and XHTTP ports, separate REALITY keys, short IDs and XHTTP path")
+		}
 		return c, errors.New("invalid Xray settings; verify REALITY target, port, listen address and short ID")
 	}
 	hash := sha256.Sum256(rendered)

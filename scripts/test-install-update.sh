@@ -15,7 +15,12 @@ work=$(mktemp -d)
 collector=''
 
 compose() {
-  sudo docker compose --env-file "$env_file" -f /opt/private-gateway-docker/current/docker/compose.yml "$@"
+  local release=/opt/private-gateway-docker/current/docker
+  local files=(-f "$release/compose.yml")
+  if [[ -f $release/compose.xhttp.yml ]] && sudo grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(-f "$release/compose.xhttp.yml")
+  fi
+  sudo docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
 # Неудачная установка удаляет свои контейнеры, а обновление заменяет их: журнал каждого
 # контейнера сохраняется по ходу работы, по файлу на контейнер.
@@ -96,6 +101,27 @@ vless_works() {
     ((attempt == 3)) || sleep 5
   done
   return 1
+}
+xhttp_works() {
+  local attempt port
+  port=$(public_port xhttp)
+  [[ $port != 0 ]] || return 1
+  for attempt in 1 2 3; do
+    if sudo python3 /opt/private-gateway-docker/current/docker/vpn-smoke.py --transport xhttp --port "$port"; then return 0; fi
+    ((attempt == 3)) || sleep 5
+  done
+  return 1
+}
+xhttp_identity() {
+  sudo python3 - "$env_file" <<'PY'
+import hashlib
+from pathlib import Path
+import sys
+
+values = dict(line.split('=', 1) for line in Path(sys.argv[1]).read_text().splitlines() if '=' in line)
+names = ('GATEWAY_XHTTP_PORT', 'GATEWAY_XHTTP_PRIVATE_KEY', 'GATEWAY_XHTTP_SHORT_ID', 'GATEWAY_XHTTP_PATH')
+print(hashlib.sha256('\n'.join(values[name] for name in names).encode()).hexdigest())
+PY
 }
 # Хеши не раскрывают секреты и должны совпадать после перехода и отката.
 identity() {
@@ -231,12 +257,17 @@ check_stack() {
   panel_ready || fail 'The panel is unavailable.'
   browser_protected
   vless_works || fail 'VLESS traffic is unavailable.'
-  local fallback
+  local fallback xhttp
   fallback=$(public_port fallback)
   if [[ $fallback != 0 ]]; then
     panel_ready "$fallback" || fail 'The fallback panel is unavailable.'
     browser_protected "$fallback"
     vless_works "$fallback" || fail 'The fallback VLESS traffic is unavailable.'
+  fi
+  xhttp=$(public_port xhttp)
+  if [[ $xhttp != 0 ]]; then
+    xhttp_works || fail 'XHTTP traffic is unavailable.'
+    [[ $(xhttp_identity) == "$saved_xhttp_identity" ]] || fail 'XHTTP identity changed across update or rollback.'
   fi
   check_identity
   local status desired applied
@@ -377,6 +408,7 @@ bootstrap() {
 }
 printf '\n== Bootstrap and first deployment ==\n'
 bootstrap "$version_a" "$work/release-initial.tar.gz" 2>&1 | tee "$work/install.log"
+compose config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); assert not c["services"]["xray"].get("ports"), "Disabled XHTTP reserved a host port."'
 panel_ready
 browser_protected
 node=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "NODE" {print $2}')
@@ -409,6 +441,15 @@ check_stack
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/repeat-b.log"
 grep -Fx "Installed release verified: $version_b; panel=$(public_port panel); vpn=$(public_port vpn); updater=current" "$work/repeat-b.log" \
   || fail 'The installed updater did not verify itself.'
+
+printf '\n== Enable XHTTP without changing the existing TCP identity ==\n'
+sudo python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --port 8444 --apply
+saved_xhttp_identity=$(xhttp_identity)
+check_stack
+# Повторное включение не должно выдавать новый ключ или путь.
+sudo python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --apply
+[[ $(xhttp_identity) == "$saved_xhttp_identity" ]] || fail 'Repeated configuration changed the XHTTP identity.'
+check_stack
 
 printf '\n== Preparation release keeps the old primary443 and both public ports ==\n'
 deliver "$version_e" "$work/release-e.tar.gz" 2>&1 | tee "$work/preparation.log"

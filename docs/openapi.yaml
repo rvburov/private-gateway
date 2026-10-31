@@ -251,8 +251,10 @@ paths:
                 type: object
                 required: [port, uri, sing_box_json, mihomo_yaml, subscription_path]
                 properties:
-                  port: {type: integer, minimum: 1, maximum: 65535, description: Текущий внешний порт узла во всех форматах профиля; в production 8443}
-                  uri: {type: string, format: uri}
+                  port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт существующего TCP/Vision-профиля и панели; в production 8443}
+                  uri: {type: string, format: uri, description: Существующий профиль VLESS + TCP + REALITY + Vision}
+                  xhttp_uri: {type: string, format: uri, description: Необязательный профиль VLESS + XHTTP + REALITY без Vision; доступен при включённом входе XHTTP}
+                  xhttp_port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт необязательного входа XHTTP}
                   sing_box_json: {type: string, description: Полная конфигурация sing-box в JSON}
                   mihomo_yaml: {type: string, description: Полная конфигурация Mihomo в YAML}
                   subscription_path: {type: string, description: '/sub/ и секретный токен ссылки-подписки; HTTPS-адрес панели в production содержит :8443'}
@@ -314,7 +316,10 @@ paths:
         Открытая ссылка-подписка активного устройства: секрет — токен в пути. Без format
         формат выбирает User-Agent клиента; браузер получает HTML-страницу. Отозванные
         устройства и заменённые ссылки отвечают 404. Чтения не журналируются и не попадают
-        в аудит.
+        в аудит. При включённом и успешно применённом XHTTP общий список base64 содержит сначала XHTTP, затем
+        TCP/Vision. Известные legacy-клиенты Hiddify, sing-box, Clash/Mihomo и Stash
+        продолжают получать совместимый TCP-профиль. Форматы uri, sing-box и mihomo
+        сохраняют прежнее содержимое. Каноническая ссылка и токен устройства не меняются.
       responses:
         '200': {description: Профиль устройства в запрошенном формате}
         '400': {$ref: '#/components/responses/Error'}
@@ -1104,6 +1109,16 @@ components:
         server_name: {type: string}
         public_key: {type: string}
         short_id: {type: string}
+        xhttp:
+          type: object
+          description: Необязательные параметры дополнительного входа XHTTP; закрытый ключ сюда не входит
+          required: [port, public_key, short_id, path, mode]
+          properties:
+            port: {type: integer, minimum: 1, maximum: 65535}
+            public_key: {type: string}
+            short_id: {type: string}
+            path: {type: string}
+            mode: {type: string, enum: [auto]}
     Device:
       type: object
       required: [id, node_id, name, created_at, revoked_at]

@@ -3,7 +3,7 @@ import { request, type Device, type ProfileExport } from "./api";
 import { Icon } from "./icons";
 import { ErrorNotice, Modal, ProfileQRCode } from "./ui";
 
-type ProfileFormat = "subscription" | "uri" | "sing_box_json" | "mihomo_yaml";
+type ProfileFormat = "subscription" | "uri" | "xhttp_uri" | "sing_box_json" | "mihomo_yaml";
 export type RevealedProfile = ProfileExport & { device: Device };
 
 // Профиль и его ссылки живут только в состоянии компонента и никогда — в кеше запросов.
@@ -31,8 +31,11 @@ export function ProfileDialog({
   const subscriptionURL = new URL(profile.subscription_path, window.location.origin);
   if (profile.port) subscriptionURL.port = String(profile.port);
   const subscriptionLink = subscriptionURL.toString();
-  const text = format === "subscription" ? subscriptionLink : profile[format];
-  const linkFormat = format === "subscription" || format === "uri";
+  // После обновления профиля выключенный вход не должен оставлять пустую ссылку для копирования.
+  const activeFormat = format === "xhttp_uri" && !profile.xhttp_uri ? "uri" : format;
+  const text = activeFormat === "subscription" ? subscriptionLink
+    : activeFormat === "xhttp_uri" ? profile.xhttp_uri ?? "" : profile[activeFormat];
+  const linkFormat = activeFormat === "subscription" || activeFormat === "uri" || activeFormat === "xhttp_uri";
 
   async function rotateSubscription() {
     setRotating(true);
@@ -64,15 +67,15 @@ export function ProfileDialog({
     }
   }
   function download() {
-    if (format === "subscription" || format === "uri") return;
+    if (activeFormat !== "sing_box_json" && activeFormat !== "mihomo_yaml") return;
     try {
-      const file = new Blob([profile[format]], {
-        type: format === "sing_box_json" ? "application/json" : "application/yaml",
+      const file = new Blob([profile[activeFormat]], {
+        type: activeFormat === "sing_box_json" ? "application/json" : "application/yaml",
       });
       const location = URL.createObjectURL(file);
       const link = document.createElement("a");
       link.href = location;
-      link.download = `private-gateway-${profile.device.id}.${format === "sing_box_json" ? "json" : "yaml"}`;
+      link.download = `private-gateway-${profile.device.id}.${activeFormat === "sing_box_json" ? "json" : "yaml"}`;
       document.body.append(link);
       link.click();
       link.remove();
@@ -90,7 +93,7 @@ export function ProfileDialog({
         Профиль содержит секрет доступа. Передавайте его только владельцу устройства.
       </div>
       <p className="modal-description">
-        Ссылку-подписку добавляют в приложение VPN на любом устройстве: приложение само получит
+        Ссылку-подписку добавляют в совместимое приложение VPN: приложение само получит
         профиль и будет его обновлять. VLESS URI вставляют или сканируют вручную; sing-box и Mihomo
         могут использовать собственный файл конфигурации. Для нового устройства сначала примените
         конфигурацию.
@@ -99,7 +102,7 @@ export function ProfileDialog({
       <select
         id="profile-format"
         className="profile-format-picker"
-        value={format}
+        value={activeFormat}
         onChange={(event) => {
           setFormat(event.target.value as ProfileFormat);
           setCopied(false);
@@ -107,14 +110,16 @@ export function ProfileDialog({
         }}
       >
         <option value="subscription">Ссылка-подписка</option>
-        <option value="uri">VLESS-ссылка (URI и QR)</option>
+        {profile.xhttp_uri && <option value="xhttp_uri">VLESS · XHTTP + REALITY (URI и QR)</option>}
+        <option value="uri">VLESS · TCP + REALITY + Vision (URI и QR)</option>
         <option value="sing_box_json">sing-box (JSON-файл)</option>
         <option value="mihomo_yaml">Mihomo (YAML-файл)</option>
       </select>
+      <ProfileParameters format={activeFormat} profile={profile} />
       <label htmlFor="profile-content">
-        {format === "subscription"
+        {activeFormat === "subscription"
           ? "Ссылка-подписка"
-          : format === "uri"
+          : linkFormat
             ? "Ссылка подключения"
             : "Конфигурация клиента"}
       </label>
@@ -123,7 +128,7 @@ export function ProfileDialog({
         className="profile-uri mono"
         value={text}
         readOnly
-        rows={format === "subscription" ? 3 : format === "uri" ? 5 : 12}
+        rows={activeFormat === "subscription" ? 3 : linkFormat ? 5 : 12}
         spellCheck={false}
         onFocus={(event) => event.target.select()}
       />
@@ -142,7 +147,7 @@ export function ProfileDialog({
           Файл содержит ключ устройства. После импорта удалите его из папки загрузок.
         </p>
       )}
-      {showQR && format === "subscription" && (
+      {showQR && activeFormat === "subscription" && (
         <ProfileQRCode
           uri={subscriptionLink}
           alt="QR-код ссылки-подписки"
@@ -150,8 +155,8 @@ export function ProfileDialog({
           failure="Не удалось создать QR-код. Скопируйте ссылку вручную."
         />
       )}
-      {showQR && format === "uri" && <ProfileQRCode uri={profile.uri} />}
-      {format === "subscription" && (
+      {showQR && (activeFormat === "uri" || activeFormat === "xhttp_uri") && <ProfileQRCode uri={text} />}
+      {activeFormat === "subscription" && (
         <div className="subscription-help">
           <p className="profile-format-help">
             Ссылку можно передать человеку, который будет подключаться. «Отозвать» отключает и
@@ -219,5 +224,40 @@ export function ProfileDialog({
         </button>
       </div>
     </Modal>
+  );
+}
+
+function ProfileParameters({ format, profile }: { format: ProfileFormat; profile: RevealedProfile }) {
+  const xhttp = format === "xhttp_uri";
+  const subscription = format === "subscription";
+  const both = subscription && Boolean(profile.xhttp_uri);
+  const port = (value: number | undefined) => value ? String(value) : "Не указан";
+  return (
+    <section className="profile-parameters" aria-label="Параметры подключения">
+      <h3>{subscription ? "Одна подписка для устройства" : xhttp ? "XHTTP · новые соединения" : "TCP + Vision · совместимость"}</h3>
+      <p>
+        {subscription
+          ? both
+            ? "Ссылка остаётся одной. Совместимые клиенты Xray могут получить XHTTP и TCP + Vision; форматы sing-box и Mihomo сохраняют TCP + Vision."
+            : "Подписка содержит TCP + Vision. Приложение получает подходящий формат и обновляет профиль по этой же ссылке."
+          : xhttp
+            ? "Повторное использование соединения может уменьшить задержку новых запросов. Скорость требует замера в вашей сети."
+            : "Вариант для совместимых клиентов VLESS + REALITY + Vision. Подходит, если приложение не поддерживает XHTTP."}
+      </p>
+      <dl>
+        <div><dt>Транспорт</dt><dd>{both ? "XHTTP и TCP" : xhttp ? "XHTTP" : "TCP"}</dd></div>
+        <div><dt>Защита</dt><dd>{xhttp ? "REALITY, без Vision" : both ? "REALITY; Vision для TCP" : "REALITY + Vision"}</dd></div>
+        <div><dt>{both ? "Порты VPN" : "Порт VPN"}</dt><dd>{both
+          ? `XHTTP: ${port(profile.xhttp_port)}; TCP: ${port(profile.port)}`
+          : port(xhttp ? profile.xhttp_port : profile.port)}</dd></div>
+        <div><dt>Задержка</dt><dd>Не измерено</dd></div>
+      </dl>
+      <p>{xhttp
+        ? "Клиент должен поддерживать VLESS + XHTTP + REALITY и импорт параметров ссылки. Совместимость конкретной версии требует проверки."
+        : subscription
+          ? "Набор подключений зависит от поддерживаемого клиентом формата. Наличие двух профилей не включает автоматическое переключение."
+          : "Поддержку VLESS + REALITY + Vision необходимо проверить в используемой версии клиента."}</p>
+      {!subscription && <p>Этот выбор меняет ссылку и QR-код. Само VPN-подключение переключается в приложении клиента.</p>}
+    </section>
   );
 }

@@ -47,4 +47,5 @@ type Node struct {
 	ConfigHash      string
 	Revision        int64
 	AppliedRevision int64
+	XhttpConfig     []byte
 }

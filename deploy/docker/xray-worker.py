@@ -208,7 +208,18 @@ def stop_child():
 
 def start_child(state):
     global process
-    process = subprocess.Popen(["/usr/local/bin/xray", "run", "-config", str(CONFIG)])
+    # В XHTTP-режиме не отдаём сырой вывод дочернего процесса в журнал контейнера:
+    # даже ошибка старта может включать адрес, путь или неизвестное нам поле секрета.
+    # Неразбираемый конфиг также не является основанием раскрывать его содержимое.
+    suppress_output = True
+    try:
+        configuration = json.loads(CONFIG.read_text(encoding="utf-8"))
+        suppress_output = any(inbound.get("streamSettings", {}).get("network") == "xhttp"
+                              for inbound in configuration.get("inbounds", []))
+    except (OSError, ValueError, TypeError, AttributeError):
+        pass
+    output = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if suppress_output else {}
+    process = subprocess.Popen(["/usr/local/bin/xray", "run", "-config", str(CONFIG)], **output)
     deadline = time.monotonic() + 8
     while time.monotonic() < deadline:
         if process.poll() is not None:

@@ -1,0 +1,5 @@
+# Применяется только при GATEWAY_XHTTP_ENABLED=1. Выключенный транспорт не резервирует порт.
+services:
+  xray:
+    ports:
+      - "0.0.0.0:${GATEWAY_XHTTP_PORT:-8444}:${GATEWAY_XHTTP_PORT:-8444}/tcp"

@@ -33,6 +33,14 @@ def release_ports(config):
     }
     if result["fallback"] == result["vpn"]:
         raise ValueError("The fallback port must differ from the VPN port")
+    enabled = str(environment.get("GATEWAY_XHTTP_ENABLED", "0"))
+    if enabled not in ("0", "1"):
+        raise ValueError("XHTTP enabled must be 0 or 1")
+    if enabled == "1":
+        result["xhttp"] = valid_port(environment.get("GATEWAY_XHTTP_PORT", 8444), "XHTTP")
+        if result["xhttp"] in {80, 443, 8443, result["panel"], result["vpn"], result["fallback"], result["xray"],
+                               valid_port(environment.get("GATEWAY_XRAY_STATS_PORT", 10085), "stats")}:
+            raise ValueError("The XHTTP port must differ from existing service ports")
     published = {}
     for name, service in services.items():
         for mapping in service.get("ports", []):
@@ -52,18 +60,20 @@ def release_ports(config):
         # До HAProxy Caddy принимал панель на8443; в общей TLS-схеме он слушает443.
         if target != expected:
             raise ValueError(f"The public {name} port forwards to an unexpected internal port")
+    if "xhttp" in result and published.get(result["xhttp"]) != [("xray", result["xhttp"])]:
+        raise ValueError("The public XHTTP port must forward only to its Xray TCP listener")
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--field", choices=("panel", "vpn", "fallback", "xray"))
+    parser.add_argument("--field", choices=("panel", "vpn", "fallback", "xray", "xhttp"))
     args = parser.parse_args()
     try:
         ports = release_ports(json.load(sys.stdin))
     except (KeyError, TypeError, ValueError) as error:
         raise SystemExit(f"Invalid release ports: {error}") from None
-    print(ports[args.field] if args.field else json.dumps(ports, sort_keys=True))
+    print(ports.get(args.field, 0) if args.field else json.dumps(ports, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ package storage
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"regexp"
 	"strings"
@@ -77,8 +78,16 @@ func (s *Store) transaction(ctx context.Context, fn func(*db.Queries) error) err
 }
 
 func (s *Store) EnsureNode(ctx context.Context, node model.Node) error {
+	var xhttpConfig []byte
+	if node.XHTTP != nil {
+		var err error
+		xhttpConfig, err = json.Marshal(node.XHTTP)
+		if err != nil {
+			return errors.New("invalid XHTTP node settings")
+		}
+	}
 	err := s.transaction(ctx, func(q *db.Queries) error {
-		if err := q.UpsertNode(ctx, db.UpsertNodeParams{ID: uid(node.ID), Name: node.Name, Host: node.Host, Port: int32(node.Port), ServerName: node.ServerName, PublicKey: node.PublicKey, ShortID: node.ShortID, ConfigHash: node.ConfigHash}); err != nil {
+		if err := q.UpsertNode(ctx, db.UpsertNodeParams{ID: uid(node.ID), Name: node.Name, Host: node.Host, Port: int32(node.Port), ServerName: node.ServerName, PublicKey: node.PublicKey, ShortID: node.ShortID, ConfigHash: node.ConfigHash, XhttpConfig: xhttpConfig}); err != nil {
 			return err
 		}
 		clients, err := q.ActiveClients(ctx, uid(node.ID))
@@ -104,7 +113,11 @@ func (s *Store) Nodes(ctx context.Context) ([]model.Node, error) {
 	}
 	out := make([]model.Node, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, nodeModel(r))
+		node, err := nodeModel(r)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, node)
 	}
 	return out, nil
 }
@@ -233,11 +246,17 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 		if err != nil {
 			return err
 		}
+		if err := s.checkConfigHash(node.ConfigHash); err != nil {
+			return err
+		}
 		credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
 		if err != nil {
 			return err
 		}
-		clientNode := nodeModel(node)
+		clientNode, err := nodeModel(node)
+		if err != nil {
+			return err
+		}
 		result, err = xray.ClientProfiles(clientNode, credential, row.Name)
 		result.Port = clientNode.Port
 		if err != nil {
@@ -281,7 +300,14 @@ func (s *Store) ProbeCredential(ctx context.Context) (model.Node, string, error)
 	if err != nil {
 		return model.Node{}, "", err
 	}
-	return nodeModel(node), credential, nil
+	if err = s.checkConfigHash(node.ConfigHash); err != nil {
+		return model.Node{}, "", err
+	}
+	clientNode, err := nodeModel(node)
+	if err != nil {
+		return model.Node{}, "", err
+	}
+	return clientNode, credential, nil
 }
 
 // SubscriptionPathPrefix — путь, по которому открытый адрес подписки выдаёт профили.
@@ -327,11 +353,22 @@ func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, 
 	if err != nil {
 		return model.Profile{}, "", classify(err)
 	}
+	if err = s.checkConfigHash(node.ConfigHash); err != nil {
+		return model.Profile{}, "", err
+	}
 	credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
 	if err != nil {
 		return model.Profile{}, "", err
 	}
-	clientNode := nodeModel(node)
+	clientNode, err := nodeModel(node)
+	if err != nil {
+		return model.Profile{}, "", err
+	}
+	// Публичная подписка не должна рекламировать новый вход до успешного
+	// применения текущей ревизии. Закрытый Export остаётся доступен для подготовки.
+	if node.Revision != node.AppliedRevision {
+		clientNode.XHTTP = nil
+	}
 	profile, err := xray.ClientProfiles(clientNode, credential, row.Name)
 	profile.Port = clientNode.Port
 	if err != nil {
@@ -383,9 +420,8 @@ func (s *Store) Configure(ctx context.Context, apply bool, operation func(contex
 		if err != nil {
 			return err
 		}
-		expected, initialized := s.configHash.Load().(string)
-		if !initialized || node.ConfigHash != expected {
-			return ErrStaleConfig
+		if err := s.checkConfigHash(node.ConfigHash); err != nil {
+			return err
 		}
 		// Повторное применение не должно перезапускать Xray и отключать активных клиентов.
 		if apply && node.AppliedRevision == node.Revision {
@@ -428,8 +464,22 @@ func deviceModel(d db.Device) model.Device {
 	}
 	return result
 }
-func nodeModel(n db.Node) model.Node {
-	return model.Node{ID: id(n.ID), Name: n.Name, Host: n.Host, Port: int(n.Port), ServerName: n.ServerName, PublicKey: n.PublicKey, ShortID: n.ShortID}
+func nodeModel(n db.Node) (model.Node, error) {
+	node := model.Node{ID: id(n.ID), Name: n.Name, Host: n.Host, Port: int(n.Port), ServerName: n.ServerName, PublicKey: n.PublicKey, ShortID: n.ShortID}
+	if len(n.XhttpConfig) > 0 {
+		if err := json.Unmarshal(n.XhttpConfig, &node.XHTTP); err != nil {
+			return model.Node{}, errors.New("invalid stored XHTTP node settings")
+		}
+	}
+	return node, nil
+}
+
+func (s *Store) checkConfigHash(actual string) error {
+	expected, initialized := s.configHash.Load().(string)
+	if !initialized || actual != expected {
+		return ErrStaleConfig
+	}
+	return nil
 }
 func classify(err error) error {
 	var pgerr *pgconn.PgError

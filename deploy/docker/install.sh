@@ -120,7 +120,13 @@ release="/opt/private-gateway-docker/releases/$version"
 [[ ! -e $release ]] || fail "Release directory already exists: $release"
 env_file=/etc/private-gateway-docker/stack.env
 compose_file="$release/docker/compose.yml"
-compose() { docker compose --env-file "$env_file" --file "$compose_file" "$@"; }
+compose() {
+  local files=(--file "$compose_file")
+  if [[ -f $release/docker/compose.xhttp.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(--file "$release/docker/compose.xhttp.yml")
+  fi
+  docker compose --env-file "$env_file" "${files[@]}" "$@"
+}
 # Проверки конфигурации идут в тех же закреплённых образах, что и стек.
 image_of() {
   compose config --format json \
@@ -204,6 +210,8 @@ values = {
     'GATEWAY_MASTER_KEY': keys['master_key'],
     'GATEWAY_REALITY_PRIVATE_KEY': keys['reality_private_key'],
     'GATEWAY_SHORT_ID': keys['short_id'],
+    'GATEWAY_XHTTP_ENABLED': '0',
+    'GATEWAY_XHTTP_PORT': '8444',
     'BROWSER_WORKER_TOKEN': secrets.token_hex(32),
     'GATEWAY_HOST': host,
     'PANEL_DOMAIN': domain,

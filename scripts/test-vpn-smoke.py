@@ -53,7 +53,7 @@ def stop(process):
 
 class VPNSmokeTest(unittest.TestCase):
     def exported_checks(self, public_port=8443, internal_port=443, configured_internal=443,
-                        profile_port=None):
+                        profile_port=None, xhttp=False, xhttp_path=None, xhttp_flow=None):
         credential = "00000000-0000-4000-8000-000000000000"
         public_key, short_id, server_name = "public-key", "0123456789abcdef", "reality.example"
         profile = (f"vless://{credential}@vpn.example:{profile_port or public_port}?"
@@ -70,6 +70,26 @@ class VPNSmokeTest(unittest.TestCase):
                                   "public_key": public_key, "short_id": short_id,
                                   "server_name": server_name}]},
         }
+        if xhttp:
+            credential = "11111111-2222-3333-4444-555555555555"
+            sid, path = "1111222233334444", "/test-xhttp-path-1234"
+            node = responses["/nodes"]["nodes"][0]
+            node.update(host="192.0.2.10", server_name="example.com", xhttp={
+                "port": 8444, "public_key": "xhttp-public-key", "short_id": sid, "path": path, "mode": "auto",
+            })
+            responses["/devices/test-device/profile"]["xhttp_uri"] = (
+                f"vless://{credential}@192.0.2.10:8444?encryption=none&type=xhttp&security=reality&"
+                f"pbk=xhttp-public-key&sid={sid}&sni=example.com&path={path}&mode=auto")
+            account = {"id": credential}
+            if xhttp_flow is not None:
+                account["flow"] = xhttp_flow
+            config["inbounds"].append({"tag": "vless-xhttp-reality", "port": 8444,
+                                       "settings": {"clients": [account]},
+                                       "streamSettings": {"network": "xhttp",
+                                                          "xhttpSettings": {"path": xhttp_path or path, "mode": "auto"},
+                                                          "realitySettings": {"privateKey": "xhttp-private-key",
+                                                                              "shortIds": [sid],
+                                                                              "serverNames": ["example.com"]}}})
         opener = mock.Mock()
         def open_response(request, timeout):
             path = request.full_url.removeprefix("http://127.0.0.1:8080/api/v1")
@@ -91,7 +111,10 @@ class VPNSmokeTest(unittest.TestCase):
                  mock.patch("urllib.request.build_opener", return_value=opener), \
                  mock.patch.dict(os.environ, {"GATEWAY_API_TOKEN": "test-token",
                                                "GATEWAY_REALITY_PRIVATE_KEY": "private-key",
-                                               "GATEWAY_XRAY_PORT": str(configured_internal)}), \
+                                               "GATEWAY_XRAY_PORT": str(configured_internal),
+                                               "GATEWAY_SMOKE_TRANSPORT": "xhttp" if xhttp else "tcp",
+                                               "GATEWAY_XHTTP_PORT": "8444",
+                                               "GATEWAY_XHTTP_PRIVATE_KEY": "xhttp-private-key"}), \
                  contextlib.redirect_stdout(output):
                 exec(smoke.EXPORT, {})
         return json.loads(output.getvalue())["checks"]
@@ -102,6 +125,11 @@ class VPNSmokeTest(unittest.TestCase):
                                                  configured_internal=2443).values()))
         self.assertFalse(self.exported_checks(internal_port=8443)["xray_listen_port"])
         self.assertFalse(self.exported_checks(profile_port=443)["profile_endpoint"])
+
+    def test_xhttp_export_is_checked_against_its_own_running_inbound(self):
+        self.assertTrue(all(self.exported_checks(xhttp=True).values()))
+        self.assertFalse(self.exported_checks(xhttp=True, xhttp_path="/different-test-path")["profile_xhttp"])
+        self.assertFalse(self.exported_checks(xhttp=True, xhttp_flow="xtls-rprx-vision")["profile_client"])
 
     def test_client_uses_public_profile_port_or_explicit_published_ingress(self):
         profile = ("vless://00000000-0000-4000-8000-000000000000@vpn.example:8443?"
@@ -114,6 +142,85 @@ class VPNSmokeTest(unittest.TestCase):
         for invalid in (0, -1, 65536, True):
             with self.subTest(invalid=invalid), self.assertRaises(smoke.SmokeError):
                 smoke.client_config(profile, 1080, invalid)
+
+    def test_xhttp_client_has_no_vision_and_preserves_transport_parameters(self):
+        profile = ("vless://11111111-2222-3333-4444-555555555555@192.0.2.10:8444?"
+                   "encryption=none&type=xhttp&security=reality&sni=example.com&fp=chrome&"
+                   "pbk=public-key&sid=0123456789abcdef&path=%2Ftest-xhttp-path-1234&mode=auto#XHTTP")
+        config, name = smoke.client_config(profile, 1080)
+        outbound = config["outbounds"][0]
+        self.assertEqual(name, "example.com")
+        self.assertNotIn("flow", outbound["settings"]["vnext"][0]["users"][0])
+        self.assertEqual(outbound["streamSettings"]["network"], "xhttp")
+        self.assertEqual(outbound["streamSettings"]["xhttpSettings"],
+                         {"path": "/test-xhttp-path-1234", "mode": "auto"})
+        for invalid in (profile + "&flow=xtls-rprx-vision", profile.replace("mode=auto", "mode=packet-up"),
+                        profile.replace("test-xhttp-path-1234", "short")):
+            # Параметры добавляются до фрагмента, иначе они являются именем профиля.
+            invalid = invalid.replace("#XHTTP&", "&").replace("#XHTTP", "")
+            with self.assertRaises(smoke.SmokeError):
+                smoke.client_config(invalid, 1080)
+
+    def test_actual_xhttp_traffic(self):
+        binary = os.environ.get("PRIVATE_GATEWAY_REAL_XRAY_BINARY")
+        if not binary:
+            self.skipTest("set PRIVATE_GATEWAY_REAL_XRAY_BINARY")
+        target_port, server_port, client_port = unused_port(), unused_port(), unused_port()
+        credential = "11111111-2222-3333-4444-555555555555"
+        keys = subprocess.run([binary, "x25519"], capture_output=True, text=True, check=True).stdout
+        values = dict(line.split(": ", 1) for line in keys.splitlines() if ": " in line)
+        private_key, public_key = values["PrivateKey"], values["Password (PublicKey)"]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            subprocess.run([
+                "openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                "-nodes", "-days", "1", "-subj", "/CN=example.com", "-addext", "subjectAltName=DNS:example.com",
+                "-keyout", str(root / "key.pem"), "-out", str(root / "cert.pem"),
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            server_config = {
+                "log": {"loglevel": "none", "access": "none"},
+                "inbounds": [{"tag": "vless-xhttp-reality", "listen": "127.0.0.1", "port": server_port,
+                              "protocol": "vless", "settings": {"clients": [{"id": credential}], "decryption": "none"},
+                              "streamSettings": {"network": "xhttp", "security": "reality",
+                                                 "xhttpSettings": {"path": "/test-xhttp-path-1234", "mode": "auto"},
+                                                 "realitySettings": {"target": f"127.0.0.1:{target_port}",
+                                                                     "serverNames": ["example.com"],
+                                                                     "privateKey": private_key,
+                                                                     "shortIds": ["0123456789abcdef"]}}}],
+                "outbounds": [{"protocol": "freedom"}],
+            }
+            (root / "server.json").write_text(json.dumps(server_config))
+            target = subprocess.Popen([
+                "openssl", "s_server", "-quiet", "-accept", f"127.0.0.1:{target_port}",
+                "-cert", str(root / "cert.pem"), "-key", str(root / "key.pem"), "-alpn", "h2,http/1.1", "-www",
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            server = subprocess.Popen([binary, "run", "-config", str(root / "server.json")],
+                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                wait_port(target, target_port)
+                wait_port(server, server_port)
+                profile = (f"vless://{credential}@127.0.0.1:{server_port}?encryption=none&type=xhttp&security=reality"
+                           "&sni=example.com&fp=chrome&pbk=" + public_key +
+                           "&sid=0123456789abcdef&path=%2Ftest-xhttp-path-1234&mode=auto#XHTTP")
+                config, name = smoke.client_config(profile, client_port)
+                (root / "client.json").write_text(json.dumps(config))
+                client = subprocess.Popen([binary, "run", "-config", str(root / "client.json")],
+                                          stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                try:
+                    wait_port(client, client_port)
+                    original = smoke.ssl.create_default_context
+                    def trusted_context():
+                        context = original()
+                        context.load_verify_locations(cafile=str(root / "cert.pem"))
+                        return context
+                    with mock.patch.object(smoke.ssl, "create_default_context", side_effect=trusted_context):
+                        for _ in range(2):
+                            self.assertEqual(smoke.probe_socks(client_port, name, ("127.0.0.1", target_port)), "TLSv1.3")
+                finally:
+                    stop(client)
+            finally:
+                stop(server)
+                stop(target)
 
     def test_actual_vless_traffic(self):
         binary = os.environ.get("PRIVATE_GATEWAY_REAL_XRAY_BINARY")

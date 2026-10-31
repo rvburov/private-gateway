@@ -193,7 +193,7 @@ func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 }
 
 const getNode = `-- name: GetNode :one
-SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision FROM nodes WHERE id=$1
+SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config FROM nodes WHERE id=$1
 `
 
 func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -210,6 +210,7 @@ func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
 		&i.ConfigHash,
 		&i.Revision,
 		&i.AppliedRevision,
+		&i.XhttpConfig,
 	)
 	return i, err
 }
@@ -338,7 +339,7 @@ func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
 }
 
 const listNodes = `-- name: ListNodes :many
-SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision FROM nodes ORDER BY name, id
+SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config FROM nodes ORDER BY name, id
 `
 
 func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
@@ -361,6 +362,7 @@ func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
 			&i.ConfigHash,
 			&i.Revision,
 			&i.AppliedRevision,
+			&i.XhttpConfig,
 		); err != nil {
 			return nil, err
 		}
@@ -463,26 +465,28 @@ func (q *Queries) SetSubscriptionHash(ctx context.Context, arg SetSubscriptionHa
 }
 
 const upsertNode = `-- name: UpsertNode :exec
-INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash, xhttp_config)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name, host = EXCLUDED.host, port = EXCLUDED.port,
     server_name = EXCLUDED.server_name, public_key = EXCLUDED.public_key, short_id = EXCLUDED.short_id, config_hash = EXCLUDED.config_hash,
+    xhttp_config = EXCLUDED.xhttp_config,
     revision = nodes.revision + CASE WHEN
-        (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash)
-        IS DISTINCT FROM (EXCLUDED.host, EXCLUDED.port, EXCLUDED.server_name, EXCLUDED.public_key, EXCLUDED.short_id, EXCLUDED.config_hash)
+        (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash, nodes.xhttp_config)
+        IS DISTINCT FROM (EXCLUDED.host, EXCLUDED.port, EXCLUDED.server_name, EXCLUDED.public_key, EXCLUDED.short_id, EXCLUDED.config_hash, EXCLUDED.xhttp_config)
         THEN 1 ELSE 0 END
 `
 
 type UpsertNodeParams struct {
-	ID         pgtype.UUID
-	Name       string
-	Host       string
-	Port       int32
-	ServerName string
-	PublicKey  string
-	ShortID    string
-	ConfigHash string
+	ID          pgtype.UUID
+	Name        string
+	Host        string
+	Port        int32
+	ServerName  string
+	PublicKey   string
+	ShortID     string
+	ConfigHash  string
+	XhttpConfig []byte
 }
 
 func (q *Queries) UpsertNode(ctx context.Context, arg UpsertNodeParams) error {
@@ -495,6 +499,7 @@ func (q *Queries) UpsertNode(ctx context.Context, arg UpsertNodeParams) error {
 		arg.PublicKey,
 		arg.ShortID,
 		arg.ConfigHash,
+		arg.XhttpConfig,
 	)
 	return err
 }

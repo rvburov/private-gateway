@@ -30,9 +30,19 @@ type Settings struct {
 	ServerName string
 	Target     string
 	ShortID    string
+	XHTTP      *XHTTPSettings
+}
+
+// XHTTPSettings включает отдельный REALITY-вход, не изменяя основной TCP/Vision.
+type XHTTPSettings struct {
+	Port       int
+	PrivateKey string
+	ShortID    string
+	Path       string
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+var xhttpPathPattern = regexp.MustCompile(`^/[A-Za-z0-9_-]{16,128}$`)
 
 // PublicKey выводит открытый ключ REALITY X25519, не запуская Xray.
 func PublicKey(privateKey string) (string, error) {
@@ -118,6 +128,43 @@ func Profile(node model.Node, credentialID, name string) (string, error) {
 	return u.String(), nil
 }
 
+// XHTTPProfile выдаёт дополнительную ссылку без flow: Vision остаётся только в TCP-профиле.
+func XHTTPProfile(node model.Node, credentialID, name string) (string, error) {
+	if _, err := Profile(node, credentialID, name); err != nil {
+		return "", err
+	}
+	xhttp := node.XHTTP
+	if xhttp == nil {
+		return "", errors.New("XHTTP is not configured")
+	}
+	if !validPort(xhttp.Port) || xhttp.Port == node.Port {
+		return "", errors.New("XHTTP requires a valid port distinct from the TCP profile")
+	}
+	if _, err := decodeKey(xhttp.PublicKey); err != nil || xhttp.PublicKey == node.PublicKey {
+		return "", errors.New("XHTTP requires a separate REALITY public key")
+	}
+	if err := validateShortID(xhttp.ShortID); err != nil || strings.EqualFold(xhttp.ShortID, node.ShortID) {
+		return "", errors.New("XHTTP requires a separate valid REALITY short ID")
+	}
+	if !xhttpPathPattern.MatchString(xhttp.Path) {
+		return "", errors.New("XHTTP path must be a slash followed by 16 to 128 URL-safe characters")
+	}
+	if xhttp.Mode != "" && xhttp.Mode != "auto" {
+		return "", errors.New("XHTTP mode must be auto")
+	}
+	params := url.Values{
+		"encryption": {"none"}, "type": {"xhttp"}, "security": {"reality"},
+		"path": {xhttp.Path}, "mode": {"auto"}, "sni": {node.ServerName},
+		"fp": {"chrome"}, "pbk": {xhttp.PublicKey}, "sid": {strings.ToLower(xhttp.ShortID)},
+	}
+	u := url.URL{
+		Scheme: "vless", User: url.User(strings.ToLower(credentialID)),
+		Host:     net.JoinHostPort(node.Host, strconv.Itoa(xhttp.Port)),
+		RawQuery: params.Encode(), Fragment: name + " XHTTP",
+	}
+	return u.String(), nil
+}
+
 // ClientProfiles строит все форматы для клиентов из одного проверенного секрета.
 // Каждый формат выдаёт только адрес профиля, доступный после входа.
 func ClientProfiles(node model.Node, credentialID, name string) (model.Profile, error) {
@@ -182,12 +229,21 @@ rules:
   - MATCH,GATEWAY
 `, quoted(name), quoted(node.Host), node.Port, quoted(credentialID),
 		quoted(node.ServerName), quoted(node.PublicKey), quoted(shortID), quoted(name))
-	return model.Profile{URI: uri, SingBoxJSON: string(singBoxJSON) + "\n", MihomoYAML: mihomoYAML}, nil
+	profile := model.Profile{URI: uri, SingBoxJSON: string(singBoxJSON) + "\n", MihomoYAML: mihomoYAML}
+	if node.XHTTP != nil {
+		profile.XHTTPURI, err = XHTTPProfile(node, credentialID, name)
+		if err != nil {
+			return model.Profile{}, err
+		}
+		profile.XHTTPPort = node.XHTTP.Port
+	}
+	return profile, nil
 }
 
-// Render создаёт конфигурацию сервера для текущего Xray: RAW/TCP + REALITY.
+// Render сохраняет RAW/TCP + REALITY и при настройке добавляет отдельный XHTTP-вход.
 func Render(settings Settings, clients []Client) ([]byte, error) {
-	if _, err := PublicKey(settings.PrivateKey); err != nil {
+	primaryKey, err := PublicKey(settings.PrivateKey)
+	if err != nil {
 		return nil, err
 	}
 	if settings.Listen == "" {
@@ -213,7 +269,7 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 	type account struct {
 		ID    string `json:"id"`
 		Email string `json:"email"`
-		Flow  string `json:"flow"`
+		Flow  string `json:"flow,omitempty"`
 	}
 	accounts := make([]account, 0, len(clients))
 	seen := make(map[string]bool, len(clients))
@@ -243,6 +299,42 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			},
 		}},
 		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}}},
+	}
+	if xhttp := settings.XHTTP; xhttp != nil {
+		// XHTTP использует секретный путь. Отключаем журналы ядра, чтобы runtime-
+		// ошибки не печатали адреса, UUID или параметры транспорта в Docker logs.
+		config["log"] = map[string]any{"loglevel": "none", "access": "none"}
+		if !validPort(xhttp.Port) || xhttp.Port == settings.Port || xhttp.Port == settings.StatsPort {
+			return nil, errors.New("XHTTP port must be valid and distinct from TCP and statistics ports")
+		}
+		xhttpKey, err := PublicKey(xhttp.PrivateKey)
+		if err != nil || xhttpKey == primaryKey {
+			return nil, errors.New("XHTTP requires a separate valid REALITY private key")
+		}
+		if err := validateShortID(xhttp.ShortID); err != nil || strings.EqualFold(xhttp.ShortID, settings.ShortID) {
+			return nil, errors.New("XHTTP requires a separate valid REALITY short ID")
+		}
+		if !xhttpPathPattern.MatchString(xhttp.Path) {
+			return nil, errors.New("XHTTP path must be a slash followed by 16 to 128 URL-safe characters")
+		}
+		xhttpAccounts := make([]account, 0, len(accounts))
+		for _, client := range accounts {
+			xhttpAccounts = append(xhttpAccounts, account{ID: client.ID, Email: client.Email})
+		}
+		config["inbounds"] = append(config["inbounds"].([]any), map[string]any{
+			"tag": "vless-xhttp-reality", "listen": settings.Listen, "port": xhttp.Port, "protocol": "vless",
+			"settings": map[string]any{"clients": xhttpAccounts, "decryption": "none"},
+			"streamSettings": map[string]any{
+				"network": "xhttp", "security": "reality",
+				"xhttpSettings": map[string]any{"path": xhttp.Path, "mode": "auto"},
+				"realitySettings": map[string]any{
+					"show": false, "target": settings.Target, "xver": 0,
+					"serverNames": []string{settings.ServerName}, "privateKey": xhttp.PrivateKey,
+					"shortIds": []string{strings.ToLower(xhttp.ShortID)},
+				},
+			},
+			"sniffing": map[string]any{"enabled": true, "destOverride": []string{"http", "tls", "quic"}},
+		})
 	}
 	if settings.StatsPort != 0 {
 		if !validPort(settings.StatsPort) || settings.StatsPort == settings.Port {

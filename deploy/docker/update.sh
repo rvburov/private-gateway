@@ -14,6 +14,16 @@ haproxy_cfg=/etc/private-gateway-docker/haproxy.cfg
 current=/opt/private-gateway-docker/current
 [[ -f $env_file && -L $current ]] || fail 'Install the Docker stack before enabling automatic deployment.'
 [[ -f /usr/local/lib/private-gateway-docker/verify-release.py ]] || fail 'The installed release verifier is missing.'
+# Старые релизы без дополнения читаются как раньше; отключённый XHTTP не занимает порт.
+compose_release() {
+  local file=$1
+  shift
+  local files=(--file "$file")
+  if [[ -f ${file%/*}/compose.xhttp.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(--file "${file%/*}/compose.xhttp.yml")
+  fi
+  docker compose --env-file "$env_file" "${files[@]}" "$@"
+}
 exec 9>/run/lock/private-gateway-docker-install.lock
 flock -n 9 || fail 'Another Docker installation or deployment is running.'
 
@@ -39,7 +49,7 @@ old_version=$(cat /etc/private-gateway-docker/installed.version)
 if [[ $version == "$old_version" ]]; then
   cmp -s "$current/docker/update.sh" /usr/local/sbin/private-gateway-docker-deploy \
     || fail 'The installed updater does not match the current release.'
-  ports=$(docker compose --env-file "$env_file" -f "$current/docker/compose.yml" config --format json \
+  ports=$(compose_release "$current/docker/compose.yml" config --format json \
     | python3 "$current/docker/release-ports.py")
   read -r panel_port vpn_port < <(python3 -c \
     'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"])' <<< "$ports")
@@ -78,9 +88,13 @@ if [[ -f $release/docker/image-tags.py ]]; then
     [[ $tag =~ ^PG_(API|XRAY|BROWSER)_IMAGE=[0-9a-f]{32}$ ]] || fail 'The release image tags are invalid.'
   done
 fi
-compose_old() { docker compose --env-file "$env_file" -f "$old_compose" "$@"; }
+compose_old() { compose_release "$old_compose" "$@"; }
 compose_new() {
-  env PG_RELEASE_SHA="$version" "${image_tags[@]}" docker compose --env-file "$env_file" -f "$new_compose" "$@"
+  local files=(--file "$new_compose")
+  if [[ -f $release/docker/compose.xhttp.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(--file "$release/docker/compose.xhttp.yml")
+  fi
+  env PG_RELEASE_SHA="$version" "${image_tags[@]}" docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
 # Проверки конфигурации идут в тех же закреплённых образах, что и стек.
 image_of() {
@@ -131,10 +145,10 @@ if [[ $old_port_owner != "$new_port_owner" ]]; then port_transfer=true; fi
 [[ -f $release/docker/release-ports.py ]] || fail 'Release port reader is missing.'
 new_ports=$(compose_new config --format json | python3 "$release/docker/release-ports.py")
 old_ports=$(compose_old config --format json | python3 "$release/docker/release-ports.py")
-read -r panel_port vpn_port fallback_port < <(python3 -c \
-  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"])' <<< "$new_ports")
-read -r old_panel_port old_vpn_port old_fallback_port < <(python3 -c \
-  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"])' <<< "$old_ports")
+read -r panel_port vpn_port fallback_port xhttp_port < <(python3 -c \
+  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"], p.get("xhttp", 0))' <<< "$new_ports")
+read -r old_panel_port old_vpn_port old_fallback_port old_xhttp_port < <(python3 -c \
+  'import json, sys; p=json.load(sys.stdin); print(p["panel"], p["vpn"], p["fallback"], p.get("xhttp", 0))' <<< "$old_ports")
 if grep -qx edge <<< "$old_service_list"; then
   old_edge=true
   old_services+=(edge)
@@ -191,6 +205,7 @@ vless_works() {
   local attempt
   local port_args=()
   if [[ -n ${2:-} ]]; then port_args=(--port "$2"); fi
+  if [[ -n ${3:-} ]]; then port_args+=(--transport "$3"); fi
   for attempt in 1 2 3; do
     if python3 "$1/docker/vpn-smoke.py" "${port_args[@]}"; then return 0; fi
     if ((attempt < 3)); then sleep 5; fi
@@ -246,7 +261,8 @@ rollback() {
   fi
   if [[ $vless_failed == true ]]; then
     if vless_works "$old_release" "$old_vpn_port" && \
-        { [[ $old_fallback_port == 0 ]] || vless_works "$old_release" "$old_fallback_port"; }; then
+        { [[ $old_fallback_port == 0 ]] || vless_works "$old_release" "$old_fallback_port"; } && \
+        { [[ $old_xhttp_port == 0 ]] || vless_works "$old_release" "$old_xhttp_port" xhttp; }; then
       printf 'VLESS traffic passes again with the previous release.\n' >&2
     else
       printf 'VLESS traffic fails with the previous release too: check the network and the REALITY target.\n' >&2
@@ -360,6 +376,9 @@ elif ! vless_works "$release" "$vpn_port"; then
 elif [[ $fallback_port != 0 ]] && ! vless_works "$release" "$fallback_port"; then
   vless_failed=true
   fail 'VLESS traffic does not pass through the fallback port.'
+elif [[ $xhttp_port != 0 ]] && ! vless_works "$release" "$xhttp_port" xhttp; then
+  vless_failed=true
+  fail 'VLESS traffic does not pass through the XHTTP port.'
 fi
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"

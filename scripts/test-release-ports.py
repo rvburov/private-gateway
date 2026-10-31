@@ -70,6 +70,33 @@ class ReleasePortTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ports.release_ports(config)
 
+    def xhttp_config(self, port=8444):
+        config = self.config(8443, 8443, 0)
+        config["services"]["api"]["environment"].update({"GATEWAY_XHTTP_ENABLED": "1",
+                                                        "GATEWAY_XHTTP_PORT": str(port)})
+        config["services"]["xray"] = {"ports": [{"published": str(port), "target": port, "protocol": "tcp"}]}
+        return config
+
+    def test_xhttp_is_separate_and_optional(self):
+        config = self.xhttp_config()
+        self.assertEqual(ports.release_ports(config)["xhttp"], 8444)
+        self.assertEqual(ports.release_ports(config)["vpn"], 8443)
+        config["services"]["api"]["environment"]["GATEWAY_XHTTP_ENABLED"] = "0"
+        self.assertNotIn("xhttp", ports.release_ports(config))
+
+    def test_xhttp_rejects_collisions_and_wrong_mapping(self):
+        for port in (80, 443, 8443, 10085):
+            with self.subTest(port=port), self.assertRaises(ValueError):
+                ports.release_ports(self.xhttp_config(port))
+        for mutation in (lambda c: c["services"]["xray"]["ports"].clear(),
+                         lambda c: c["services"]["xray"]["ports"][0].update(target=443),
+                         lambda c: c["services"]["xray"]["ports"][0].update(protocol="udp"),
+                         lambda c: c["services"].update(other=copy.deepcopy(c["services"]["xray"]))):
+            config = self.xhttp_config()
+            mutation(config)
+            with self.assertRaises(ValueError):
+                ports.release_ports(config)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -24,6 +24,8 @@ export interface TrafficUsage {
 export interface ProfileExport {
   port?: number;
   uri: string;
+  xhttp_uri?: string;
+  xhttp_port?: number;
   sing_box_json: string;
   mihomo_yaml: string;
   // /sub/ и секретный токен ссылки-подписки устройства на домене самой панели.

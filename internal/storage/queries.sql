@@ -1,12 +1,13 @@
 -- name: UpsertNode :exec
-INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash, xhttp_config)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name, host = EXCLUDED.host, port = EXCLUDED.port,
     server_name = EXCLUDED.server_name, public_key = EXCLUDED.public_key, short_id = EXCLUDED.short_id, config_hash = EXCLUDED.config_hash,
+    xhttp_config = EXCLUDED.xhttp_config,
     revision = nodes.revision + CASE WHEN
-        (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash)
-        IS DISTINCT FROM (EXCLUDED.host, EXCLUDED.port, EXCLUDED.server_name, EXCLUDED.public_key, EXCLUDED.short_id, EXCLUDED.config_hash)
+        (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash, nodes.xhttp_config)
+        IS DISTINCT FROM (EXCLUDED.host, EXCLUDED.port, EXCLUDED.server_name, EXCLUDED.public_key, EXCLUDED.short_id, EXCLUDED.config_hash, EXCLUDED.xhttp_config)
         THEN 1 ELSE 0 END;
 
 -- name: ListNodes :many

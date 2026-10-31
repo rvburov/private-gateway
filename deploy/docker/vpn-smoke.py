@@ -43,7 +43,11 @@ active = [device for device in devices if device.get("revoked_at") is None]
 if not active:
     raise SystemExit(2)
 device = active[0]
-profile = get("/devices/" + device["id"] + "/profile")["uri"]
+transport = os.environ.get("GATEWAY_SMOKE_TRANSPORT", "tcp")
+profiles = get("/devices/" + device["id"] + "/profile")
+profile = profiles.get("xhttp_uri" if transport == "xhttp" else "uri")
+if not profile:
+    raise SystemExit(3)
 node = next(item for item in get("/nodes")["nodes"] if item["id"] == device["node_id"])
 uri = urlsplit(profile)
 query = parse_qs(uri.query)
@@ -53,26 +57,43 @@ with open("/state/xray.json", "rb") as source:
 config = json.loads(content)
 with open("/state/xray.status.json") as source:
     status = json.load(source)
-inbound = config["inbounds"][0]
+if transport == "xhttp":
+    inbound = next(item for item in config["inbounds"] if item.get("tag") == "vless-xhttp-reality")
+    parameters = node["xhttp"]
+    expected_flow = ""
+    internal_port = int(os.environ["GATEWAY_XHTTP_PORT"])
+    private_key = os.environ["GATEWAY_XHTTP_PRIVATE_KEY"]
+else:
+    inbound = config["inbounds"][0]
+    parameters = node
+    expected_flow = "xtls-rprx-vision"
+    internal_port = int(os.environ.get("GATEWAY_XRAY_PORT", "443"))
+    private_key = os.environ["GATEWAY_REALITY_PRIVATE_KEY"]
 reality = inbound["streamSettings"]["realitySettings"]
 checks = {
     "profile_client": any(client["id"].lower() == (uri.username or "").lower() and
-                          client.get("flow") == "xtls-rprx-vision"
+                          client.get("flow", "") == expected_flow
                           for client in inbound["settings"]["clients"]),
-    "profile_endpoint": uri.hostname == node["host"] and uri.port == node["port"] and
+    "profile_endpoint": uri.hostname == node["host"] and uri.port == parameters["port"] and
                         1 <= uri.port <= 65535,
-    "xray_listen_port": inbound["port"] == int(os.environ.get("GATEWAY_XRAY_PORT", "443")) and
+    "xray_listen_port": inbound["port"] == internal_port and
                         1 <= inbound["port"] <= 65535,
-    "profile_reality": query.get("pbk") == [node["public_key"]] and
-                       query.get("sid") == [node["short_id"].lower()] and
+    "profile_reality": query.get("pbk") == [parameters["public_key"]] and
+                       query.get("sid") == [parameters["short_id"].lower()] and
                        query.get("sid", [None])[0] in reality["shortIds"] and
                        query.get("sni") == [node["server_name"]] and
                        query.get("sni", [None])[0] in reality["serverNames"],
-    "server_key": reality["privateKey"] == os.environ["GATEWAY_REALITY_PRIVATE_KEY"],
+    "server_key": reality["privateKey"] == private_key,
     "config_loaded": status.get("running") is True and
                      status.get("sha256") == hashlib.sha256(content).hexdigest() and
                      status.get("mtime_ns") == modified,
 }
+if transport == "xhttp":
+    xhttp = inbound["streamSettings"].get("xhttpSettings", {})
+    checks["profile_xhttp"] = (query.get("type") == ["xhttp"] and "flow" not in query and
+                                query.get("path") == [parameters["path"]] == [xhttp.get("path")] and
+                                query.get("mode") == ["auto"] and xhttp.get("mode") == "auto" and
+                                inbound["streamSettings"].get("network") == "xhttp")
 print(json.dumps({"uri": profile, "checks": checks}))
 """
 
@@ -81,16 +102,19 @@ class SmokeError(Exception):
     pass
 
 
-def get_profile():
+def get_profile(transport="tcp"):
     try:
         result = subprocess.run(
-            ["docker", "exec", "private-gateway-api-1", "python3", "-c", EXPORT],
+            ["docker", "exec", "-e", "GATEWAY_SMOKE_TRANSPORT=" + transport,
+             "private-gateway-api-1", "python3", "-c", EXPORT],
             capture_output=True, text=True, timeout=12, check=False,
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise SmokeError("API container could not be queried") from error
     if result.returncode == 2:
         raise SmokeError("no active device; create one and apply the configuration")
+    if result.returncode == 3:
+        raise SmokeError("the selected transport is not configured")
     if result.returncode != 0:
         raise SmokeError("API container could not export an active profile")
     try:
@@ -103,7 +127,7 @@ def get_profile():
         raise SmokeError("API container returned an invalid profile check") from error
 
 
-def client_config(profile, local_port, server_port=None):
+def client_config(profile, local_port, server_port=None, server_host="127.0.0.1"):
     for value in (local_port, server_port):
         if value is not None and (type(value) is not int or not 1 <= value <= 65535):
             raise SmokeError("client port is invalid")
@@ -111,34 +135,45 @@ def client_config(profile, local_port, server_port=None):
         raise SmokeError("profile is too long")
     try:
         uri = urlsplit(profile)
-        parameters = parse_qs(uri.query, strict_parsing=True)
+        parameters = parse_qs(uri.query, strict_parsing=True, keep_blank_values=True)
         credential = str(uuid.UUID(uri.username or ""))
         if uri.scheme != "vless" or not uri.hostname or not 1 <= (uri.port or 0) <= 65535:
             raise ValueError("invalid endpoint")
-        required = ("encryption", "flow", "type", "security", "sni", "fp", "pbk", "sid", "spx")
+        transport = parameters.get("type", [None])[0]
+        required = ("encryption", "type", "security", "sni", "fp", "pbk", "sid")
+        required += ("path", "mode") if transport == "xhttp" else ("flow", "spx")
         values = {key: parameters[key][0] for key in required if len(parameters[key]) == 1}
         if len(values) != len(required) or any(len(value) > 256 for value in values.values()):
             raise ValueError("invalid parameters")
-        if (values["encryption"], values["flow"], values["type"], values["security"]) != (
-            "none", "xtls-rprx-vision", "tcp", "reality"
-        ):
+        if values["encryption"] != "none" or values["security"] != "reality":
+            raise ValueError("unsupported profile")
+        if transport == "xhttp":
+            if ("flow" in parameters or values["mode"] != "auto" or
+                    not re.fullmatch(r"/[A-Za-z0-9_-]{16,128}", values["path"])):
+                raise ValueError("invalid XHTTP profile")
+        elif transport != "tcp" or values["flow"] != "xtls-rprx-vision":
             raise ValueError("unsupported profile")
     except (KeyError, TypeError, ValueError) as error:
         raise SmokeError("active profile is malformed") from error
     config = {
-        "log": {"loglevel": "warning"},
+        "log": {"loglevel": "none", "access": "none"},
         "inbounds": [{"listen": "127.0.0.1", "port": local_port, "protocol": "socks",
                       "settings": {"auth": "noauth", "udp": False}}],
         "outbounds": [{"protocol": "vless", "settings": {"vnext": [{
-            "address": "127.0.0.1", "port": server_port or uri.port,
-            "users": [{"id": credential, "encryption": values["encryption"], "flow": values["flow"]}],
+            "address": server_host, "port": server_port or uri.port,
+            "users": [{"id": credential, "encryption": values["encryption"]}],
         }]}, "streamSettings": {"network": values["type"], "security": values["security"],
                               "realitySettings": {"serverName": values["sni"],
                                                   "fingerprint": values["fp"],
                                                   "publicKey": values["pbk"],
-                                                  "shortId": values["sid"],
-                                                  "spiderX": values["spx"]}}}],
+                                                  "shortId": values["sid"]}}}],
     }
+    stream = config["outbounds"][0]["streamSettings"]
+    if transport == "xhttp":
+        stream["xhttpSettings"] = {"path": values["path"], "mode": values["mode"]}
+    else:
+        config["outbounds"][0]["settings"]["vnext"][0]["users"][0]["flow"] = values["flow"]
+        stream["realitySettings"]["spiderX"] = values["spx"]
     return config, values["sni"]
 
 
@@ -201,9 +236,14 @@ def stop(process):
         process.wait(timeout=3)
 
 
-def isolated_server_config(config, port, target=None):
-    config["log"]["loglevel"] = "info"
-    inbound = config["inbounds"][0]
+def isolated_server_config(config, port, target=None, transport="tcp"):
+    config["log"]["loglevel"] = "none" if transport == "xhttp" else "info"
+    inbound = (next(item for item in config["inbounds"] if item.get("tag") == "vless-xhttp-reality")
+               if transport == "xhttp" else config["inbounds"][0])
+    # Временный процесс не занимает рабочие порты другого транспорта или StatsService.
+    config["inbounds"] = [inbound]
+    for key in ("api", "stats", "routing"):
+        config.pop(key, None)
     inbound["listen"] = "127.0.0.1"
     inbound["port"] = port
     if target is not None:
@@ -213,10 +253,10 @@ def isolated_server_config(config, port, target=None):
     return config
 
 
-def start_isolated_server(directory, port, target=None):
+def start_isolated_server(directory, port, target=None, transport="tcp"):
     process = None
     try:
-        config = isolated_server_config(json.loads(SERVER_CONFIG.read_text()), port, target)
+        config = isolated_server_config(json.loads(SERVER_CONFIG.read_text()), port, target, transport)
         path = Path(directory) / "server.json"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as output:
@@ -276,11 +316,13 @@ def isolated_result(log):
     return "no classified handshake event"
 
 
-def check_reality_public_key(profile):
+def check_reality_public_key(profile, transport="tcp"):
     # OpenSSL получает закрытый ключ через stdin — никогда в аргументах или выводе терминала.
     try:
         config = json.loads(SERVER_CONFIG.read_text())
-        private_key = config["inbounds"][0]["streamSettings"]["realitySettings"]["privateKey"]
+        inbound = (next(item for item in config["inbounds"] if item.get("tag") == "vless-xhttp-reality")
+                   if transport == "xhttp" else config["inbounds"][0])
+        private_key = inbound["streamSettings"]["realitySettings"]["privateKey"]
         raw = base64.urlsafe_b64decode(private_key + "=" * (-len(private_key) % 4))
         if len(raw) != 32:
             raise ValueError("invalid private key")
@@ -331,6 +373,8 @@ def main():
     parser.add_argument("--isolated-target", choices=("www.cloudflare.com", "www.wikipedia.org", "www.apple.com"),
                         help="try an alternate REALITY camouflage target in isolated mode")
     parser.add_argument("--port", type=int, help="Проверить опубликованный порт вместо порта основного профиля")
+    parser.add_argument("--transport", choices=("tcp", "xhttp"), default="tcp",
+                        help="Проверить прежний TCP/Vision либо дополнительный XHTTP")
     args = parser.parse_args()
     if args.isolated_target and not args.isolated:
         parser.error("--isolated-target requires --isolated")
@@ -338,9 +382,9 @@ def main():
         parser.error("--port requires a valid public port and cannot be combined with --isolated")
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
-    profile = get_profile()
+    profile = get_profile(args.transport)
     if args.isolated:
-        check_reality_public_key(profile)
+        check_reality_public_key(profile, args.transport)
     port = free_port()
     server_port = free_port() if args.isolated else args.port
     while server_port == port:
@@ -354,7 +398,7 @@ def main():
         server_log = None
         try:
             if args.isolated:
-                server, server_log = start_isolated_server(directory, server_port, args.isolated_target)
+                server, server_log = start_isolated_server(directory, server_port, args.isolated_target, args.transport)
             try:
                 protocol = run_client(directory, config, target, port, timeout=30 if args.isolated else 10)
             except SmokeError as error:
@@ -366,7 +410,7 @@ def main():
         finally:
             if server is not None:
                 stop(server)
-    print("VLESS traffic OK:", protocol, "; port", args.port or urlsplit(profile).port)
+    print("VLESS traffic OK:", protocol, "; transport", args.transport, "; port", args.port or urlsplit(profile).port)
 
 
 if __name__ == "__main__":

@@ -14,10 +14,10 @@ MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
 REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
-            "docker/compose.yml", "docker/Caddyfile.template", "docker/haproxy.cfg.template", "docker/Dockerfile.api",
+            "docker/compose.yml", "docker/compose.xhttp.yml", "docker/Caddyfile.template", "docker/haproxy.cfg.template", "docker/Dockerfile.api",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
-            "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/install.sh",
+            "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/configure-xhttp.py", "docker/install.sh",
             "docker/update.sh", "docker/verify-release.py"}
 
 

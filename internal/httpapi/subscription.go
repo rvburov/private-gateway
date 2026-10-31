@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/rvburov/private-gateway/internal/model"
 	"github.com/rvburov/private-gateway/internal/storage"
 )
 
@@ -71,8 +72,34 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 	default:
 		// Список ссылок, который читают v2rayN, v2rayNG, Hiddify, Streisand и Shadowrocket.
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = w.Write([]byte(base64.StdEncoding.EncodeToString([]byte(profile.URI + "\n"))))
+		_, _ = w.Write([]byte(base64.StdEncoding.EncodeToString([]byte(subscriptionURIs(profile, r)))))
 	}
+}
+
+// subscriptionURIs сохраняет одну подписку устройства. Клиенты с собственными
+// форматами и известные legacy-клиенты получают прежний TCP-профиль; общий список
+// Xray содержит XHTTP первым, а TCP — запасным. Наличие двух записей не включает
+// автоматическое переключение клиента и не подтверждает поддержку его версии.
+func subscriptionURIs(profile model.Profile, r *http.Request) string {
+	if profile.XHTTPURI == "" || legacySubscriptionClient(r.UserAgent()) {
+		return profile.URI + "\n"
+	}
+	tcpURI := profile.URI
+	if parsed, err := url.Parse(tcpURI); err == nil {
+		parsed.Fragment += " · TCP Vision"
+		tcpURI = parsed.String()
+	}
+	return profile.XHTTPURI + "\n" + tcpURI + "\n"
+}
+
+func legacySubscriptionClient(agent string) bool {
+	agent = strings.ToLower(agent)
+	for _, name := range []string{"hiddify", "sing-box", "singbox", "clash", "mihomo", "stash"} {
+		if strings.Contains(agent, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // subscriptionFormat смотрит сначала на явный ?format=, затем на User-Agent клиента, затем на

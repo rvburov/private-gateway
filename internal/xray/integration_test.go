@@ -94,7 +94,7 @@ func TestRealXrayTrafficAndRevocation(t *testing.T) {
 	}
 }
 
-func startTLS13Target(t *testing.T) string {
+func startTLS13Target(t *testing.T, serverNames ...string) string {
 	t.Helper()
 	private, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
@@ -104,6 +104,10 @@ func startTLS13Target(t *testing.T) string {
 		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "reality.example"},
 		DNSNames: []string{"reality.example"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
 		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if len(serverNames) > 0 {
+		certTemplate.Subject.CommonName = serverNames[0]
+		certTemplate.DNSNames = []string{serverNames[0]}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, &certTemplate, &certTemplate, &private.PublicKey, private)
 	if err != nil {
@@ -287,4 +291,3 @@ func fetchViaSOCKS(proxy, origin string) (string, error) {
 	body, err := io.ReadAll(response.Body)
 	return string(body), err
 }
-

@@ -6,6 +6,7 @@ sql:
       - internal/storage/migrations/000002_administrator.up.sql
       - internal/storage/migrations/000003_delete_revoked_devices.up.sql
       - internal/storage/migrations/000004_subscription_links.up.sql
+      - internal/storage/migrations/000007_nodes_xhttp.up.sql
     queries: internal/storage/queries.sql
     gen:
       go:

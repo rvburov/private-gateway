@@ -1,0 +1,1 @@
+vless://11111111-2222-3333-4444-555555555555@192.0.2.10:8444?encryption=none&type=xhttp&security=reality&path=%2Ftest-xhttp-path-0001&mode=auto&sni=example.com&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=1111222233334444#Private%20Gateway%20XHTTP%20TEST

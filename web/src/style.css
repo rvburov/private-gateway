@@ -1461,6 +1461,31 @@ details[open] > summary {
 .profile-format-picker {
   margin-bottom: 4px;
 }
+.profile-parameters {
+  margin: 10px 0 14px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  overflow-wrap: anywhere;
+}
+.profile-parameters h3 {
+  margin: 0 0 8px;
+  font-size: var(--fs-md);
+}
+.profile-parameters p {
+  margin: 8px 0 0;
+  color: var(--fg-2);
+  font-size: var(--fs-sm);
+}
+.profile-parameters dl {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 10px 16px;
+  margin: 12px 0;
+}
+.profile-parameters dl > div { min-width: 0; }
+.profile-parameters dt { color: var(--fg-3); font-size: var(--fs-sm); }
+.profile-parameters dd { margin: 2px 0 0; }
 .profile-uri {
   resize: vertical;
   font-size: var(--fs-sm);

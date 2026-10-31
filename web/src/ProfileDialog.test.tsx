@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { toDataURL } from "qrcode";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
 import { browserURLForPanel } from "./api";
@@ -14,6 +14,12 @@ const initial: RevealedProfile = {
   sing_box_json: '{"outbounds":[{"server_port":8443}]}',
   mihomo_yaml: "proxies:\n  - port: 8443",
   subscription_path: "/sub/test-subscription",
+};
+
+const xhttpProfile: RevealedProfile = {
+  ...initial,
+  xhttp_port: 8444,
+  xhttp_uri: "vless://11111111-2222-3333-4444-555555555555@198.51.100.10:8444?type=xhttp&security=reality&path=%2Ftest-xhttp-path-0001&mode=auto&sni=example.org&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0011223344556677#Test%20XHTTP",
 };
 
 function Dialog({ value = initial }: { value?: RevealedProfile }) {
@@ -39,6 +45,7 @@ it("uses one port for the subscription, exported formats and both QR codes", asy
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   render(<Dialog />);
+  expect(screen.queryByRole("option", { name: /XHTTP/ })).toBeNull();
   expect(screen.queryByLabelText("Вход на сервер")).toBeNull();
   expect(screen.queryByText("Основной вход")).toBeNull();
   expect(screen.queryByText(/Резервный вход/)).toBeNull();
@@ -56,6 +63,63 @@ it("uses one port for the subscription, exported formats and both QR codes", asy
       .toBe(initial[format]);
   }
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("copies and renders QR for the selected transport while retaining one subscription", async () => {
+  const writeText = vi.fn().mockResolvedValue(undefined);
+  const fetchMock = vi.fn();
+  vi.stubGlobal("navigator", { clipboard: { writeText } });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<Dialog value={xhttpProfile} />);
+  const details = within(screen.getByRole("region", { name: "Параметры подключения" }));
+  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
+  expect(details.getByText("XHTTP: 8444; TCP: 8443")).toBeTruthy();
+
+  fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "xhttp_uri" } });
+  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(xhttpProfile.xhttp_uri);
+  expect(details.getByText("8444")).toBeTruthy();
+  expect(details.getByText("REALITY, без Vision")).toBeTruthy();
+  expect(details.getByText("Не измерено")).toBeTruthy();
+  expect(details.getByText(/Скорость требует замера/)).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Скачать файл" })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
+  await waitFor(() => expect(toDataURL).toHaveBeenLastCalledWith(xhttpProfile.xhttp_uri, expect.any(Object)));
+  fireEvent.click(screen.getByRole("button", { name: "Скопировать ссылку" }));
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(xhttpProfile.xhttp_uri));
+
+  fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "uri" } });
+  expect(screen.queryByRole("img", { name: "QR-код профиля подключения" })).toBeNull();
+  expect(details.getByText("8443")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Скопировать ссылку" }));
+  await waitFor(() => expect(writeText).toHaveBeenLastCalledWith(initial.uri));
+  fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
+  await waitFor(() => expect(toDataURL).toHaveBeenLastCalledWith(initial.uri, expect.any(Object)));
+
+  fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "subscription" } });
+  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("retains TCP configuration files when an XHTTP link is available", () => {
+  render(<Dialog value={xhttpProfile} />);
+  for (const format of ["sing_box_json", "mihomo_yaml"] as const) {
+    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: format } });
+    expect((screen.getByLabelText("Конфигурация клиента") as HTMLTextAreaElement).value).toBe(initial[format]);
+    const details = within(screen.getByRole("region", { name: "Параметры подключения" }));
+    expect(details.getByText("TCP")).toBeTruthy();
+    expect(details.getByText("REALITY + Vision")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Скачать файл" })).toBeTruthy();
+  }
+});
+
+it("falls back to TCP if an updated profile no longer exposes XHTTP", () => {
+  const props = { token: "test-session", onChange: () => {}, onClose: () => {}, onGuide: () => {} };
+  const { rerender } = render(<ProfileDialog {...props} profile={xhttpProfile} />);
+  fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "xhttp_uri" } });
+  rerender(<ProfileDialog {...props} profile={initial} />);
+  expect((screen.getByLabelText("Формат профиля") as HTMLSelectElement).value).toBe("uri");
+  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(initial.uri);
+  expect(screen.queryByRole("option", { name: /XHTTP/ })).toBeNull();
 });
 
 it("keeps port 8443 after rotating a legacy subscription link", async () => {

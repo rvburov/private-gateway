@@ -31,6 +31,10 @@ func NewManager(options Options) *Manager {
 		options.Binary = "xray"
 	}
 	options.RestartCommand = append([]string(nil), options.RestartCommand...)
+	if options.Settings.XHTTP != nil {
+		xhttp := *options.Settings.XHTTP
+		options.Settings.XHTTP = &xhttp
+	}
 	return &Manager{options: options}
 }
 
@@ -120,8 +124,27 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 	// вызывающего.
 	cmd.WaitDelay = time.Second
 	var output limitedOutput
-	cmd.Stdout, cmd.Stderr = &output, &output
+	if m.options.Settings.XHTTP != nil {
+		// Ошибка ядра может содержать не только известный путь, но и адрес после DNS.
+		// Для нового входа вывод полностью отбрасывается, а не фильтруется по шаблону.
+		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
+	} else {
+		cmd.Stdout, cmd.Stderr = &output, &output
+	}
 	if err := cmd.Run(); err != nil {
+		if m.options.Settings.XHTTP != nil {
+			if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
+				return errors.New(action + ": timed out")
+			}
+			if errors.Is(commandCtx.Err(), context.Canceled) {
+				return errors.New(action + ": canceled")
+			}
+			var exitError *exec.ExitError
+			if errors.As(err, &exitError) {
+				return fmt.Errorf("%s: process exited with status %d", action, exitError.ExitCode())
+			}
+			return errors.New(action + ": cannot run Xray command")
+		}
 		if commandCtx.Err() != nil {
 			err = commandCtx.Err()
 		}

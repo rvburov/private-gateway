@@ -27,6 +27,26 @@ class XrayWorkerMetricsTest(unittest.TestCase):
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(value, encoding="utf-8")
 
+    def test_xhttp_startup_does_not_inherit_container_output(self):
+        configuration = self.root / "test-config.json"
+        for networks, suppressed in ((["raw"], False), (["raw", "xhttp"], True), (None, True)):
+            with self.subTest(networks=networks):
+                configuration.write_text(json.dumps({"inbounds": [
+                    {"streamSettings": {"network": network}} for network in networks
+                ]}) if networks is not None else "invalid-test-document", encoding="utf-8")
+                child = mock.Mock()
+                child.poll.return_value = 1
+                with mock.patch.object(worker, "CONFIG", configuration), \
+                        mock.patch.object(worker, "process", None), \
+                        mock.patch.object(worker.subprocess, "Popen", return_value=child) as start:
+                    self.assertFalse(worker.start_child({}))
+                options = start.call_args.kwargs
+                if suppressed:
+                    self.assertEqual(options, {"stdout": worker.subprocess.DEVNULL,
+                                               "stderr": worker.subprocess.DEVNULL})
+                else:
+                    self.assertEqual(options, {})
+
     def test_v2_collects_own_namespace_and_excludes_loopback(self):
         for path, value in {
             "proc/self/cgroup": "0::/own\n",
