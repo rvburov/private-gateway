@@ -4,7 +4,30 @@
 # Занимает порты 80, 443 и 8443 и пишет в /etc, /opt и /var: только для одноразовых runner'ов CI.
 set -Eeuo pipefail
 
-fail() { printf 'Installation test failed: %s\n' "$*" >&2; exit 1; }
+install_test_phase=initialisation
+install_test_error_reported=false
+report_install_failure() {
+  local exit_status=$1 failed_line=$2 safe_phase
+  case "$install_test_phase" in
+    initialisation|bootstrap|initial-checks|panel-update|xhttp-enable|port-preparation|panel-rollback|vless-rollback|primary-transition|single-port|fresh-install)
+      safe_phase=$install_test_phase ;;
+    *) safe_phase=unknown ;;
+  esac
+  # Только фиксированная стадия и числа: BASH_COMMAND и аргументы могут содержать секреты.
+  if ((failed_line > 0)); then
+    printf '::error file=scripts/test-install-update.sh,line=%s,title=Installation check::phase=%s; exit_status=%s\n' \
+      "$failed_line" "$safe_phase" "$exit_status" >&2
+  else
+    printf '::error title=Installation check::phase=%s; exit_status=%s\n' "$safe_phase" "$exit_status" >&2
+  fi
+  install_test_error_reported=true
+}
+trap 'install_test_exit_status=$?; report_install_failure "$install_test_exit_status" "$LINENO"; exit "$install_test_exit_status"' ERR
+fail() {
+  printf 'Installation test failed: %s\n' "$*" >&2
+  report_install_failure 1 "${BASH_LINENO[0]:-0}"
+  exit 1
+}
 archive=${1:?Pass the release.tar.gz path}
 [[ ${GITHUB_ACTIONS:-} == true ]] || fail 'run it only on a disposable GitHub Actions runner.'
 repository=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)
@@ -52,6 +75,9 @@ collect_logs() {
 }
 finish() {
   local status=$? log
+  if ((status != 0)) && [[ $install_test_error_reported != true ]]; then
+    report_install_failure "$status" 0
+  fi
   if [[ -n $collector ]]; then
     kill $collector 2>/dev/null || true
     xargs -r kill < "$work/logs/pids" 2>/dev/null || true
@@ -68,9 +94,9 @@ finish() {
 trap finish EXIT
 mkdir "$work/logs"
 touch "$work/logs/pids"
-collect_logs &
+(trap - ERR; collect_logs) &
 collector=$!
-watch_xray_status &
+(trap - ERR; watch_xray_status) &
 collector+=" $!"
 # Шаг выкладки CI отправляет SHA и архив по SSH этой принудительной команде gateway-deploy.
 deliver() {
@@ -407,7 +433,9 @@ bootstrap() {
   [[ $(installed) == "$version" ]] || fail 'The first deployment installed another version.'
 }
 printf '\n== Bootstrap and first deployment ==\n'
+install_test_phase=bootstrap
 bootstrap "$version_a" "$work/release-initial.tar.gz" 2>&1 | tee "$work/install.log"
+install_test_phase=initial-checks
 compose config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); assert not c["services"]["xray"].get("ports"), "Disabled XHTTP reserved a host port."'
 panel_ready
 browser_protected
@@ -429,6 +457,7 @@ saved_identity=$(identity)
 check_stack
 
 printf '\n== Panel-only update preserves unchanged containers ==\n'
+install_test_phase=panel-update
 declare -A before
 for service in postgres api browser xray caddy edge; do before[$service]=$(container "$service"); done
 deliver "$version_b" "$work/release-b.tar.gz" 2>&1 | tee "$work/update-b.log"
@@ -443,20 +472,23 @@ grep -Fx "Installed release verified: $version_b; panel=$(public_port panel); vp
   || fail 'The installed updater did not verify itself.'
 
 printf '\n== Enable XHTTP without changing the existing TCP identity ==\n'
-sudo python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --port 8444 --apply
+install_test_phase=xhttp-enable
+sudo env GITHUB_ACTIONS=true python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --port 8444 --apply
 saved_xhttp_identity=$(xhttp_identity)
 check_stack
 # Повторное включение не должно выдавать новый ключ или путь.
-sudo python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --apply
+sudo env GITHUB_ACTIONS=true python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --apply
 [[ $(xhttp_identity) == "$saved_xhttp_identity" ]] || fail 'Repeated configuration changed the XHTTP identity.'
 check_stack
 
 printf '\n== Preparation release keeps the old primary443 and both public ports ==\n'
+install_test_phase=port-preparation
 deliver "$version_e" "$work/release-e.tar.gz" 2>&1 | tee "$work/preparation.log"
 [[ $(public_port panel) == 443 && $(public_port vpn) == 443 ]] || fail 'The preparation changed the primary port.'
 check_stack
 
 printf '\n== Failed panel transition restores the previous ports and credentials ==\n'
+install_test_phase=panel-rollback
 if deliver "$version_g" "$work/release-1.tar.gz" 2>&1 | tee "$work/panel-rollback.log"; then
   fail 'A broken panel was accepted.'
 fi
@@ -465,6 +497,7 @@ fi
 check_stack
 
 printf '\n== Failed VLESS transition rolls back while the panel itself works ==\n'
+install_test_phase=vless-rollback
 if deliver "$version_h" "$work/release-2.tar.gz" 2>&1 | tee "$work/vless-rollback.log"; then
   fail 'Broken VLESS traffic was accepted.'
 fi
@@ -477,6 +510,7 @@ check_stack
 
 previous_revision=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "DESIRED" && $2 == "REVISION" {print $3}')
 printf '\n== Move the canonical panel and profiles to8443, retaining both public ports ==\n'
+install_test_phase=primary-transition
 deliver "$version_f" "$work/release-f.tar.gz" 2>&1 | tee "$work/primary8443.log"
 [[ $(public_port panel) == 8443 && $(public_port vpn) == 8443 ]] || fail 'The public ports did not change.'
 check_stack
@@ -486,6 +520,7 @@ panel_ready 443 || fail 'The compatibility panel port443 disappeared.'
 http_redirect
 
 printf '\n== A release may also remove external443 without changing internal Xray443 ==\n'
+install_test_phase=single-port
 deliver "$version_i" "$work/release-3.tar.gz" 2>&1 | tee "$work/single8443.log"
 check_stack
 compose config --format json | python3 -c 'import json,sys; c=json.load(sys.stdin); assert not any(str(p.get("published")) == "443" for s in c["services"].values() for p in s.get("ports", []))'
@@ -496,6 +531,7 @@ fi
 # Разрушительная очистка относится только к этому одноразовому runner. Следом проверяется
 # установка с нуля на8443, без внешнего443; рабочий VPS этот скрипт запускать отказывается.
 printf '\n== Fresh single8443 installation on the disposable runner ==\n'
+install_test_phase=fresh-install
 compose down --volumes --remove-orphans
 sudo rm -rf /etc/private-gateway-docker /opt/private-gateway-docker /var/lib/private-gateway-docker/xray
 seed_ca

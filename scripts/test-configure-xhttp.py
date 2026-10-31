@@ -2,12 +2,15 @@
 """Проверить подготовку XHTTP, сохранение секретов и откат без рабочего сервера."""
 
 import base64
+import contextlib
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -208,6 +211,135 @@ class ConfigureXHTTPTests(unittest.TestCase):
         link.symlink_to(self.env)
         with self.assertRaises(xhttp.ConfigurationError):
             xhttp.require_private_file(link)
+
+    def test_each_command_failure_reports_its_original_safe_stage(self):
+        cases = {
+            "preflight": lambda command: command[-1] == "status",
+            "keygen": lambda command: command[-1] == "keygen",
+            "compose-validation": lambda command: command[-2:] == ["config", "--quiet"],
+            "compose-start": lambda command: "up" in command,
+            "config-apply": lambda command: command[-2:] == ["config", "apply"],
+            "tcp-smoke": lambda command: "vpn-smoke.py" in command[1] and command[-1] == "tcp",
+            "xhttp-smoke": lambda command: "vpn-smoke.py" in command[1] and command[-1] == "xhttp",
+        }
+        execute_before = self.execute
+        secret = "private-command-output /private-path-0123456789 203.0.113.99"
+        config_before = self.config.read_bytes()
+        for stage, matches in cases.items():
+            with self.subTest(stage=stage):
+                self.env.write_bytes(self.original)
+                self.config.write_bytes(config_before)
+                self.calls.clear()
+                failed = False
+
+                def execute(command, timeout):
+                    nonlocal failed
+                    if not failed and matches(command):
+                        failed = True
+                        raise RuntimeError(secret)
+                    return execute_before(command, timeout)
+
+                self.execute = execute
+                with self.assertRaises(xhttp.ConfigurationError) as caught:
+                    self.configure(apply=True)
+                self.assertEqual(caught.exception.stage, stage)
+                self.assertNotIn(secret, str(caught.exception))
+                if stage not in ("preflight", "keygen"):
+                    self.assertTrue(caught.exception.restored)
+                    self.assertIn("previous settings restored", str(caught.exception))
+                self.assertEqual(self.env.read_bytes(), self.original)
+                output = io.StringIO()
+                with contextlib.redirect_stderr(output):
+                    xhttp.report_error(caught.exception, github_actions=True)
+                self.assertIn("stage=" + stage, output.getvalue())
+                self.assertNotIn(secret, output.getvalue())
+                self.assertNotIn(str(self.root), output.getvalue())
+                self.assertNotIn("previous settings", output.getvalue())
+        self.execute = execute_before
+
+    def test_failed_rollback_retains_original_and_restoration_stage(self):
+        execute_before = self.execute
+        original_failed = False
+        secret = "private-command-result /random-secret-path-0123456789"
+
+        def execute(command, timeout):
+            nonlocal original_failed
+            if "vpn-smoke.py" in command[1] and command[-1] == "xhttp":
+                original_failed = True
+                raise RuntimeError(secret)
+            if original_failed and command[-2:] == ["config", "apply"]:
+                raise RuntimeError(secret)
+            return execute_before(command, timeout)
+
+        self.execute = execute
+        with self.assertRaisesRegex(xhttp.ConfigurationError, "configuration and rollback failed") as caught:
+            self.configure(apply=True)
+        self.assertEqual(caught.exception.stage, "xhttp-smoke")
+        self.assertEqual(caught.exception.rollback_stage, "config-apply")
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            xhttp.report_error(caught.exception, github_actions=True)
+        self.assertIn("stage=xhttp-smoke; rollback=failed; rollback_stage=config-apply", output.getvalue())
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_rollback_file_failure_has_fixed_rollback_stage(self):
+        execute_before = self.execute
+        write_before = xhttp.atomic_write
+        writes = 0
+
+        def execute(command, timeout):
+            if command[-2:] == ["config", "--quiet"]:
+                raise RuntimeError("private-validation-output")
+            return execute_before(command, timeout)
+
+        def atomic_write(*args, **kwargs):
+            nonlocal writes
+            writes += 1
+            if writes > 1:
+                raise OSError("private-file-operation-details")
+            return write_before(*args, **kwargs)
+
+        self.execute = execute
+        with mock.patch.object(xhttp, "atomic_write", side_effect=atomic_write):
+            with self.assertRaises(xhttp.ConfigurationError) as caught:
+                self.configure(apply=True)
+        self.assertEqual(caught.exception.stage, "compose-validation")
+        self.assertEqual(caught.exception.rollback_stage, "rollback")
+        self.assertNotIn("private-file-operation-details", str(caught.exception))
+
+    def test_annotation_never_uses_error_text_or_unknown_stage(self):
+        secret = "secret%0A::error::forged-command-output"
+        error = xhttp.ConfigurationError(secret, stage=secret, rollback_stage=secret)
+        self.assertEqual(error.stage, "preflight")
+        self.assertEqual(error.rollback_stage, "rollback")
+        # Проверяется и повторная фильтрация, если поля исключения изменил сторонний код.
+        error.stage = secret
+        error.rollback_stage = secret
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), contextlib.redirect_stderr(output):
+            xhttp.report_error(error)
+        self.assertEqual(output.getvalue(),
+                         "::error file=deploy/docker/configure-xhttp.py::XHTTP configuration failed; "
+                         "stage=preflight; rollback=failed; rollback_stage=rollback\n")
+        self.assertNotIn(secret, output.getvalue())
+
+    def test_normal_cli_has_safe_stage_and_keeps_restoration_message(self):
+        output = io.StringIO()
+        error = xhttp.ConfigurationError("configuration failed; previous settings restored", stage="tcp-smoke", restored=True)
+        with contextlib.redirect_stderr(output):
+            xhttp.report_error(error, github_actions=False)
+        self.assertIn("stage=tcp-smoke; rollback=restored", output.getvalue())
+        self.assertIn("previous settings restored", output.getvalue())
+        self.assertNotIn("::error", output.getvalue())
+
+    def test_invalid_keygen_output_reports_keygen_without_echoing_output(self):
+        execute_before = self.execute
+        secret = "private-malformed-keygen-output"
+        self.execute = lambda command, timeout: secret if command[-1] == "keygen" else execute_before(command, timeout)
+        with self.assertRaises(xhttp.ConfigurationError) as caught:
+            self.configure()
+        self.assertEqual(caught.exception.stage, "keygen")
+        self.assertNotIn(secret, str(caught.exception))
 
 
 if __name__ == "__main__":

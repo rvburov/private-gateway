@@ -27,10 +27,40 @@ XRAY_CONFIG = Path("/var/lib/private-gateway-docker/xray/xray.json")
 LOCK = Path("/run/lock/private-gateway-docker-install.lock")
 NAMES = ("GATEWAY_XHTTP_ENABLED", "GATEWAY_XHTTP_PORT", "GATEWAY_XHTTP_PRIVATE_KEY",
          "GATEWAY_XHTTP_SHORT_ID", "GATEWAY_XHTTP_PATH")
+STAGES = frozenset(("preflight", "keygen", "compose-validation", "compose-start", "config-apply",
+                    "tcp-smoke", "xhttp-smoke", "rollback"))
+
+
+def safe_stage(value, fallback="preflight"):
+    return value if isinstance(value, str) and value in STAGES else fallback
 
 
 class ConfigurationError(Exception):
-    pass
+    def __init__(self, message, *, stage="preflight", restored=False, rollback_stage=None):
+        super().__init__(message)
+        self.stage = safe_stage(stage)
+        self.restored = restored is True
+        self.rollback_stage = None if rollback_stage is None else safe_stage(rollback_stage, "rollback")
+
+
+def report_error(error, *, github_actions=None):
+    # В аннотацию попадают только фиксированные категории, даже если error или
+    # его поля пришли от подставленного исполнителя команды и содержат секрет.
+    stage = safe_stage(getattr(error, "stage", None))
+    rollback_stage = getattr(error, "rollback_stage", None)
+    state = ""
+    if rollback_stage is not None:
+        state = "; rollback=failed; rollback_stage=" + safe_stage(rollback_stage, "rollback")
+    elif getattr(error, "restored", False) is True:
+        state = "; rollback=restored"
+    if github_actions is None:
+        github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+    if github_actions:
+        print("::error file=deploy/docker/configure-xhttp.py::XHTTP configuration failed; stage=" + stage + state,
+              file=sys.stderr)
+    else:
+        message = str(error) if isinstance(error, ConfigurationError) else "file or operating system operation failed"
+        print(f"XHTTP configuration stopped: stage={stage}{state}; {message}", file=sys.stderr)
 
 
 def run(command, timeout=120):
@@ -130,6 +160,21 @@ def atomic_write(path, content, metadata=None):
 
 def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
               backups=BACKUPS, xray_config=None, execute=run):
+    active_stage = "preflight"
+
+    def execute_at(stage, arguments, *, timeout):
+        nonlocal active_stage
+        active_stage = safe_stage(stage)
+        try:
+            result = execute(arguments, timeout=timeout)
+            if not isinstance(result, str):
+                raise ConfigurationError("configuration command returned an invalid result", stage=active_stage)
+            return result
+        except Exception as error:
+            # Исполнитель и дочерняя программа не определяют текст публичной ошибки.
+            raise ConfigurationError("configuration command failed; command output suppressed",
+                                     stage=active_stage) from error
+
     if not compose.is_file() or "GATEWAY_XHTTP_ENABLED" not in compose.read_text():
         raise ConfigurationError("install a verified release with XHTTP support first")
     smoke = compose.parent / "vpn-smoke.py"
@@ -152,17 +197,20 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         return result
 
     if apply:
-        status = execute(command() + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "status"], timeout=20)
+        status = execute_at("preflight", command() + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "status"], timeout=20)
         active = re.search(r"^ACTIVE\s+DEVICES\s+([0-9]+)\s*$", status, flags=re.M)
         if active is None or int(active[1]) == 0:
             raise ConfigurationError("an active device is required before applying XHTTP")
 
     def generate_key():
         try:
-            generated = json.loads(execute([str(api), "keygen"], timeout=15))
-            return generated["reality_private_key"]
+            generated = json.loads(execute_at("keygen", [str(api), "keygen"], timeout=15))
+            key = generated["reality_private_key"]
+            if not valid_private_key(key):
+                raise ConfigurationError("private key could not be generated", stage="keygen")
+            return key
         except (KeyError, TypeError, ValueError) as error:
-            raise ConfigurationError("private key could not be generated") from error
+            raise ConfigurationError("private key could not be generated", stage="keygen") from error
 
     after = replacement(before, enabled, port, generate_key)
     if before == after and not apply:
@@ -182,37 +230,42 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         (backup / "xray.json").write_bytes(xray_before)
         os.chmod(backup / "xray.json", 0o600)
     def start_and_apply():
-        execute(command() + ["up", "-d", "--wait", "--no-deps", "api", "xray"], timeout=120)
-        execute(command() + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "config", "apply"], timeout=90)
+        execute_at("compose-start", command() + ["up", "-d", "--wait", "--no-deps", "api", "xray"], timeout=120)
+        execute_at("config-apply", command() + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "config", "apply"], timeout=90)
+
+    def check_traffic(transport):
+        stage = "xhttp-smoke" if transport == "xhttp" else "tcp-smoke"
+        result = execute_at(stage, [sys.executable, str(smoke), "--transport", transport], timeout=75)
+        if "VLESS traffic OK:" not in result:
+            raise ConfigurationError("the transport traffic check did not pass", stage=stage)
 
     atomic_write(env, after, metadata)
     try:
-        execute(command() + ["config", "--quiet"], timeout=20)
+        execute_at("compose-validation", command() + ["config", "--quiet"], timeout=20)
         if apply:
             start_and_apply()
             for transport in (["tcp", "xhttp"] if enabled else ["tcp"]):
-                result = execute([sys.executable, str(smoke), "--transport", transport], timeout=75)
-                if "VLESS traffic OK:" not in result:
-                    raise ConfigurationError("the transport traffic check did not pass")
+                check_traffic(transport)
     except BaseException as error:
-        atomic_write(env, before, metadata)
-        if xray_before is not None:
-            atomic_write(xray_config, xray_before, xray_metadata)
-        else:
-            xray_config.unlink(missing_ok=True)
-        if apply:
-            try:
+        failure_stage = safe_stage(getattr(error, "stage", active_stage))
+        active_stage = "rollback"
+        try:
+            atomic_write(env, before, metadata)
+            if xray_before is not None:
+                atomic_write(xray_config, xray_before, xray_metadata)
+            else:
+                xray_config.unlink(missing_ok=True)
+            if apply:
                 start_and_apply()
-                result = execute([sys.executable, str(smoke), "--transport", "tcp"], timeout=75)
-                if "VLESS traffic OK:" not in result:
-                    raise ConfigurationError("restored TCP traffic check did not pass")
+                check_traffic("tcp")
                 if parse_env(before).get("GATEWAY_XHTTP_ENABLED") == "1":
-                    result = execute([sys.executable, str(smoke), "--transport", "xhttp"], timeout=75)
-                    if "VLESS traffic OK:" not in result:
-                        raise ConfigurationError("restored XHTTP traffic check did not pass")
-            except BaseException as rollback_error:
-                raise ConfigurationError(f"configuration and rollback failed; inspect backup {backup}") from rollback_error
-        raise ConfigurationError(f"configuration failed; previous settings restored; backup {backup}") from error
+                    check_traffic("xhttp")
+        except BaseException as rollback_error:
+            rollback_stage = safe_stage(getattr(rollback_error, "stage", active_stage), "rollback")
+            raise ConfigurationError(f"configuration and rollback failed; inspect backup {backup}",
+                                     stage=failure_stage, rollback_stage=rollback_stage) from rollback_error
+        raise ConfigurationError(f"configuration failed; previous settings restored; backup {backup}",
+                                 stage=failure_stage, restored=True) from error
     action = "applied and checked" if apply else "prepared for the next release; use --apply to activate"
     return f"XHTTP settings {action}; backup {backup}"
 
@@ -240,5 +293,5 @@ if __name__ == "__main__":
     try:
         main()
     except (ConfigurationError, OSError, UnicodeError) as error:
-        print("XHTTP configuration stopped:", error, file=sys.stderr)
+        report_error(error)
         raise SystemExit(1) from None

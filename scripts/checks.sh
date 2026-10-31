@@ -35,7 +35,7 @@ done
 python3 -m py_compile scripts/*.py deploy/docker/*.py deploy/browser/*.py
 for test in scripts/test-release.py scripts/test-image-tags.py scripts/test-release-ports.py scripts/test-checks-proxy-dockerfile.py scripts/test-vpn-smoke.py scripts/test-xray-worker.py \
   scripts/test-change-reality-target.py scripts/test-rotate-admin-token.py scripts/test-admin-credentials.py \
-  scripts/test-configure-xhttp.py scripts/test-benchmark-transports.py \
+  scripts/test-configure-xhttp.py scripts/test-benchmark-transports.py scripts/test-install-diagnostics.py \
   scripts/test-servers.py; do
   python3 "$test"
 done
