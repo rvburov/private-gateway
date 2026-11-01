@@ -22,22 +22,27 @@ const size = (value: number | null | undefined) =>
 const modeName = (mode: string) => connectionModes.find((item) => item.value === mode)?.label ?? "Текущее подключение";
 const time = (value: number) => new Date(value).toLocaleString("ru-RU", { dateStyle: "short", timeStyle: "short" });
 
-function Measurement({ title, path }: { title: string; path: PathMeasurement }) {
+function Measurement({ title, path, method }: { title: string; path: PathMeasurement; method?: PerformanceRun["method"] }) {
   const errors = [path.latency.error, path.download.error, path.upload.error].filter(Boolean);
+  const latencyLabel = method === "browser-http-v2" ? "Время до начала ответа HTTP" : "Задержка HTTP";
+  const downloadIncomplete = path.download.incomplete;
+  const uploadIncomplete = path.upload.incomplete;
   return (
     <section className="measurement" aria-label={title}>
       <h3>{title}</h3>
       <dl className="measurement-values">
         <div><dt>Получение</dt><dd>{measured(path.download.mbps, "Мбит/с")}</dd></div>
         <div><dt>Отправка</dt><dd>{measured(path.upload.mbps, "Мбит/с")}</dd></div>
-        <div><dt>Задержка HTTP, медиана</dt><dd>{measured(path.latency.medianMs, "мс")}</dd></div>
-        <div><dt>Задержка HTTP, p95</dt><dd>{measured(path.latency.p95Ms, "мс")}</dd></div>
+        <div><dt>{latencyLabel}, медиана</dt><dd>{measured(path.latency.medianMs, "мс")}</dd></div>
+        <div><dt>{latencyLabel}, p95</dt><dd>{measured(path.latency.p95Ms, "мс")}</dd></div>
         <div><dt>Колебание задержки</dt><dd>{measured(path.latency.jitterMs, "мс")}</dd></div>
         <div><dt>Пробы HTTP</dt><dd>{path.latency.successes} из {path.latency.attempts} успешны; ошибок: {path.latency.errorCount}</dd></div>
       </dl>
+      {downloadIncomplete && <p className="hint">Скачивание не завершено: получено {bytes(downloadIncomplete.bytes)} из {bytes(downloadIncomplete.expectedBytes)} за {number.format(downloadIncomplete.durationMs / 1_000)} с.</p>}
+      {uploadIncomplete && <p className="hint">Отправка не завершена: объём {bytes(uploadIncomplete.expectedBytes)} не подтверждён за {number.format(uploadIncomplete.durationMs / 1_000)} с.</p>}
       {errors.length > 0 && <p className="hint">{[...new Set(errors)].join(" ")}</p>}
       <p className="hint">
-        Данные замера: получено {bytes(path.download.bytes)}, отправлено {bytes(path.upload.bytes)}.
+        Данные замера: получено {bytes(path.download.bytes)}, отправка в завершённых пробах — {bytes(path.upload.bytes)}.
       </p>
     </section>
   );
@@ -131,6 +136,36 @@ function HistoryCell({ label, value }: { label: string; value: ReactNode }) {
   );
 }
 
+function TransportComparison({ history }: { history: PerformanceHistoryEntry[] }) {
+  const latest = [...history].sort((first, second) => second.checkedAt - first.checkedAt);
+  const tcp = latest.find((entry) => entry.mode === "tcp" && entry.method === "browser-http-v2");
+  const xhttp = latest.find((entry) => entry.mode === "xhttp" && entry.method === "browser-http-v2");
+  if (!tcp || !xhttp) return null;
+  const usable = (value: number | null, failed: boolean) => !failed && value !== null && Number.isFinite(value) && value > 0;
+  const bothDownload = [tcp, xhttp].every((entry) => usable(entry.internet.downloadMbps, entry.internet.downloadError !== false));
+  const bothUpload = [tcp, xhttp].every((entry) => usable(entry.internet.uploadMbps, entry.internet.uploadError !== false));
+  const bothLatency = [tcp, xhttp].every((entry) => usable(entry.internet.latencyMs, entry.internet.latencyError !== false || entry.internet.errorCount > 0));
+  return (
+    <div className="transport-comparison">
+      <h3>TCP и XHTTP до Cloudflare</h3>
+      <p className="hint">Последний замер каждой метки по одной методике. Профиль выбран вручную; условия и узел Cloudflare могут отличаться.</p>
+      <div className="transport-comparison-scroll">
+        <table className="transport-comparison-table" aria-label="Последние замеры TCP и XHTTP">
+          <thead><tr><th scope="col">Метка</th><th scope="col">Получение</th><th scope="col">Отправка</th><th scope="col">До начала ответа HTTP, медиана</th></tr></thead>
+          <tbody>{[tcp, xhttp].map((entry) => (
+            <tr key={entry.mode}>
+              <th scope="row">{modeName(entry.mode)}<span>{time(entry.checkedAt)}</span></th>
+              <td>{bothDownload ? measured(entry.internet.downloadMbps, "Мбит/с") : "Недостаточно данных"}</td>
+              <td>{bothUpload ? measured(entry.internet.uploadMbps, "Мбит/с") : "Недостаточно данных"}</td>
+              <td>{bothLatency ? measured(entry.internet.latencyMs, "мс") : "Недостаточно данных"}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun; busy: boolean }) {
   const [history, setHistory] = useState<PerformanceHistoryEntry[]>(loadPerformanceHistory);
   useEffect(() => { setHistory(loadPerformanceHistory()); }, [result?.performance?.checkedAt]);
@@ -145,7 +180,9 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
               <HelpTip label="О замерах скорости и задержки">
                 <p>Клиент VPN может исключать адрес своего сервера из туннеля. Скорость до панели показывает доступность канала до VPS; она сама по себе не измеряет передачу через VLESS.</p>
                 <p>Внешний замер идёт до Cloudflare. Его ближайший узел может меняться после переключения VPN. Повторите замеры несколько раз в одинаковых условиях.</p>
-                <p>Задержки измеряются HTTP-запросами. Медиана — среднее по порядку значение; p95 — верхняя граница для 95% проб. Колебания задержки и ошибки HTTP помогают оценить стабильность, но не измеряют потерю IP-пакетов и не доказывают ограничение скорости оператором.</p>
+                <p>Новые замеры: 2 прогрева и 10 HTTP-проб. Время до начала ответа считается от запуска запроса браузером до получения заголовков; оно может включать установку соединения. Браузер может повторно использовать соединения, поэтому это не замер отдельных новых соединений через curl.</p>
+                <p>Объём отправки учитывается по телам запросов с ожидаемым успешным ответом. Панель подтверждает точное число полученных байтов; внешний сервис Cloudflare такого счётчика в ответе не предоставляет.</p>
+                <p>Медиана — среднее по порядку значение; p95 — верхняя граница для 95% проб. При 10 успешных пробах p95 совпадает с самой долгой. Колебания и ошибки HTTP не измеряют потерю IP-пакетов и не устанавливают причину низкой скорости.</p>
               </HelpTip>
             </div>
             <p>{performance ? `${modeName(performance.mode)} · ${time(performance.checkedAt)}` : "До панели и в интернет."}</p>
@@ -154,12 +191,12 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
         {performance ? (
           <>
             <div className="measurement-columns">
-              <Measurement title="Канал до панели" path={performance.panel} />
-              <Measurement title="Интернет через текущее подключение" path={performance.internet} />
+              <Measurement title="Канал до панели" path={performance.panel} method={performance.method} />
+              <Measurement title="Интернет через текущее подключение" path={performance.internet} method={performance.method} />
             </div>
             <ServerResources run={performance} />
           </>
-        ) : <div className="card-body"><p className="hint">{result?.performanceError || "Нажмите «Проверить сервер», чтобы начать замер."}</p></div>}
+        ) : <div className="card-body"><p className="hint">{result?.performanceError || "Нажмите «Проверить подключение», чтобы начать замер."}</p></div>}
       </section>
       <section className="card" aria-label="История замеров">
         <div className="card-heading">
@@ -168,6 +205,7 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
               <h2>История замеров</h2>
               <HelpTip label="Об истории замеров">
                 <p>Сравнивайте результаты в одинаковых условиях. Скорость измеряется до Cloudflare, задержка — HTTP-запросами.</p>
+                <p>Новые записи измеряют время до начала ответа HTTP, старые — длительность полного запроса. В сравнении TCP и XHTTP участвуют только новые записи; метрика с ошибкой или без результата не сравнивается.</p>
                 <p>В этом браузере сохраняются числа, время и подпись подключения. IP-адреса, сведения об устройстве и токен входа в историю не записываются.</p>
               </HelpTip>
             </div>
@@ -175,18 +213,19 @@ export function AdvancedDiagnostics({ result, busy }: { result?: ServerCheckRun;
           </div>
           <button className="button" disabled={busy || history.length === 0} onClick={() => { clearPerformanceHistory(); setHistory([]); }}>Очистить историю</button>
         </div>
+        <TransportComparison history={history} />
         {history.length > 0 ? (
           <div className="diagnostics-table-scroll">
             <table className="diagnostics-table" role="table">
               <caption className="sr-only">Сравнение замеров: скорость до Cloudflare и задержка HTTP.</caption>
-              <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">Время и подключение</th><th role="columnheader" scope="col">Получение</th><th role="columnheader" scope="col">Отправка</th><th role="columnheader" scope="col">Задержка интернета</th><th role="columnheader" scope="col">Задержка панели</th><th role="columnheader" scope="col">Ошибки HTTP в интернете</th></tr></thead>
+              <thead role="rowgroup"><tr role="row"><th role="columnheader" scope="col">Время и подключение</th><th role="columnheader" scope="col">Получение</th><th role="columnheader" scope="col">Отправка</th><th role="columnheader" scope="col">Ответ HTTP: интернет</th><th role="columnheader" scope="col">Ответ HTTP: панель</th><th role="columnheader" scope="col">Ошибки HTTP в интернете</th></tr></thead>
               <tbody role="rowgroup">{history.map((entry, index) => (
                 <tr role="row" key={`${entry.checkedAt}-${index}`}>
-                  <th role="rowheader" scope="row" data-label="Время и подключение"><span>{time(entry.checkedAt)}</span><span>{modeName(entry.mode)}</span></th>
+                  <th role="rowheader" scope="row" data-label="Время и подключение"><span>{time(entry.checkedAt)}</span><span>{modeName(entry.mode)}</span><span>{entry.method === "browser-http-v2" ? "До начала ответа HTTP" : "Полный HTTP-запрос"}</span></th>
                   <HistoryCell label="Получение" value={measured(entry.internet.downloadMbps, "Мбит/с")} />
                   <HistoryCell label="Отправка" value={measured(entry.internet.uploadMbps, "Мбит/с")} />
-                  <HistoryCell label="Задержка интернета" value={measured(entry.internet.latencyMs, "мс")} />
-                  <HistoryCell label="Задержка панели" value={measured(entry.panel.latencyMs, "мс")} />
+                  <HistoryCell label={entry.method === "browser-http-v2" ? "До начала ответа HTTP, интернет" : "Задержка интернета"} value={measured(entry.internet.latencyMs, "мс")} />
+                  <HistoryCell label={entry.method === "browser-http-v2" ? "До начала ответа HTTP, панель" : "Задержка панели"} value={measured(entry.panel.latencyMs, "мс")} />
                   <HistoryCell label="Ошибки HTTP в интернете" value={entry.internet.errorCount} />
                 </tr>
               ))}</tbody>

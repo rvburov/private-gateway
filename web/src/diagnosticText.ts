@@ -12,6 +12,7 @@ const statuses: Record<string, string> = {
 const modes: Record<string, string> = {
   current: "Текущее подключение", "wifi-direct": "Wi-Fi без VPN", "wifi-vpn": "Wi-Fi с VPN",
   "mobile-direct": "Мобильная сеть без VPN", "mobile-vpn": "Мобильная сеть с VPN",
+  tcp: "TCP + Vision", xhttp: "XHTTP",
 };
 
 function row(value: unknown): Row {
@@ -142,12 +143,13 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
     add("Накопленные повторные отправки TCP", numeric(tcp.retransmittedSegments));
   }
 
-  function path(label: string, value: unknown) {
+  function path(label: string, value: unknown, method: unknown) {
     section(label);
     const measurement = row(value);
     const latency = row(measurement.latency);
-    add("Задержка HTTP, медиана", numeric(latency.medianMs, "мс"));
-    add("Задержка HTTP, 95-й процентиль", numeric(latency.p95Ms, "мс"));
+    const latencyLabel = method === "browser-http-v2" ? "До начала ответа HTTP" : "Задержка HTTP";
+    add(`${latencyLabel}, медиана`, numeric(latency.medianMs, "мс"));
+    add(`${latencyLabel}, 95-й процентиль`, numeric(latency.p95Ms, "мс"));
     add("Колебание задержки", numeric(latency.jitterMs, "мс"));
     add("Всего HTTP-проб", numeric(latency.attempts));
     add("Успешных HTTP-проб", numeric(latency.successes));
@@ -156,9 +158,15 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
     for (const [key, title] of [["download", "Получение"], ["upload", "Отправка"]]) {
       const transfer = row(measurement[key]);
       add(`${title}, скорость`, numeric(transfer.mbps, "Мбит/с"));
-      add(`${title}, объём данных`, bytes(transfer.bytes));
+      add(`${title}, ${key === "upload" && method === "browser-http-v2" ? "объём в завершённых пробах" : "объём данных"}`, bytes(transfer.bytes));
       add(`${title}, длительность`, numeric(transfer.durationMs, "мс"));
       error(transfer.error);
+      const incomplete = row(transfer.incomplete);
+      if (Object.keys(incomplete).length) {
+        add(`${title}, незавершённая проба`, key === "download"
+          ? `получено ${bytes(incomplete.bytes)} из ${bytes(incomplete.expectedBytes)} за ${numeric(incomplete.durationMs, "мс")}`
+          : `отправка ${bytes(incomplete.expectedBytes)} не подтверждена за ${numeric(incomplete.durationMs, "мс")}`);
+      }
     }
   }
 
@@ -206,8 +214,13 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
     else {
       add("Время замера", timestamp(performance.checkedAt));
       add("Подключение, выбранное пользователем", translated(performance.mode, modes));
-      path("Канал до панели сервера", performance.panel);
-      path("Интернет через текущее подключение браузера", performance.internet);
+      if (performance.method === "browser-http-v2") {
+        add("Метод замера", "Браузер: время до заголовков HTTP-ответа, 2 прогревочные и до 10 измеряемых проб.");
+        lines.push("Метка TCP/XHTTP выбрана пользователем и не определяет фактический транспорт. Браузер может переиспользовать соединения; это не повтор теста curl с новым соединением для каждого запроса.");
+        lines.push("Отправка учитывается по объёмам запросов с ожидаемым успешным ответом. Точное число полученных байтов подтверждает только панель; у Cloudflare такого счётчика в ответе нет.");
+      }
+      path("Канал до панели сервера", performance.panel, performance.method);
+      path("Интернет через текущее подключение браузера", performance.internet, performance.method);
       error(performance.serverError);
       snapshot("Показатели сервера до замера", performance.serverBefore);
       snapshot("Показатели сервера после замера", performance.serverAfter);

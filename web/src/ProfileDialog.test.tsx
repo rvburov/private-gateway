@@ -25,7 +25,7 @@ const xhttpProfile: RevealedProfile = {
 function Dialog({ value = initial }: { value?: RevealedProfile }) {
   const [profile, setProfile] = useState(value);
   return <ProfileDialog token="test-session" profile={profile} onChange={setProfile}
-    onClose={() => {}} onGuide={() => {}} />;
+    onClose={() => {}} />;
 }
 
 function subscriptionURL(path = initial.subscription_path) {
@@ -113,7 +113,7 @@ it("retains TCP configuration files when an XHTTP link is available", () => {
 });
 
 it("falls back to TCP if an updated profile no longer exposes XHTTP", () => {
-  const props = { token: "test-session", onChange: () => {}, onClose: () => {}, onGuide: () => {} };
+  const props = { token: "test-session", onChange: () => {}, onClose: () => {} };
   const { rerender } = render(<ProfileDialog {...props} profile={xhttpProfile} />);
   fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "xhttp_uri" } });
   rerender(<ProfileDialog {...props} profile={initial} />);

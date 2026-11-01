@@ -119,30 +119,33 @@ export function ServerDiagnostics({ token }: { token: string }) {
   const previousResult = run.isFetching || stopped || run.isError;
   return (
     <>
-      <section className="card check-run" aria-label="Проверка сервера">
+      <section className="card check-run" aria-label="Проверка подключения">
         <div className="check-run-text">
           <div className="diagnostics-title-with-help">
-            <h2>Проверить работу сервера</h2>
-            <HelpTip label="О проверке сервера">
-              <p>Проверяем базу данных, Xray, REALITY, сертификат панели и VLESS-трафик. Затем измеряем скорость, задержку HTTP и нагрузку сервера.</p>
+            <h2>Проверка подключения</h2>
+            <HelpTip label="О проверке подключения">
+              <p>Проверяем состояние шлюза: базу данных, Xray, REALITY, сертификат панели и VLESS-трафик. Затем браузер измеряет скорость и время до начала ответа HTTP; показатели нагрузки получаем с сервера до и после замера.</p>
               <p>Внешний замер идёт до speed.cloudflare.com через текущее подключение браузера. Сервис увидит внешний IP; токен входа и VPN-профиль ему не передаются. Проверки утечек и браузера — в разделе «Проверка».</p>
               <p>Для сравнения повторите замер с VPN, без него и в другой сети. Переключайте подключение самостоятельно; закройте загрузки и видео. Выбранная подпись сохраняется с результатом.</p>
+              <p>Сайт использует подключение браузера. Он не может назначить локальный прокси Hiddify, переключить TCP/XHTTP или гарантировать новое TCP/TLS-соединение для каждого запроса, как при отдельных запусках curl.</p>
               <p>Процент показывает завершённые этапы, а не оставшееся время. 100% означает завершение; недоступные замеры и ошибки отмечаются отдельно. Остановленный замер в историю не записывается.</p>
             </HelpTip>
           </div>
-          <p>Xray, скорость и задержки.</p>
-          <p className="hint">До 1,5 минуты · до 40 МБ за запуск.</p>
+          <p>Скорость, время ответа HTTP и состояние шлюза.</p>
+          <p className="hint">До 2 минут · до 40 МБ тестовых данных.</p>
         </div>
         <div className="check-run-actions">
           <label htmlFor="server-connection-mode">Как подключены сейчас</label>
           <select
             id="server-connection-mode"
+            aria-describedby="server-connection-mode-hint"
             value={mode}
             disabled={run.isFetching}
             onChange={(event) => setMode(event.target.value as ConnectionMode)}
           >
             {connectionModes.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
           </select>
+          <p className="hint connection-mode-hint" id="server-connection-mode-hint">Это метка замера. VPN-профиль выбирается в клиенте.</p>
           {run.isFetching ? (
             <button className="button" onClick={() => {
               void client.cancelQueries({ queryKey: ["server-checks"] });
@@ -156,7 +159,7 @@ export function ServerDiagnostics({ token }: { token: string }) {
               setProgress({ label: "Начинаем проверку…", percent: 0 });
               void run.refetch();
             }}>
-              <Icon name="server" size={18} />{result ? "Проверить сервер снова" : "Проверить сервер"}
+              <Icon name="server" size={18} />{result ? "Проверить снова" : "Проверить подключение"}
             </button>
           )}
         </div>
@@ -180,7 +183,7 @@ export function ServerDiagnostics({ token }: { token: string }) {
         )}
         <ErrorNotice error={run.error} />
         <DiagnosticProgress stage={progress} busy={run.isFetching} stopped={stopped} failed={run.isError}
-          complete={!!result} label="Ход проверки сервера" stoppedLabel="Проверка сервера остановлена." />
+          complete={!!result} label="Ход проверки подключения" stoppedLabel="Проверка подключения остановлена." />
       </section>
       <section className="card" aria-label="Работа сервера">
         <div className="card-heading">
@@ -197,7 +200,7 @@ export function ServerDiagnostics({ token }: { token: string }) {
         </div>
         {result?.server ? <CheckList checks={result.server} /> : result?.serverError ? (
           <div className="card-body"><ErrorNotice error={new Error(result.serverError)} /></div>
-        ) : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить сервер»."}</div>}
+        ) : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить подключение»."}</div>}
       </section>
       {result && <IPReputation result={result.serverIPLookup ?? null} title="IP выхода сервера"
         description={result.serverIPLookup ? "Выход, измеренный серверной проверкой VLESS; не IP браузера." : "IP выхода не подтверждён серверной проверкой VLESS. Сведения об адресе не запрашивались."} />}

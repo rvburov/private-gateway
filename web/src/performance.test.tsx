@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPerformanceHistory,
+  connectionModes,
   latencyFromSamples,
   loadPerformanceHistory,
   runPerformance,
@@ -23,7 +24,7 @@ let clock = 0;
 let fetchMock: ReturnType<typeof vi.fn>;
 
 function normalFetch(input: RequestInfo | URL, options?: RequestInit): Response {
-  const url = new URL(String(input), "https://gateway.example");
+  const url = new URL(String(input), "https://example.com");
   clock += 20;
   if (url.pathname.endsWith("/server")) return json(snapshot);
   if (url.pathname.endsWith("/ping")) return json({ ok: true });
@@ -62,12 +63,16 @@ describe("bounded performance checks", () => {
     const progress: number[] = [];
     const run = await runPerformance("private-session", "wifi-vpn", new AbortController().signal, (_phase, percent) => progress.push(percent));
     expect(run.mode).toBe("wifi-vpn");
-    expect(run.panel.latency).toMatchObject({ attempts: 8, successes: 8, medianMs: 20, jitterMs: 0, errorCount: 0 });
-    expect(run.internet.latency.successes).toBe(8);
-    expect(run.panel.download.bytes).toBe(4 * MIB);
-    expect(run.panel.upload.bytes).toBe(MIB);
-    expect(run.internet.download.bytes).toBe(21 * MIB);
-    expect(run.internet.upload.bytes).toBe(5.25 * MIB);
+    expect(run.method).toBe("browser-http-v2");
+    expect(run.panel.latency).toMatchObject({ attempts: 10, successes: 10, medianMs: 20, jitterMs: 0, errorCount: 0 });
+    expect(run.internet.latency.successes).toBe(10);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).includes("/performance/ping"))).toHaveLength(12);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("https://speed.cloudflare.com/__down?bytes=0&"))).toHaveLength(12);
+    expect(run.panel.download.bytes).toBe(5.3125 * MIB);
+    expect(run.panel.upload.bytes).toBe(1.65625 * MIB);
+    expect(run.internet.download.bytes).toBe(21 * MIB + 100_000);
+    expect(run.internet.upload.bytes).toBe(5.25 * MIB + 100_000);
+    expect(run.panel.download.bytes + run.panel.upload.bytes + run.internet.download.bytes + run.internet.upload.bytes).toBeLessThan(40_000_000);
     expect(run.serverBefore).toEqual(snapshot);
     expect(run.serverAfter).toEqual(snapshot);
     expect(run.panel.download.mbps).toBeCloseTo(4 * MIB * 8 / 20_000);
@@ -85,6 +90,176 @@ describe("bounded performance checks", () => {
         expect(new Headers(options.headers).get("Authorization")).toBe("Bearer private-session");
       }
     }
+  });
+
+  it("excludes two warmups and measures response headers while still validating delayed bodies", async () => {
+    const counts = { panel: 0, internet: 0 };
+    fetchMock.mockImplementation(async (input, options) => {
+      const result = normalFetch(input, options);
+      const url = String(input);
+      const kind = url.includes("/performance/ping") ? "panel"
+        : url.startsWith("https://speed.cloudflare.com/__down?bytes=0&") ? "internet" : null;
+      if (!kind) return result;
+      if (++counts[kind] <= 2) clock += 500;
+      return new Response(new ReadableStream({
+        start(controller) {
+          setTimeout(() => {
+            clock += 80;
+            controller.enqueue(new Uint8Array([1]));
+            controller.close();
+          }, 0);
+        },
+      }));
+    });
+    const run = await runPerformance("token", "tcp", new AbortController().signal);
+    expect(counts).toEqual({ panel: 12, internet: 12 });
+    expect(run.panel.latency).toMatchObject({ attempts: 10, successes: 10, medianMs: 20, p95Ms: 20 });
+    expect(run.internet.latency.medianMs).toBe(20);
+  });
+
+  it("does not count valid headers followed by a failed body as a successful latency probe", async () => {
+    let pings = 0;
+    fetchMock.mockImplementation(async (input, options) => {
+      const result = normalFetch(input, options);
+      if (String(input).includes("/performance/ping") && ++pings === 3)
+        return new Response(new Uint8Array(4097));
+      return result;
+    });
+    const run = await runPerformance("token", "current", new AbortController().signal);
+    expect(run.panel.latency).toMatchObject({ attempts: 10, successes: 9, errorCount: 1 });
+    expect(run.panel.latency.error).toContain("больше данных");
+  });
+
+  it("measures a slow connection with small complete payloads before attempting larger bodies", async () => {
+    fetchMock.mockImplementation(async (input, options) => {
+      const result = normalFetch(input, options);
+      const url = String(input);
+      if (url.includes("/performance/download") || url.includes("/performance/upload")
+          || url.includes("/__down?bytes=100000") || url.includes("/__up?")) clock += 1200;
+      return result;
+    });
+    const run = await runPerformance("token", "xhttp", new AbortController().signal);
+    expect(run.panel.download).toMatchObject({ bytes: 64 * 1024, durationMs: 1220, error: null });
+    expect(run.panel.upload).toMatchObject({ bytes: 32 * 1024, durationMs: 1220, error: null });
+    expect(run.internet.download).toMatchObject({ bytes: 100_000, durationMs: 1220, error: null });
+    expect(run.internet.upload).toMatchObject({ bytes: 100_000, durationMs: 1220, error: null });
+    expect(run.panel.download.mbps).toBeCloseTo(64 * 1024 * 8 / 1_220_000);
+    expect(run.internet.download.mbps).toBeLessThan(0.84);
+  });
+
+  it.each([false, true])("records a partial download timeout without inventing speed; earlier sample=%s", async (completedFirst) => {
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    let operation!: AbortController;
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      if (ms !== 10_000) return realTimeout(ms);
+      operation = new AbortController();
+      return operation.signal;
+    });
+    const cancel = vi.fn();
+    const failedSize = completedFirst ? 256 * 1024 : 64 * 1024;
+    fetchMock.mockImplementation(async (input, options) => {
+      const result = normalFetch(input, options);
+      if (String(input).startsWith(`/api/v1/checks/performance/download?bytes=${failedSize}&`)) {
+        const deadline = operation;
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array(24_000));
+            setTimeout(() => {
+              clock += 10_000;
+              deadline.abort(new DOMException("Request deadline", "TimeoutError"));
+            }, 0);
+          },
+          cancel,
+        }));
+      }
+      return result;
+    });
+    const run = await runPerformance("token", "current", new AbortController().signal);
+    expect(run.panel.download.incomplete).toEqual({ bytes: 24_000, expectedBytes: failedSize, durationMs: 10_020 });
+    expect(run.panel.download.bytes).toBe((completedFirst ? 64 * 1024 : 0) + 24_000);
+    expect(run.panel.download.error).toContain("Чтение ответа");
+    expect(run.panel.download.mbps).toBe(completedFirst ? 64 * 1024 * 8 / 20_000 : null);
+    expect(run.panel.download.durationMs).toBe(completedFirst ? 20 : null);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(run.panel.upload.error).toBeNull();
+    expect(run.internet.download.error).toBeNull();
+    expect(run.serverAfter).toEqual(snapshot);
+  });
+
+  it("distinguishes a headers timeout and an unconfirmed upload without inferring sent bytes", async () => {
+    const realTimeout = AbortSignal.timeout.bind(AbortSignal);
+    let operation!: AbortController;
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => {
+      if (ms !== 10_000) return realTimeout(ms);
+      operation = new AbortController();
+      return operation.signal;
+    });
+    fetchMock.mockImplementation(async (input, options) => {
+      if (String(input).includes("/performance/download") || String(input).includes("/performance/upload")) {
+        const deadline = operation;
+        queueMicrotask(() => {
+          clock += 10_000;
+          deadline.abort(new DOMException("Request deadline", "TimeoutError"));
+        });
+        return new Promise<Response>(() => {});
+      }
+      return normalFetch(input, options);
+    });
+    const run = await runPerformance("token", "current", new AbortController().signal);
+    expect(run.panel.download.error).toContain("Заголовки ответа");
+    expect(run.panel.upload.error).toContain("подтверждение");
+    expect(run.panel.upload.incomplete).toEqual({ bytes: 0, expectedBytes: 32 * 1024, durationMs: 10_000 });
+    expect(run.panel.upload.bytes).toBe(0);
+    expect(run.panel.upload.mbps).toBeNull();
+    expect(run.internet.upload.error).toBeNull();
+  });
+
+  it.each([
+    { name: "invalid JSON", body: "private-response-content", message: "корректное подтверждение" },
+    { name: "wrong byte count", body: JSON.stringify({ bytes: 1 }), message: "другой объём" },
+    { name: "oversized acknowledgement", body: "x".repeat(4097), message: "больше данных" },
+  ])("rejects $name instead of treating an upload response as confirmation", async ({ body, message }) => {
+    fetchMock.mockImplementation(async (input, options) => String(input).includes("/performance/upload")
+      ? new Response(body) : normalFetch(input, options));
+    const run = await runPerformance("token", "current", new AbortController().signal);
+    expect(run.panel.upload.mbps).toBeNull();
+    expect(run.panel.upload.bytes).toBe(0);
+    expect(run.panel.upload.error).toContain(message);
+    expect(run.panel.upload.error).not.toContain("private-response-content");
+    expect(run.internet.upload.error).toBeNull();
+  });
+
+  it.each([
+    { name: "HTML with HTTP 200", body: "<html>private-response-content</html>" },
+    { name: "JSON with no serverTime", body: JSON.stringify({ bytes: 100_000 }) },
+    { name: "null JSON", body: "null" },
+    { name: "array JSON", body: JSON.stringify([{ serverTime: 0 }]) },
+    { name: "string serverTime", body: JSON.stringify({ serverTime: "0" }) },
+    { name: "null serverTime", body: JSON.stringify({ serverTime: null }) },
+    { name: "boolean serverTime", body: JSON.stringify({ serverTime: false }) },
+    { name: "negative serverTime", body: JSON.stringify({ serverTime: -1 }) },
+    { name: "infinite serverTime", body: '{"serverTime":1e400}' },
+    { name: "oversized JSON", body: JSON.stringify({ serverTime: 0, padding: "x".repeat(16 * 1024) }) },
+  ])("rejects Cloudflare $name instead of counting its upload as complete", async ({ body }) => {
+    fetchMock.mockImplementation(async (input, options) => {
+      if (String(input).startsWith("https://speed.cloudflare.com/__up?")) {
+        clock += 20;
+        return new Response(body, { status: 200 });
+      }
+      return normalFetch(input, options);
+    });
+    const run = await runPerformance("token", "current", new AbortController().signal);
+    expect(run.internet.upload).toMatchObject({ mbps: null, bytes: 0, incomplete: { bytes: 0, expectedBytes: 100_000 } });
+    expect(run.internet.upload.error).not.toBeNull();
+    expect(run.internet.upload.error).not.toContain("private-response-content");
+    expect(run.panel.upload.error).toBeNull();
+    expect(run.internet.download.error).toBeNull();
+  });
+
+  it("accepts Cloudflare serverTime zero without requiring a numeric byte acknowledgement", async () => {
+    const run = await runPerformance("token", "current", new AbortController().signal);
+    expect(run.internet.upload).toMatchObject({ error: null, bytes: 5.25 * MIB + 100_000, durationMs: 20 });
+    expect(run.internet.upload.mbps).toBeGreaterThan(0);
   });
 
   it("reports completion only after the final server snapshot settles", async () => {
@@ -132,12 +307,12 @@ describe("bounded performance checks", () => {
   it("stops increasing payloads once a useful sample lasts one second", async () => {
     fetchMock.mockImplementation(async (input, options) => {
       const result = normalFetch(input, options);
-      if (String(input).startsWith("https://speed.cloudflare.com") && (String(input).includes("bytes=1048576") || options?.method === "POST")) clock += 1000;
+      if (String(input).startsWith("https://speed.cloudflare.com") && (String(input).includes("bytes=100000") || options?.method === "POST")) clock += 1000;
       return result;
     });
     const run = await runPerformance("token", "current", new AbortController().signal);
-    expect(run.internet.download.bytes).toBe(MIB);
-    expect(run.internet.upload.bytes).toBe(MIB / 4);
+    expect(run.internet.download.bytes).toBe(100_000);
+    expect(run.internet.upload.bytes).toBe(100_000);
     expect(run.internet.download.durationMs).toBe(1020);
   });
 
@@ -149,7 +324,7 @@ describe("bounded performance checks", () => {
     const run = await runPerformance("token", "current", new AbortController().signal);
     expect(run.panel.download.error).toBeNull();
     expect(run.internet.download.mbps).not.toBeNull();
-    expect(run.internet.download.bytes).toBe(MIB);
+    expect(run.internet.download.bytes).toBe(MIB + 100_000);
     expect(run.internet.download.error).toContain("503");
     expect(run.internet.upload.error).toBeNull();
   });
@@ -158,9 +333,9 @@ describe("bounded performance checks", () => {
     const cancel = vi.fn();
     fetchMock.mockImplementation(async (input, options) => {
       if (String(input).includes("/performance/download")) {
-        return new Response(new ReadableStream({ cancel }), { headers: { "Content-Length": String(4 * MIB + 1) } });
+        return new Response(new ReadableStream({ cancel }), { headers: { "Content-Length": String(64 * 1024 + 1) } });
       }
-      if (String(input).startsWith("https://speed.cloudflare.com/__down?bytes=1048576")) return new Response(new Uint8Array(5));
+      if (String(input).startsWith("https://speed.cloudflare.com/__down?bytes=100000")) return new Response(new Uint8Array(5));
       return normalFetch(input, options);
     });
     const run = await runPerformance("token", "current", new AbortController().signal);
@@ -200,7 +375,7 @@ describe("bounded performance checks", () => {
     const result = await runPerformance("token", "current", new AbortController().signal, (_phase, percent) => progress.push(percent));
     expect(result.panel.download.mbps).not.toBeNull();
     expect(result.panel.upload.mbps).not.toBeNull();
-    expect(result.internet.latency).toMatchObject({ attempts: 1, successes: 0, errorCount: 1 });
+    expect(result.internet.latency).toMatchObject({ attempts: 0, successes: 0, errorCount: 0 });
     expect(result.internet.download.mbps).toBeNull();
     expect(result.internet.upload.mbps).toBeNull();
     expect(fetchMock.mock.calls.filter(([input]) => String(input).startsWith("https://speed.cloudflare.com"))).toHaveLength(2);
@@ -218,14 +393,14 @@ describe("bounded performance checks", () => {
       return normalFetch(input, options);
     });
     const result = await runPerformance("token", "current", new AbortController().signal);
-    expect(result.panel.latency).toMatchObject({ successes: 8, errorCount: 0, error: null });
+    expect(result.panel.latency).toMatchObject({ successes: 10, errorCount: 0, error: null });
   });
 
   it("returns partial results when the overall time budget expires", async () => {
     vi.useFakeTimers();
     const realTimeout = AbortSignal.timeout.bind(AbortSignal);
     const total = new AbortController();
-    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => ms === 45_000 ? total.signal : realTimeout(ms));
+    vi.spyOn(AbortSignal, "timeout").mockImplementation((ms) => ms === 60_000 ? total.signal : realTimeout(ms));
     fetchMock.mockImplementation(async (input, options) => {
       const result = normalFetch(input, options);
       if (String(input).includes("/performance/download")) queueMicrotask(() => total.abort(new DOMException("Time expired", "TimeoutError")));
@@ -233,7 +408,7 @@ describe("bounded performance checks", () => {
     });
     const progress: number[] = [];
     const run = await runPerformance("token", "current", new AbortController().signal, (_phase, percent) => progress.push(percent));
-    expect(run.panel.latency.successes).toBe(8);
+    expect(run.panel.latency.successes).toBe(10);
     expect(run.internet.upload.mbps).toBeNull();
     expect(run.internet.upload.error).toContain("Лимит времени");
     expect(run.serverAfter).toBeNull();
@@ -257,7 +432,8 @@ describe("local numeric measurement history", () => {
     expect(serialized).not.toContain("secret-session");
     expect(serialized).not.toContain("sampledAt");
     expect(serialized).not.toContain("runtime");
-    expect(Object.keys(stored[0])).toEqual(["checkedAt", "mode", "panel", "internet"]);
+    expect(Object.keys(stored[0])).toEqual(["checkedAt", "mode", "method", "panel", "internet"]);
+    expect(stored[0].panel).toMatchObject({ latencyError: false, downloadError: false, uploadError: false });
     clearPerformanceHistory();
     expect(loadPerformanceHistory()).toEqual([]);
   });
@@ -272,6 +448,56 @@ describe("local numeric measurement history", () => {
     expect(loadPerformanceHistory()).toEqual([]);
     localStorage.setItem("private-gateway-performance-v1", JSON.stringify([{ ...valid, mode: "autodetected-wifi" }]));
     expect(loadPerformanceHistory()).toEqual([]);
+  });
+
+  it("retains legacy history but rejects unknown methods and invalid transfer error flags", async () => {
+    const result = await run();
+    const current = savePerformanceHistory(result)[0];
+    const { method: _method, ...legacy } = current;
+    delete legacy.panel.latencyError;
+    delete legacy.panel.downloadError;
+    delete legacy.panel.uploadError;
+    delete legacy.internet.downloadError;
+    delete legacy.internet.uploadError;
+    delete legacy.internet.latencyError;
+    const invalidMethod = { ...current, method: "future-experiment" };
+    const invalidFlag = { ...current, panel: { ...current.panel, downloadError: "false" } };
+    const xhttp = { ...current, mode: "xhttp", method: "browser-http-v2", token: "private-token", incomplete: { address: "203.0.113.7" } };
+    const tcp = { ...current, mode: "tcp" };
+    localStorage.setItem("private-gateway-performance-v1", JSON.stringify([legacy, invalidMethod, invalidFlag, xhttp, tcp]));
+    const stored = loadPerformanceHistory();
+    expect(stored).toHaveLength(3);
+    expect(stored[0].method).toBeUndefined();
+    expect(stored[1]).toMatchObject({ mode: "xhttp", method: "browser-http-v2" });
+    expect(stored[2].mode).toBe("tcp");
+    expect(JSON.stringify(stored)).not.toContain("private-token");
+    expect(JSON.stringify(stored)).not.toContain("203.0.113.7");
+    expect(connectionModes).toEqual(expect.arrayContaining([
+      { value: "tcp", label: "TCP + Vision" }, { value: "xhttp", label: "XHTTP" },
+    ]));
+  });
+
+  it("keeps completed speed and its later error flag distinct in the numeric history", async () => {
+    const result = await run();
+    result.panel.download.error = "Поздняя проба не завершилась.";
+    result.panel.download.incomplete = { bytes: 240, expectedBytes: 1024, durationMs: 10_000 };
+    const stored = savePerformanceHistory(result)[0];
+    expect(stored.panel.downloadMbps).toBe(result.panel.download.mbps);
+    expect(stored.panel.downloadError).toBe(true);
+    expect(stored.panel.uploadError).toBe(false);
+    expect(JSON.stringify(stored)).not.toContain("incomplete");
+    expect(JSON.stringify(stored)).not.toContain("Поздняя");
+  });
+
+  it("marks unfinished successful latency samples as unsuitable for comparison", async () => {
+    const result = await run();
+    result.panel.latency = { ...latencyFromSamples([10, 20, 30]), error: "Лимит времени проверки исчерпан." };
+    const stored = savePerformanceHistory(result)[0];
+    expect(stored.panel).toMatchObject({ latencyMs: 20, errorCount: 0, latencyError: true });
+    expect(stored.internet.latencyError).toBe(false);
+    const invalid = { ...stored, panel: { ...stored.panel, latencyError: "false" } };
+    localStorage.setItem("private-gateway-performance-v1", JSON.stringify([invalid, stored]));
+    expect(loadPerformanceHistory()).toEqual([stored]);
   });
 
   it("keeps results usable when browser storage is blocked or full", async () => {

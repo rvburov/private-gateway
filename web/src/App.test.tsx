@@ -451,7 +451,7 @@ describe("administrator panel", () => {
     // Возврат из другого раздела не запускает проверку повторно.
     const requests = asked().length;
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
-    expect(await screen.findByRole("button", { name: "Проверить сервер" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Проверить подключение" })).toBeTruthy();
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
@@ -463,11 +463,11 @@ describe("administrator panel", () => {
     await login();
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
-    expect(await screen.findByRole("button", { name: "Проверить сервер" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Проверить подключение" })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([path]) => String(path).startsWith("/api/v1/checks") || String(path).startsWith("https://"))).toBe(false);
     fireEvent.change(screen.getByLabelText("Как подключены сейчас"), { target: { value: "wifi-vpn" } });
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    expect(await screen.findByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Канал до панели" })).toBeTruthy();
     expect(screen.getByRole("region", { name: "Интернет через текущее подключение" })).toBeTruthy();
@@ -496,7 +496,7 @@ describe("administrator panel", () => {
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBe(stored);
     expect(collect).toHaveBeenCalledOnce();
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
-    expect(await screen.findByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/checks")).length).toBe(serverRequests);
   });
@@ -510,12 +510,12 @@ describe("administrator panel", () => {
     const privateRequests = fetchMock.mock.calls.filter(([path]) => String(path).includes("ipleak.net")).length;
     performanceBlocked = true;
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить сервер" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить подключение" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/checks/performance/ping"))).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
-    expect(await screen.findByText(/Проверка сервера остановлена/)).toBeTruthy();
+    expect(await screen.findByText(/Проверка подключения остановлена/)).toBeTruthy();
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBeNull();
-    await waitFor(() => expect(screen.getByRole("button", { name: "Проверить сервер" })).toBeTruthy());
+    await waitFor(() => expect(screen.getByRole("button", { name: "Проверить подключение" })).toBeTruthy());
     expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/checks/performance/download"))).toBe(false);
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
@@ -527,8 +527,8 @@ describe("administrator panel", () => {
     await login();
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     const stored = window.localStorage.getItem("private-gateway-performance-v1");
     privacyBlocked = true;
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
@@ -538,7 +538,7 @@ describe("administrator panel", () => {
     expect(await screen.findByText("Проверка безопасности остановлена.")).toBeTruthy();
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBe(stored);
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
-    expect(await screen.findByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
   });
 
   it("shows completed privacy stages, preserves partial progress on cancellation and resets it on restart", async () => {
@@ -619,8 +619,8 @@ describe("administrator panel", () => {
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
     fireEvent.change(await screen.findByLabelText("Как подключены сейчас"), { target: { value: "wifi-vpn" } });
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    expect(await screen.findByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(within(screen.getByRole("region", { name: "Интернет через текущее подключение" })).getAllByText("Недоступно").length).toBeGreaterThan(0);
     expect(JSON.parse(window.localStorage.getItem("private-gateway-performance-v1") || "[]")[0].mode).toBe("wifi-vpn");
@@ -646,7 +646,7 @@ describe("administrator panel", () => {
     expect(screen.getByText(/Среди DNS-серверов обнаружены MTS PJSC, Россия/)).toBeTruthy();
   });
 
-  it("shows setup instructions for each system and opens them from a profile", async () => {
+  it("shows setup instructions in the menu without a guide button in the profile", async () => {
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Инструкции" }));
     expect(await screen.findByText("Как подключить устройство")).toBeTruthy();
@@ -662,7 +662,10 @@ describe("administrator panel", () => {
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
     fireEvent.click(within(menu).getByRole("button", { name: "Обзор" }));
     fireEvent.click(await screen.findByRole("button", { name: "Профиль" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Как добавить ссылку в приложение" }));
+    const profileDialog = await screen.findByRole("dialog", { name: /Профиль:/ });
+    expect(within(profileDialog).queryByRole("button", { name: "Как добавить ссылку в приложение" })).toBeNull();
+    fireEvent.click(within(profileDialog).getByRole("button", { name: "Закрыть" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Инструкции" }));
     expect(await screen.findByText("Как подключить устройство")).toBeTruthy();
     expect(screen.queryByRole("dialog", { name: /Профиль:/ })).toBeNull();
   });

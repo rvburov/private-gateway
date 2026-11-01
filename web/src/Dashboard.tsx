@@ -784,10 +784,6 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
           profile={profile}
           onChange={setProfile}
           onClose={() => setProfile(null)}
-          onGuide={() => {
-            setProfile(null);
-            navigate("guide");
-          }}
         />
       )}
     </Shell>

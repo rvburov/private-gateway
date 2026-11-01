@@ -209,8 +209,8 @@ describe("IP lookup in diagnostic sections", () => {
     lookupFailure = true;
     const { client } = setup("server");
     expect(fetchMock).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(requestedIPs()).toEqual([serverExitIP]);
     expect(runPerformance).toHaveBeenCalledOnce();
     const result = client.getQueryData<{ server: CheckResult[]; performance: PerformanceRun; serverIPLookup: { status: string } }>(["server-checks"]);
@@ -224,8 +224,8 @@ describe("IP lookup in diagnostic sections", () => {
   it("does not infer a server exit from an unsuccessful traffic check", async () => {
     healthChecks = [{ id: "traffic", title: "VLESS-трафик", status: "fail", detail: "Выход не измерен.", ip: serverExitIP }];
     const { client } = setup("server");
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(lookupCalls()).toHaveLength(0);
     expect(runPerformance).toHaveBeenCalledOnce();
     expect(client.getQueryData<{ serverIPLookup: unknown }>(["server-checks"])?.serverIPLookup).toBeNull();
@@ -234,8 +234,8 @@ describe("IP lookup in diagnostic sections", () => {
   it("enriches a measured foreign VLESS exit even when the health check warns about the different address", async () => {
     healthChecks = [{ id: "traffic", title: "VLESS-трафик", status: "warn", detail: "Фактический выход отличается от адреса узла.", ip: serverExitIP }];
     const { client } = setup("server");
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(requestedIPs()).toEqual([serverExitIP]);
     expect(requestedIPs()).not.toContain(gatewayIP);
     expect(client.getQueryData<{ serverIPLookup: { ip: string } }>(["server-checks"])?.serverIPLookup.ip).toBe(serverExitIP);
@@ -245,12 +245,12 @@ describe("IP lookup in diagnostic sections", () => {
   it("does not request metadata for an absent or non-public VLESS exit", async () => {
     healthChecks = [{ id: "traffic", title: "VLESS-трафик", status: "warn", detail: "Ответ не получен." }];
     setup("server");
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(lookupCalls()).toHaveLength(0);
     healthChecks = [{ id: "traffic", title: "VLESS-трафик", status: "ok", detail: "Некорректный адрес выхода.", ip: "127.0.0.1" }];
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер снова" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(lookupCalls()).toHaveLength(0);
   });
 

@@ -89,6 +89,38 @@ describe("readable Russian diagnostic report", () => {
     expect(result).not.toMatch(/medianMs|memoryBytes|cpuUsageUsec|serverBefore|mobile-vpn/);
   });
 
+  it("identifies browser response timing and explains incomplete transfers without exposing unknown fields", () => {
+    const source = serverReport();
+    const incomplete = { bytes: 240000, expectedBytes: 1048576, durationMs: 10000 };
+    Object.defineProperty(incomplete, "profile", { enumerable: true, get() { throw new Error("do not inspect profile secrets"); } });
+    const result = formatDiagnosticText("server", {
+      ...source,
+      performance: {
+        ...source.performance, method: "browser-http-v2", mode: "xhttp",
+        internet: {
+          ...path,
+          latency: { ...path.latency, attempts: 10, successes: 10 },
+          download: { ...path.download, incomplete },
+          upload: { mbps: null, bytes: 0, durationMs: null, error: "Подтверждение отправки не получено.",
+            incomplete: { bytes: 0, expectedBytes: 100000, durationMs: 10000 } },
+        },
+      },
+    });
+    expect(result).toContain("Подключение, выбранное пользователем: XHTTP");
+    expect(result).toContain("До начала ответа HTTP, медиана: 162 мс");
+    expect(result).toContain("2 прогревочные и до 10 измеряемых проб");
+    expect(result).toContain("это не повтор теста curl");
+    expect(result).toContain("Всего HTTP-проб: 10");
+    expect(result).toContain("Получение, незавершённая проба: получено");
+    expect(result).toContain("240 000 байт");
+    expect(result).toContain("за 10 000 мс");
+    expect(result).toContain("Отправка, объём в завершённых пробах: 0 байт");
+    expect(result).toContain("Точное число полученных байтов подтверждает только панель");
+    expect(result).toContain("Отправка, незавершённая проба: отправка");
+    expect(result).toContain("не подтверждена за 10 000 мс");
+    expect(result).not.toContain("do not inspect profile secrets");
+  });
+
   it("includes browser addresses, DNS and device explanations only in the privacy report", () => {
     const network = { ip: "203.0.113.7", asn: 8359, isp: "Проверочный провайдер", countryCode: "RU", city: "Санкт-Петербург", timeZone: "Europe/Moscow" };
     const source = {

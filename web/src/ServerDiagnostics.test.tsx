@@ -51,6 +51,23 @@ afterEach(async () => {
 });
 
 describe("server diagnostics", () => {
+  it.each([["tcp", "TCP + Vision"], ["xhttp", "XHTTP"]] as const)("saves the manual %s label through the existing connection check", async (mode, label) => {
+    vi.mocked(runPerformance).mockImplementation(async (_token, selectedMode) => ({ ...performanceResult(), mode: selectedMode, method: "browser-http-v2" }));
+    setup();
+    const controls = within(screen.getByRole("region", { name: "Проверка подключения" }));
+    expect(controls.getAllByRole("button", { name: /^Проверить (подключение|снова)$/ })).toHaveLength(1);
+    expect(screen.getByRole("option", { name: label })).toBeTruthy();
+    expect(screen.getByText("Это метка замера. VPN-профиль выбирается в клиенте.")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Как подключены сейчас"), { target: { value: mode } });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(runPerformance).not.toHaveBeenCalled();
+    fireEvent.click(controls.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
+    expect(runPerformance).toHaveBeenCalledWith("admin-test-session", mode, expect.any(AbortSignal), expect.any(Function));
+    expect(JSON.parse(localStorage.getItem("private-gateway-performance-v1") || "[]")[0]).toMatchObject({ mode, method: "browser-http-v2" });
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/v1/checks", "/api/v1/ip-lookup"]);
+  });
+
   it("runs only on demand, preserves history and caches the server result independently", async () => {
     savePerformanceHistory({ ...performanceResult(), checkedAt: performanceResult().checkedAt - 60_000 });
     const { client, component, view } = setup();
@@ -60,8 +77,8 @@ describe("server diagnostics", () => {
     expect(runPerformance).not.toHaveBeenCalled();
     expect(screen.getByRole("table").querySelectorAll("tbody tr")).toHaveLength(1);
     fireEvent.change(screen.getByLabelText("Как подключены сейчас"), { target: { value: "mobile-vpn" } });
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/checks");
     expect(new Headers(fetchMock.mock.calls[0][1].headers).get("Authorization")).toBe("Bearer admin-test-session");
@@ -75,7 +92,7 @@ describe("server diagnostics", () => {
     expect(saved).not.toMatch(/admin-test-session|8\.8\.4\.4/);
     view.unmount();
     render(component);
-    expect(screen.getByRole("button", { name: "Проверить сервер снова" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(runPerformance).toHaveBeenCalledTimes(1);
   });
@@ -89,11 +106,11 @@ describe("server diagnostics", () => {
     const { client } = setup();
     const privacyResult = { browser: [], checkedAt: 123 };
     client.setQueryData(["privacy-checks"], privacyResult);
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
     await screen.findByRole("button", { name: "Остановить" });
     expect(runPerformance).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
-    await screen.findByText("Проверка сервера остановлена.");
+    await screen.findByText("Проверка подключения остановлена.");
     expect(healthSignal?.aborted).toBe(true);
     expect(localStorage.getItem("private-gateway-performance-v1")).toBeNull();
     expect(runPerformance).not.toHaveBeenCalled();
@@ -109,47 +126,47 @@ describe("server diagnostics", () => {
       return new Promise<PerformanceRun>((resolve) => { finishMeasurement = resolve; });
     });
     setup();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    const progress = await screen.findByRole("progressbar", { name: "Ход проверки сервера" }) as HTMLProgressElement;
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    const progress = await screen.findByRole("progressbar", { name: "Ход проверки подключения" }) as HTMLProgressElement;
     await waitFor(() => expect(progress.value).toBe(48));
     expect(progress.max).toBe(100);
     expect(screen.getByRole("button", { name: "Остановить" })).toBeTruthy();
     act(() => reportProgress("Замеры завершены", 100));
     expect(progress.value).toBe(99);
     await act(async () => { finishMeasurement(performanceResult()); });
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(progress.value).toBe(100);
   });
 
   it("preserves stopped progress with cached results and resets a new health check to zero", async () => {
     setup();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
-    expect((screen.getByRole("progressbar", { name: "Ход проверки сервера" }) as HTMLProgressElement).value).toBe(100);
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
+    expect((screen.getByRole("progressbar", { name: "Ход проверки подключения" }) as HTMLProgressElement).value).toBe(100);
     const completedHistory = localStorage.getItem("private-gateway-performance-v1");
     vi.mocked(runPerformance).mockImplementation((_token, _mode, signal, onProgress) => {
       onProgress?.("Получение от сервера", 35);
       return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер снова" }));
-    await waitFor(() => expect((screen.getByRole("progressbar", { name: "Ход проверки сервера" }) as HTMLProgressElement).value).toBe(48));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
+    await waitFor(() => expect((screen.getByRole("progressbar", { name: "Ход проверки подключения" }) as HTMLProgressElement).value).toBe(48));
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
-    await screen.findByText("Проверка сервера остановлена.");
-    expect((screen.getByRole("progressbar", { name: "Ход проверки сервера" }) as HTMLProgressElement).value).toBe(48);
+    await screen.findByText("Проверка подключения остановлена.");
+    expect((screen.getByRole("progressbar", { name: "Ход проверки подключения" }) as HTMLProgressElement).value).toBe(48);
     expect(localStorage.getItem("private-gateway-performance-v1")).toBe(completedHistory);
     let healthSignal: AbortSignal | undefined;
     fetchMock.mockImplementation((_path, options: RequestInit) => {
       healthSignal = options.signal as AbortSignal;
       return new Promise((_resolve, reject) => healthSignal?.addEventListener("abort", () => reject(healthSignal?.reason), { once: true }));
     });
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер снова" }));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
     await screen.findByRole("button", { name: "Остановить" });
-    expect((screen.getByRole("progressbar", { name: "Ход проверки сервера" }) as HTMLProgressElement).value).toBe(0);
+    expect((screen.getByRole("progressbar", { name: "Ход проверки подключения" }) as HTMLProgressElement).value).toBe(0);
     expect(runPerformance).toHaveBeenCalledTimes(2);
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
-    await screen.findByText("Проверка сервера остановлена.");
+    await screen.findByText("Проверка подключения остановлена.");
     expect(healthSignal?.aborted).toBe(true);
-    expect((screen.getByRole("progressbar", { name: "Ход проверки сервера" }) as HTMLProgressElement).value).toBe(0);
+    expect((screen.getByRole("progressbar", { name: "Ход проверки подключения" }) as HTMLProgressElement).value).toBe(0);
   });
 
   it("cancels an in-progress speed measurement when leaving the server section", async () => {
@@ -159,7 +176,7 @@ describe("server diagnostics", () => {
       return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
     });
     const { view, client } = setup();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
     await waitFor(() => expect(runPerformance).toHaveBeenCalledOnce());
     view.unmount();
     expect(measurementSignal?.aborted).toBe(true);
@@ -170,8 +187,8 @@ describe("server diagnostics", () => {
   it("keeps measurements available when the server health check is unavailable", async () => {
     fetchMock.mockResolvedValue(Response.json({ error: "Серверная проверка недоступна." }, { status: 503 }));
     setup();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(screen.getByText("Серверная проверка недоступна.")).toBeTruthy();
     expect(screen.getByRole("region", { name: "Канал до панели" }).querySelector("dd")?.textContent).toBe("15 Мбит/с");
     expect(localStorage.getItem("private-gateway-performance-v1")).not.toBeNull();
@@ -180,11 +197,11 @@ describe("server diagnostics", () => {
   it("keeps the server health result when the speed measurement fails", async () => {
     vi.mocked(runPerformance).mockRejectedValue(new Error("Замер скорости недоступен."));
     setup();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить сервер" }));
-    await screen.findByRole("button", { name: "Проверить сервер снова" });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
+    await screen.findByRole("button", { name: "Проверить снова" });
     expect(within(screen.getByRole("region", { name: "Работа сервера" })).getByText("VLESS-трафик")).toBeTruthy();
     expect(screen.getByText("Замер скорости недоступен.")).toBeTruthy();
-    const summary = screen.getByRole("region", { name: "Проверка сервера" }).querySelector(".check-summary");
+    const summary = screen.getByRole("region", { name: "Проверка подключения" }).querySelector(".check-summary");
     expect(summary?.classList.contains("warning-notice")).toBe(true);
     expect(summary?.classList.contains("success-notice")).toBe(false);
     expect(localStorage.getItem("private-gateway-performance-v1")).toBeNull();

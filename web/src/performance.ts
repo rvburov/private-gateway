@@ -1,6 +1,6 @@
 import { request } from "./api";
 
-export type ConnectionMode = "current" | "wifi-direct" | "wifi-vpn" | "mobile-direct" | "mobile-vpn";
+export type ConnectionMode = "current" | "wifi-direct" | "wifi-vpn" | "mobile-direct" | "mobile-vpn" | "tcp" | "xhttp";
 
 export const connectionModes: { value: ConnectionMode; label: string }[] = [
   { value: "current", label: "Текущее подключение" },
@@ -8,6 +8,8 @@ export const connectionModes: { value: ConnectionMode; label: string }[] = [
   { value: "wifi-vpn", label: "Wi-Fi с VPN" },
   { value: "mobile-direct", label: "Мобильная сеть без VPN" },
   { value: "mobile-vpn", label: "Мобильная сеть с VPN" },
+  { value: "tcp", label: "TCP + Vision" },
+  { value: "xhttp", label: "XHTTP" },
 ];
 
 export interface LatencyMeasurement {
@@ -25,6 +27,7 @@ export interface TransferMeasurement {
   bytes: number;
   durationMs: number | null;
   error: string | null;
+  incomplete?: { bytes: number; expectedBytes: number; durationMs: number };
 }
 
 export interface PathMeasurement {
@@ -77,6 +80,7 @@ export interface ServerSnapshot {
 export interface PerformanceRun {
   checkedAt: number;
   mode: ConnectionMode;
+  method?: "browser-http-v2";
   panel: PathMeasurement;
   internet: PathMeasurement;
   serverBefore: ServerSnapshot | null;
@@ -90,11 +94,15 @@ export interface PathSummary {
   errorCount: number;
   downloadMbps: number | null;
   uploadMbps: number | null;
+  latencyError?: boolean;
+  downloadError?: boolean;
+  uploadError?: boolean;
 }
 
 export interface PerformanceHistoryEntry {
   checkedAt: number;
   mode: ConnectionMode;
+  method?: "browser-http-v2";
   panel: PathSummary;
   internet: PathSummary;
 }
@@ -103,10 +111,11 @@ const MIB = 1024 * 1024;
 const HISTORY_KEY = "private-gateway-performance-v1";
 const HISTORY_LIMIT = 12;
 const CLOUDFLARE = "https://speed.cloudflare.com";
-const TOTAL_TIMEOUT_MS = 45_000;
+const TOTAL_TIMEOUT_MS = 60_000;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MIN_SAMPLE_MS = 1_000;
-const LATENCY_ATTEMPTS = 8;
+const LATENCY_ATTEMPTS = 10;
+const LATENCY_WARMUPS = 2;
 const FINISHED = "Лимит времени проверки исчерпан; остальные замеры не выполнены.";
 let nonce = 0;
 
@@ -128,10 +137,18 @@ function operationSignal(signal: AbortSignal): AbortSignal {
   return AbortSignal.any([signal, AbortSignal.timeout(REQUEST_TIMEOUT_MS)]);
 }
 
-function measurementError(error: unknown): string {
-  if (error instanceof Error && error.name === "TimeoutError") return "Ответ не получен за 10 секунд.";
-  if (error instanceof Error && error.name === "AbortError") return FINISHED;
-  if (error instanceof Error && error.name === "TypeError") return "Служба недоступна или браузер запретил запрос.";
+type MeasurementPhase = "headers" | "body" | "upload";
+
+function measurementError(error: unknown, phase: MeasurementPhase = "headers"): string {
+  // DOMException и AbortSignal могут принадлежать разным контекстам браузера.
+  const name = record(error) && typeof error.name === "string" ? error.name : "";
+  if (name === "TimeoutError") return phase === "body"
+    ? "Чтение ответа не завершилось в пределах 10 секунд на запрос."
+    : phase === "upload"
+      ? "Отправка и её подтверждение не завершились в пределах 10 секунд на запрос."
+      : "Заголовки ответа не получены в пределах 10 секунд на запрос.";
+  if (name === "AbortError") return FINISHED;
+  if (name === "TypeError") return "Служба недоступна или браузер запретил запрос.";
   return error instanceof Error ? error.message : "Не удалось выполнить замер.";
 }
 
@@ -170,7 +187,7 @@ async function responseFor(url: string, options: RequestInit, signal: AbortSigna
   return response;
 }
 
-async function readBytes(response: Response, cap: number, signal: AbortSignal, received?: (count: number) => void): Promise<number> {
+async function readBytes(response: Response, cap: number, signal: AbortSignal, received?: (chunk: Uint8Array) => void): Promise<number> {
   const length = response.headers.get("content-length");
   if (length !== null && (!/^\d+$/.test(length) || Number(length) > cap)) {
     void response.body?.cancel().catch(() => undefined);
@@ -188,7 +205,7 @@ async function readBytes(response: Response, cap: number, signal: AbortSignal, r
       aborted(signal);
       if (chunk.done) return total;
       total += chunk.value.byteLength;
-      received?.(chunk.value.byteLength);
+      received?.(chunk.value);
       if (total > cap) throw new Error("Служба вернула больше данных, чем запрошено.");
     }
   } finally {
@@ -230,23 +247,25 @@ async function measureLatency(url: string, signal: AbortSignal, parent: AbortSig
   const samples: (number | null)[] = [];
   let error: string | null = null;
   let consecutiveFailures = 0;
-  // Первая проба прогревает TLS/соединение и не входит в устойчивую задержку HTTP.
-  for (let index = -1; index < LATENCY_ATTEMPTS; index++) {
+  // Две первые пробы исключены. Браузер сам решает, переиспользовать ли соединение.
+  for (let index = -LATENCY_WARMUPS; index < LATENCY_ATTEMPTS; index++) {
     aborted(parent);
     if (signal.aborted) { error = FINISHED; break; }
     const one = operationSignal(signal);
+    let phase: MeasurementPhase = "headers";
     try {
       const start = performance.now();
       const response = await responseFor(nextURL(url), init(one, token), one);
-      await readBytes(response, 4096, one);
       const duration = performance.now() - start;
+      phase = "body";
+      await readBytes(response, 4096, one);
       if (index >= 0) samples.push(duration);
       consecutiveFailures = 0;
     } catch (failure) {
       aborted(parent);
-      error = signal.aborted ? FINISHED : measurementError(failure);
+      error = signal.aborted ? FINISHED : measurementError(failure, phase);
       if (index >= 0) samples.push(null);
-      // Два тайм-аута подряд уже показывают недоступность этой службы; не ждём восемь.
+      // После двух ошибок подряд сохраняем частичный результат этой службы.
       if (++consecutiveFailures >= 2) break;
     }
   }
@@ -263,6 +282,36 @@ function randomPayload(bytes: number): ArrayBuffer {
   return payload.buffer;
 }
 
+async function uploadAcknowledgement(response: Response, cap: number, signal: AbortSignal): Promise<unknown> {
+  const chunks: Uint8Array[] = [];
+  const length = await readBytes(response, cap, signal, (chunk) => chunks.push(chunk));
+  const bytes = new Uint8Array(length);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes));
+  } catch {
+    throw new Error("Сервер не предоставил корректное подтверждение отправки.");
+  }
+}
+
+async function verifyUpload(response: Response, expected: number, signal: AbortSignal): Promise<void> {
+  const acknowledgement = await uploadAcknowledgement(response, 4096, signal);
+  if (!record(acknowledgement) || acknowledgement.bytes !== expected)
+    throw new Error("Сервер подтвердил другой объём отправки.");
+}
+
+async function verifyCloudflareUpload(response: Response, signal: AbortSignal): Promise<void> {
+  const acknowledgement = await uploadAcknowledgement(response, 16 * 1024, signal);
+  // __up подтверждает обработку запроса временем сервера, но не возвращает число байт.
+  if (!record(acknowledgement) || typeof acknowledgement.serverTime !== "number"
+      || !Number.isFinite(acknowledgement.serverTime) || acknowledgement.serverTime < 0)
+    throw new Error("Служба не предоставила корректное подтверждение отправки.");
+}
+
 async function measureTransfer(
   url: string,
   sizes: number[],
@@ -277,6 +326,9 @@ async function measureTransfer(
     aborted(parent);
     if (signal.aborted) return { ...result, bytes: transferred, error: FINISHED };
     const one = operationSignal(signal);
+    let phase: MeasurementPhase = upload ? "upload" : "headers";
+    let received = 0;
+    let start = performance.now();
     try {
       const options = init(one, token);
       if (upload) {
@@ -286,19 +338,21 @@ async function measureTransfer(
         if (token !== undefined) options.headers = { ...options.headers, "Content-Type": "application/octet-stream" };
       }
       const target = nextURL(upload ? url : `${url}?bytes=${size}`);
-      const start = performance.now();
+      start = performance.now();
       const response = await responseFor(target, options, one);
       if (upload) {
         if (token !== undefined) {
-          const acknowledgement = await abortable(response.json() as Promise<{ bytes?: unknown }>, one);
-          if (acknowledgement.bytes !== size) throw new Error("Сервер подтвердил другой объём загрузки.");
+          await verifyUpload(response, size, one);
         } else {
-          // Ответ Cloudflare содержит серверные времена, а не повтор отправленного тела.
-          await readBytes(response, 16 * 1024, one);
+          await verifyCloudflareUpload(response, one);
         }
         transferred += size;
       } else {
-        const received = await readBytes(response, size, one, (count) => { transferred += count; });
+        phase = "body";
+        await readBytes(response, size, one, (chunk) => {
+          received += chunk.byteLength;
+          transferred += chunk.byteLength;
+        });
         if (received !== size) throw new Error("Служба вернула неполные данные; скорость не определена.");
       }
       const duration = performance.now() - start;
@@ -309,7 +363,13 @@ async function measureTransfer(
       if (duration >= MIN_SAMPLE_MS) return result;
     } catch (failure) {
       aborted(parent);
-      return { ...result, bytes: transferred, error: signal.aborted ? FINISHED : measurementError(failure) };
+      const elapsed = performance.now() - start;
+      return {
+        ...result, bytes: transferred,
+        error: signal.aborted ? FINISHED : measurementError(failure, phase),
+        // Fetch не сообщает прогресс отправки. До подтверждения upload объём неизвестен.
+        incomplete: { bytes: received, expectedBytes: size, durationMs: Number.isFinite(elapsed) ? Math.max(0, elapsed) : 0 },
+      };
     }
   }
   return result;
@@ -346,27 +406,27 @@ export async function runPerformance(
   const unavailable = (latency: LatencyMeasurement) => emptyTransfer(latency.error ?? "Служба измерений не ответила на пробы задержки.");
   progress("Получение от сервера", 20);
   const panelDownload = panelLatency.successes
-    ? await measureTransfer("/api/v1/checks/performance/download", [4 * MIB], false, deadline, signal, token)
+    ? await measureTransfer("/api/v1/checks/performance/download", [64 * 1024, 256 * 1024, MIB, 4 * MIB], false, deadline, signal, token)
     : unavailable(panelLatency);
   progress("Отправка на сервер", 35);
   const panelUpload = panelLatency.successes
-    ? await measureTransfer("/api/v1/checks/performance/upload", [MIB], true, deadline, signal, token)
+    ? await measureTransfer("/api/v1/checks/performance/upload", [32 * 1024, 128 * 1024, MIB / 2, MIB], true, deadline, signal, token)
     : unavailable(panelLatency);
   progress("Задержка интернета", 50);
   const internetLatency = await measureLatency(`${CLOUDFLARE}/__down?bytes=0`, deadline, signal);
   progress("Получение из интернета", 65);
   const internetDownload = internetLatency.successes
-    ? await measureTransfer(`${CLOUDFLARE}/__down`, [MIB, 4 * MIB, 16 * MIB], false, deadline, signal)
+    ? await measureTransfer(`${CLOUDFLARE}/__down`, [100_000, MIB, 4 * MIB, 16 * MIB], false, deadline, signal)
     : unavailable(internetLatency);
   progress("Отправка в интернет", 80);
   const internetUpload = internetLatency.successes
-    ? await measureTransfer(`${CLOUDFLARE}/__up`, [MIB / 4, MIB, 4 * MIB], true, deadline, signal)
+    ? await measureTransfer(`${CLOUDFLARE}/__up`, [100_000, MIB / 4, MIB, 4 * MIB], true, deadline, signal)
     : unavailable(internetLatency);
   progress("Итоговое состояние сервера", 95);
   const serverAfter = await snapshot();
   progress("Замеры завершены", 100);
   return {
-    checkedAt: Date.now(), mode,
+    checkedAt: Date.now(), mode, method: "browser-http-v2",
     panel: { latency: panelLatency, download: panelDownload, upload: panelUpload },
     internet: { latency: internetLatency, download: internetDownload, upload: internetUpload },
     serverBefore, serverAfter, serverError,
@@ -387,21 +447,27 @@ function parseSummary(value: unknown): PathSummary | null {
   for (const key of keys) if (value[key] !== null && numeric(value[key]) === null) return null;
   const errors = numeric(value.errorCount, LATENCY_ATTEMPTS);
   if (errors === null || !Number.isInteger(errors)) return null;
+  for (const key of ["latencyError", "downloadError", "uploadError"] as const)
+    if (value[key] !== undefined && typeof value[key] !== "boolean") return null;
   return {
     latencyMs: value.latencyMs as number | null, jitterMs: value.jitterMs as number | null,
     downloadMbps: value.downloadMbps as number | null, uploadMbps: value.uploadMbps as number | null,
     errorCount: errors,
+    ...(value.latencyError === undefined ? {} : { latencyError: value.latencyError as boolean }),
+    ...(value.downloadError === undefined ? {} : { downloadError: value.downloadError as boolean }),
+    ...(value.uploadError === undefined ? {} : { uploadError: value.uploadError as boolean }),
   };
 }
 
 function parseEntry(value: unknown): PerformanceHistoryEntry | null {
   if (!record(value) || !connectionModes.some(({ value: mode }) => mode === value.mode)) return null;
+  if (value.method !== undefined && value.method !== "browser-http-v2") return null;
   const checkedAt = numeric(value.checkedAt, 8.64e15);
   const panel = parseSummary(value.panel);
   const internet = parseSummary(value.internet);
   if (checkedAt === null || checkedAt < 1 || !panel || !internet) return null;
   // Проекция перечисленных полей исключает из истории адреса, отпечатки и сеансы.
-  return { checkedAt, mode: value.mode as ConnectionMode, panel, internet };
+  return { checkedAt, mode: value.mode as ConnectionMode, ...(value.method === undefined ? {} : { method: value.method as "browser-http-v2" }), panel, internet };
 }
 
 export function loadPerformanceHistory(): PerformanceHistoryEntry[] {
@@ -421,11 +487,14 @@ function pathSummary(value: PathMeasurement): PathSummary {
   return {
     latencyMs: value.latency.medianMs, jitterMs: value.latency.jitterMs, errorCount: value.latency.errorCount,
     downloadMbps: value.download.mbps, uploadMbps: value.upload.mbps,
+    latencyError: !!value.latency.error || value.latency.attempts !== LATENCY_ATTEMPTS
+      || value.latency.successes !== LATENCY_ATTEMPTS || value.latency.errorCount > 0,
+    downloadError: !!value.download.error, uploadError: !!value.upload.error,
   };
 }
 
 export function savePerformanceHistory(run: PerformanceRun): PerformanceHistoryEntry[] {
-  const parsed = parseEntry({ checkedAt: run.checkedAt, mode: run.mode, panel: pathSummary(run.panel), internet: pathSummary(run.internet) });
+  const parsed = parseEntry({ checkedAt: run.checkedAt, mode: run.mode, method: run.method, panel: pathSummary(run.panel), internet: pathSummary(run.internet) });
   const history = loadPerformanceHistory();
   if (!parsed) return history;
   const entries = [parsed, ...history.filter((entry) => entry.checkedAt !== run.checkedAt)].slice(0, HISTORY_LIMIT);
