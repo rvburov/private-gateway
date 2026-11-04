@@ -185,7 +185,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
         token,
         `/devices/${encodeURIComponent(device.id)}/profile`,
       );
-      setProfile({ device, ...result });
+      setProfile({ ...result, device, exit: "server" });
     } catch (err) {
       setProfileError(err);
     } finally {
@@ -782,6 +782,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
         <ProfileDialog
           token={token}
           profile={profile}
+          proxyAvailable={nodeList.find((node) => node.id === profile.device.node_id)?.proxy_available === true}
           onChange={setProfile}
           onClose={() => setProfile(null)}
         />

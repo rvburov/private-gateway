@@ -11,6 +11,7 @@ type Node struct {
 	PublicKey  string     `json:"public_key"`
 	ShortID    string     `json:"short_id"`
 	XHTTP      *XHTTPNode `json:"xhttp,omitempty"`
+	ProxyAvailable bool `json:"proxy_available,omitempty"`
 	ConfigHash string     `json:"-"`
 }
 

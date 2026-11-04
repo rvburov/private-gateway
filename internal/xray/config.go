@@ -18,8 +18,9 @@ import (
 )
 
 type Client struct {
-	ID   string
-	Name string
+	ID      string
+	ProxyID string
+	Name    string
 }
 
 type Settings struct {
@@ -31,6 +32,15 @@ type Settings struct {
 	Target     string
 	ShortID    string
 	XHTTP      *XHTTPSettings
+	Proxy      *ProxySettings
+}
+
+// ProxySettings содержит параметры внешнего SOCKS5-выхода только на сервере.
+type ProxySettings struct {
+	Address  string
+	Port     int
+	Username string
+	Password string
 }
 
 // XHTTPSettings включает отдельный REALITY-вход, не изменяя основной TCP/Vision.
@@ -271,8 +281,10 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 		Email string `json:"email"`
 		Flow  string `json:"flow,omitempty"`
 	}
-	accounts := make([]account, 0, len(clients))
-	seen := make(map[string]bool, len(clients))
+	accounts := make([]account, 0, len(clients)*2)
+	seen := make(map[string]bool, len(clients)*2)
+	directUsers := make([]string, 0, len(clients))
+	proxyUsers := make([]string, 0, len(clients))
 	for _, client := range clients {
 		id := strings.ToLower(client.ID)
 		if !uuidPattern.MatchString(id) {
@@ -282,7 +294,19 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			return nil, errors.New("duplicate VLESS client credential")
 		}
 		seen[id] = true
-		accounts = append(accounts, account{ID: id, Email: id + "@private-gateway", Flow: "xtls-rprx-vision"})
+		email := id + "@private-gateway"
+		accounts = append(accounts, account{ID: id, Email: email, Flow: "xtls-rprx-vision"})
+		directUsers = append(directUsers, email)
+		if settings.Proxy != nil {
+			proxyID := strings.ToLower(client.ProxyID)
+			if !uuidPattern.MatchString(proxyID) || seen[proxyID] {
+				return nil, errors.New("invalid or duplicate proxy VLESS credential")
+			}
+			seen[proxyID] = true
+			proxyEmail := proxyID + "@private-gateway"
+			accounts = append(accounts, account{ID: proxyID, Email: proxyEmail, Flow: "xtls-rprx-vision"})
+			proxyUsers = append(proxyUsers, proxyEmail)
+		}
 	}
 	config := map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
@@ -299,6 +323,37 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			},
 		}},
 		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}}},
+	}
+	if proxy := settings.Proxy; proxy != nil {
+		if !validHost(proxy.Address) || !validPort(proxy.Port) {
+			return nil, errors.New("proxy requires a valid SOCKS5 address and port")
+		}
+		if (proxy.Username == "") != (proxy.Password == "") ||
+			len([]byte(proxy.Username)) > 255 || len([]byte(proxy.Password)) > 255 ||
+			strings.ContainsAny(proxy.Username+proxy.Password, "\x00\r\n") {
+			return nil, errors.New("proxy authentication settings are invalid")
+		}
+		proxySettings := map[string]any{"address": proxy.Address, "port": proxy.Port}
+		if proxy.Username != "" {
+			proxySettings["user"], proxySettings["pass"] = proxy.Username, proxy.Password
+		}
+		// Первый выход используется Xray при отсутствии совпадения правил. Поэтому
+		// неизвестный пользователь не должен автоматически выходить напрямую.
+		config["outbounds"] = []any{
+			map[string]any{"tag": "blocked", "protocol": "blackhole", "settings": map[string]any{}},
+			map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}},
+			map[string]any{"tag": "proxy", "protocol": "socks", "settings": proxySettings},
+		}
+		rules := make([]any, 0, 2)
+		if len(directUsers) > 0 {
+			rules = append(rules, map[string]any{"type": "field", "user": directUsers, "outboundTag": "direct"})
+		}
+		if len(proxyUsers) > 0 {
+			rules = append(rules, map[string]any{"type": "field", "user": proxyUsers, "outboundTag": "proxy"})
+		}
+		config["routing"] = map[string]any{"domainStrategy": "AsIs", "rules": rules}
+		// Ошибки ядра могут содержать параметры прокси. Журнал Xray выключен.
+		config["log"] = map[string]any{"loglevel": "none", "access": "none"}
 	}
 	if xhttp := settings.XHTTP; xhttp != nil {
 		// XHTTP использует секретный путь. Отключаем журналы ядра, чтобы runtime-
@@ -349,9 +404,13 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			"tag": "stats-api", "listen": "0.0.0.0", "port": settings.StatsPort,
 			"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 		})
-		config["routing"] = map[string]any{"rules": []any{map[string]any{
-			"type": "field", "inboundTag": []string{"stats-api"}, "outboundTag": "stats-api",
-		}}}
+		statsRule := map[string]any{"type": "field", "inboundTag": []string{"stats-api"}, "outboundTag": "stats-api"}
+		if settings.Proxy == nil {
+			config["routing"] = map[string]any{"rules": []any{statsRule}}
+		} else {
+			routing := config["routing"].(map[string]any)
+			routing["rules"] = append([]any{statsRule}, routing["rules"].([]any)...)
+		}
 	}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {

@@ -18,6 +18,8 @@ vi.mock("qrcode", () => ({
 
 const profileURI =
   "vless://sensitive-device-credential@gateway.example:443?security=reality#Phone";
+const proxyURI =
+  "vless://sensitive-proxy-credential@gateway.example:443?security=reality#Phone-proxy";
 const profileJSON = '{"outbounds":[{"type":"vless","uuid":"sensitive-device-credential"}]}';
 const profileYAML = 'proxies:\n  - type: vless\n    uuid: sensitive-device-credential\n';
 let subscriptionPath = "/sub/sensitive-subscription-token-1";
@@ -29,6 +31,7 @@ let revision = 1;
 let appliedRevision = 1;
 let interruptApply = false;
 let profileRequests = 0;
+let proxyAvailable = false;
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
@@ -42,12 +45,18 @@ let statusFailure: (() => Response) | null = null;
 let visibleIP = "203.0.113.7";
 let visibleIPv6: string | null = null;
 let dnsResolvers = ["162.158.1.10"];
+let dnsFailedProbes = 0;
+let dnsMalformedProbes = 0;
+let dnsLookupFailures = new Set<string>();
+let dnsLookupIPOverrides = new Map<string, string>();
 const ownZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const networks: Record<string, { as_number: number; isp_name: string; country_code: string | null; time_zone: string | null }> = {
   "203.0.113.7": { as_number: 14061, isp_name: "DigitalOcean, LLC", country_code: "NL", time_zone: ownZone },
   "198.51.100.20": { as_number: 9009, isp_name: "M247 Europe SRL", country_code: "DE", time_zone: ownZone },
   "2001:db8::20": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
   "162.158.1.10": { as_number: 13335, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
+  "162.158.1.11": { as_number: 64501, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
+  "162.158.1.12": { as_number: 64502, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
   "192.0.2.53": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
 };
 
@@ -61,6 +70,7 @@ beforeEach(() => {
   appliedRevision = 1;
   interruptApply = false;
   profileRequests = 0;
+  proxyAvailable = false;
   subscriptionPath = "/sub/sensitive-subscription-token-1";
   rotations = 0;
   adminSetup = true;
@@ -73,6 +83,10 @@ beforeEach(() => {
   visibleIP = "203.0.113.7";
   visibleIPv6 = null;
   dnsResolvers = ["162.158.1.10"];
+  dnsFailedProbes = 0;
+  dnsMalformedProbes = 0;
+  dnsLookupFailures = new Set();
+  dnsLookupIPOverrides = new Map();
   queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
@@ -104,9 +118,18 @@ beforeEach(() => {
       if (!visibleIPv6) throw new TypeError("Failed to fetch");
       return about(visibleIPv6);
     }
-    if (/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path))
+    if (/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path)) {
+      const index = Number(path.match(/-(\d+)\.ipleak\.net/)?.[1]);
+      if (index < dnsFailedProbes) throw new TypeError("DNS service unavailable");
+      if (index < dnsFailedProbes + dnsMalformedProbes) return Response.json({ session: "test", ip: null });
       return Response.json({ session: "test", ip: Object.fromEntries(dnsResolvers.map((ip) => [ip, 1])) });
-    if (path.startsWith("https://ipleak.net/json/")) return about(path.slice("https://ipleak.net/json/".length));
+    }
+    if (path.startsWith("https://ipleak.net/json/")) {
+      const ip = path.slice("https://ipleak.net/json/".length);
+      if (dnsLookupFailures.has(ip)) throw new TypeError("Network metadata unavailable");
+      if (dnsLookupIPOverrides.has(ip)) return Response.json({ ip: dnsLookupIPOverrides.get(ip), ...networks[ip] });
+      return about(ip);
+    }
     if (path.startsWith("https://speed.cloudflare.com/")) {
       if (performanceUnavailable) throw new TypeError("Failed to fetch");
       const url = new URL(path);
@@ -175,6 +198,7 @@ beforeEach(() => {
             server_name: "example.com",
             public_key: "public",
             short_id: "abcd",
+            proxy_available: proxyAvailable,
           },
         ],
       });
@@ -207,14 +231,18 @@ beforeEach(() => {
       });
     if (path === "/api/v1/browser")
       return Response.json({ running: browserRunning, url: browserRunning ? "https://gateway.example/browser/vnc.html" : "" });
-    if (path === "/api/v1/devices/d1/profile") {
+    if (path.startsWith("/api/v1/devices/d1/profile")) {
       profileRequests++;
+      if (path.endsWith("?exit=proxy"))
+        return Response.json({ uri: proxyURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML,
+          subscription_path: subscriptionPath.replace("/sub/", "/sub/proxy/") });
       return Response.json({ uri: profileURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML, subscription_path: subscriptionPath });
     }
-    if (path === "/api/v1/devices/d1/subscription" && options.method === "POST") {
+    if (path.startsWith("/api/v1/devices/d1/subscription") && options.method === "POST") {
       rotations++;
       subscriptionPath = `/sub/sensitive-subscription-token-${rotations + 1}`;
-      return Response.json({ subscription_path: subscriptionPath });
+      return Response.json({ subscription_path: path.endsWith("?exit=proxy")
+        ? subscriptionPath.replace("/sub/", "/sub/proxy/") : subscriptionPath });
     }
     if (path === "/api/v1/devices/d1/revoke" && options.method === "POST") {
       revoked = true;
@@ -433,9 +461,10 @@ describe("administrator panel", () => {
     expect(screen.queryByText(/Браузер обращается к ipleak\.net/)).toBeNull();
 
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    expect(await screen.findByText(/По выполненным сетевым проверкам проблем не найдено/)).toBeTruthy();
+    expect(await screen.findByText(/По выполненным проверкам IP, IPv6 и WebRTC проблем не найдено/)).toBeTruthy();
     expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
-    expect(screen.getByText(/Ваши DNS-запросы видит Cloudflare, Inc\. — публичный DNS/)).toBeTruthy();
+    expect(screen.getByText(/Cloudflare, Inc\. — обнаружено 1 адрес/)).toBeTruthy();
+    expect(screen.getByText(/Маршрут DNS-запросов не подтверждён/)).toBeTruthy();
     expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Скачать отчёт" })).toBeTruthy();
     expect(screen.queryByText("VLESS-трафик через сервер")).toBeNull();
@@ -639,11 +668,63 @@ describe("administrator panel", () => {
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
     fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
-    expect(await screen.findByText(/Найдено проблем: 1, замечаний: 2\./)).toBeTruthy();
+    expect(await screen.findByText(/Найдено проблем: 1\./)).toBeTruthy();
     // Другой VPN — замечание, а не проблема.
-    expect(screen.getByText(/M247 Europe SRL, Германия\. Это не ваш шлюз/)).toBeTruthy();
+    expect(screen.getByText(/M247 Europe SRL, Германия\. Это не IP сервера/)).toBeTruthy();
     expect(screen.getByText(/IPv6-адрес 2001:db8::20 — MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL/)).toBeTruthy();
-    expect(screen.getByText(/Среди DNS-серверов обнаружены MTS PJSC, Россия/)).toBeTruthy();
+    expect(screen.getByText(/Обнаружены резолверы: MTS PJSC — обнаружено 1 адрес/)).toBeTruthy();
+  });
+
+  it("shows every resolver address and separates missing operator data after a partial service error", async () => {
+    dnsResolvers = ["162.158.1.10", "162.158.1.11", "162.158.1.12", "192.0.2.99"];
+    dnsFailedProbes = 2;
+    dnsLookupFailures.add("192.0.2.99");
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    expect(await screen.findByText(/Проверка DNS не завершена: ответили 8 из 10 проб/)).toBeTruthy();
+    expect(screen.getByText(/Cloudflare, Inc\. — обнаружено 3 адреса/)).toBeTruthy();
+    expect(screen.getByText(/Оператор неизвестен — обнаружено 1 адрес/)).toBeTruthy();
+    const details = screen.getByText("Адреса DNS-резолверов (4)").closest("details")!;
+    fireEvent.click(within(details).getByText("Адреса DNS-резолверов (4)"));
+    expect(within(details).getByText("162.158.1.10, 162.158.1.11, 162.158.1.12")).toBeTruthy();
+    expect(within(details).getByText("192.0.2.99")).toBeTruthy();
+  });
+
+  it("does not turn an empty DNS answer into a leak-free verdict", async () => {
+    dnsResolvers = [];
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    expect(await screen.findByText(/Недостаточно данных: ipleak.net не показал DNS-резолверов/)).toBeTruthy();
+    expect(screen.getByText(/Данных DNS-проверки недостаточно/).closest(".check-summary")?.classList.contains("warning-notice")).toBe(true);
+    expect(screen.queryByText(/утечки нет/)).toBeNull();
+    expect(screen.queryByText(/Адреса DNS-резолверов \(/)).toBeNull();
+  });
+
+  it("preserves the observed DNS IP when metadata disagrees and marks malformed probe answers incomplete", async () => {
+    dnsMalformedProbes = 2;
+    dnsLookupIPOverrides.set("162.158.1.10", "198.51.100.20");
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    expect(await screen.findByText(/Проверка DNS не завершена: ответили 8 из 10 проб/)).toBeTruthy();
+    expect(screen.getByText(/Cloudflare, Inc\. — обнаружено 1 адрес/)).toBeTruthy();
+    const details = screen.getByText("Адреса DNS-резолверов (1)").closest("details")!;
+    expect(within(details).getByText("162.158.1.10")).toBeTruthy();
+    expect(within(details).queryByText("198.51.100.20")).toBeNull();
+  });
+
+  it("reports missing resolver metadata separately from successful DNS probes", async () => {
+    dnsResolvers = ["162.158.1.10", "192.0.2.99"];
+    dnsLookupFailures.add("192.0.2.99");
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    expect(await screen.findByText(/Сведения об операторе недоступны для 1 адреса/)).toBeTruthy();
+    expect(screen.getByText(/Оператор неизвестен — обнаружено 1 адрес/)).toBeTruthy();
+    const details = screen.getByText("Адреса DNS-резолверов (2)").closest("details")!;
+    expect(within(details).getByText("192.0.2.99")).toBeTruthy();
   });
 
   it("shows setup instructions in the menu without a guide button in the profile", async () => {
@@ -819,6 +900,25 @@ describe("administrator panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Выйти из панели" }));
     await screen.findByText("Вход в панель");
     expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
+  });
+
+  it("fetches the proxy profile only after selection and keeps it out of the query cache", async () => {
+    proxyAvailable = true;
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink());
+    expect(profileRequests).toBe(1);
+    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    expect(profileRequests).toBe(2);
+    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "uri" } });
+    expect(screen.getByDisplayValue(proxyURI)).toBeTruthy();
+    const cached = JSON.stringify(queryClient.getQueryCache().getAll().map((item) => item.state.data));
+    expect(cached).not.toContain("sensitive-proxy-credential");
+    expect(cached).not.toContain("sensitive-subscription-token");
+    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "server" } });
+    await screen.findByDisplayValue(profileURI);
+    expect(profileRequests).toBe(3);
   });
 
   it("replaces the subscription link only after confirmation", async () => {

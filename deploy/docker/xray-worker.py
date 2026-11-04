@@ -208,14 +208,16 @@ def stop_child():
 
 def start_child(state):
     global process
-    # В XHTTP-режиме не отдаём сырой вывод дочернего процесса в журнал контейнера:
-    # даже ошибка старта может включать адрес, путь или неизвестное нам поле секрета.
+    # С XHTTP или внешним SOCKS5 не отдаём сырой вывод дочернего процесса в журнал:
+    # даже ошибка старта может включать путь, логин, пароль или другое поле секрета.
     # Неразбираемый конфиг также не является основанием раскрывать его содержимое.
     suppress_output = True
     try:
         configuration = json.loads(CONFIG.read_text(encoding="utf-8"))
-        suppress_output = any(inbound.get("streamSettings", {}).get("network") == "xhttp"
-                              for inbound in configuration.get("inbounds", []))
+        suppress_output = (any(inbound.get("streamSettings", {}).get("network") == "xhttp"
+                               for inbound in configuration.get("inbounds", [])) or
+                           any(outbound.get("protocol") == "socks"
+                               for outbound in configuration.get("outbounds", [])))
     except (OSError, ValueError, TypeError, AttributeError):
         pass
     output = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if suppress_output else {}

@@ -9,7 +9,7 @@ install_test_error_reported=false
 report_install_failure() {
   local exit_status=$1 failed_line=$2 safe_phase
   case "$install_test_phase" in
-    initialisation|bootstrap|initial-checks|panel-update|xhttp-enable|port-preparation|panel-rollback|vless-rollback|primary-transition|single-port|fresh-install)
+    initialisation|bootstrap|initial-checks|panel-update|xhttp-enable|proxy-rollback|port-preparation|panel-rollback|vless-rollback|primary-transition|single-port|fresh-install)
       safe_phase=$install_test_phase ;;
     *) safe_phase=unknown ;;
   esac
@@ -339,10 +339,11 @@ version_f=$(printf 'f%.0s' {1..40})
 version_g=$(printf '1%.0s' {1..40})
 version_h=$(printf '2%.0s' {1..40})
 version_i=$(printf '3%.0s' {1..40})
+version_j=$(printf '4%.0s' {1..40})
 # В тестовых архивах меняются только проверяемые файлы; manifest пересчитывается.
 # E — текущая схема 443+8443 с основным443. F — будущий основной8443 с обоими входами.
 # G/H ломают панель/VLESS именно во время смены основного порта. I убирает внешний443.
-python3 - "$archive" "$work" "$version_b" "$version_e" "$version_f" "$version_g" "$version_h" "$version_i" <<'PY'
+python3 - "$archive" "$work" "$version_b" "$version_e" "$version_f" "$version_g" "$version_h" "$version_i" "$version_j" <<'PY'
 import gzip
 import hashlib
 import io
@@ -417,6 +418,8 @@ write(sys.argv[5], main)
 write(sys.argv[6], {**main, 'docker/haproxy.cfg.template': template.replace(route, route.replace('panel_https', 'vpn_reality')).encode()})
 write(sys.argv[7], {**main, 'docker/haproxy.cfg.template': template.replace(default, 'default_backend panel_https').encode()})
 write(sys.argv[8], {**main, 'docker/compose.yml': compose_at(8443, only=True)})
+write(sys.argv[9], {'web/proxy-rollback-marker.txt': b'Proxy rollback fixture.\n',
+                    'docker/Caddyfile.template': initial_caddy.encode()})
 PY
 
 # Имена .localhost получают сертификаты от доверенного тестового CA, без ослабления TLS.
@@ -508,6 +511,36 @@ check_stack
 sudo env GITHUB_ACTIONS=true python3 /opt/private-gateway-docker/current/docker/configure-xhttp.py --enable --apply
 [[ $(xhttp_identity) == "$saved_xhttp_identity" ]] || fail 'Repeated configuration changed the XHTTP identity.'
 check_stack
+
+printf '\n== Failed staged SOCKS5 exit restores the active environment and direct VPN ==\n'
+install_test_phase=proxy-rollback
+pending_proxy=/etc/private-gateway-docker/proxy.pending.env
+active_env_hash=$(sudo sha256sum "$env_file" | awk '{print $1}')
+# Только вымышленные данные теста; реальных секретов в файл или журналы CI не записываем.
+sudo python3 - "$pending_proxy" <<'PY'
+import os
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+content = ('GATEWAY_PROXY_ENABLED=1\nGATEWAY_PROXY_HOST=127.0.0.1\n'
+           'GATEWAY_PROXY_PORT=9\nGATEWAY_PROXY_AUTH=none\n'
+           'GATEWAY_PROXY_USERNAME_B64=\nGATEWAY_PROXY_PASSWORD_B64=\n'
+           'GATEWAY_PROXY_EXPECTED_IP=203.0.113.10\n')
+with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
+    output.write(content)
+PY
+if deliver "$version_j" "$work/release-4.tar.gz" 2>&1 | tee "$work/proxy-rollback.log"; then
+  fail 'A failed staged SOCKS5 exit was accepted.'
+fi
+grep -q '^Docker deployment stopped: VLESS proxy traffic or its observed external IP failed the new release check.' \
+  "$work/proxy-rollback.log" || fail 'The proxy smoke gate did not reject the new release.'
+[[ $(installed) == "$version_b" ]] || fail 'The proxy rollback did not restore the installed release.'
+[[ $(sudo sha256sum "$env_file" | awk '{print $1}') == "$active_env_hash" ]] \
+  || fail 'The proxy rollback changed the previously active environment.'
+sudo test -f "$pending_proxy" || fail 'The staged proxy settings were lost after rollback.'
+check_stack
+sudo rm -f -- "$pending_proxy"
 
 printf '\n== Preparation release keeps the old primary443 and both public ports ==\n'
 install_test_phase=port-preparation

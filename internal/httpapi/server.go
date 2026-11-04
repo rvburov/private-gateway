@@ -86,6 +86,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 	})
 	r.Get("/browser-authorization", s.browserAuthorization)
 	r.Get(storage.SubscriptionPathPrefix+"{token}", s.subscription)
+	r.Get(storage.ProxySubscriptionPathPrefix+"{token}", s.proxySubscription)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_http_requests_total", Help: "HTTP requests by method and status class."}, []string{"method", "status_class"})
@@ -242,7 +243,10 @@ func (s *Server) deviceTraffic(w http.ResponseWriter, r *http.Request) {
 	}
 	devices := make(map[string]xray.Traffic, len(ids))
 	for credential, id := range ids {
-		devices[id] = traffic[credential]
+		current := devices[id]
+		current.UplinkBytes += traffic[credential].UplinkBytes
+		current.DownlinkBytes += traffic[credential].DownlinkBytes
+		devices[id] = current
 	}
 	respond(w, 200, map[string]any{"devices": devices, "period": "since_xray_restart"})
 }
@@ -287,7 +291,12 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "unsupported profile port")
 		return
 	}
-	result, err := s.store.Export(r.Context(), chi.URLParam(r, "id"))
+	exit, ok := profileExit(r)
+	if !ok {
+		fail(w, 400, "unsupported profile exit")
+		return
+	}
+	result, err := s.store.ExportForExit(r.Context(), chi.URLParam(r, "id"), exit)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -299,7 +308,12 @@ func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "unsupported profile port")
 		return
 	}
-	path, err := s.store.RotateSubscription(r.Context(), chi.URLParam(r, "id"))
+	exit, ok := profileExit(r)
+	if !ok {
+		fail(w, 400, "unsupported profile exit")
+		return
+	}
+	path, err := s.store.RotateSubscriptionForExit(r.Context(), chi.URLParam(r, "id"), exit)
 	if err != nil {
 		s.error(w, err)
 		return
@@ -408,6 +422,8 @@ func (s *Server) error(w http.ResponseWriter, err error) {
 		fail(w, 409, err.Error())
 	case errors.Is(err, storage.ErrRevoked):
 		fail(w, 410, err.Error())
+	case errors.Is(err, storage.ErrProxyUnavailable):
+		fail(w, 503, err.Error())
 	default:
 		slog.Error("database operation failed")
 		fail(w, 500, "operation failed")

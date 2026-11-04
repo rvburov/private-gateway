@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { browserVerdicts, isPrivateAddress, privacyDiagnosticReport, type BrowserFacts, type Network } from "./Checks";
+import { browserVerdicts, dnsGroups, isPrivateAddress, privacyDiagnosticReport, type BrowserFacts, type Network } from "./Checks";
 
 const now = new Date("2026-07-01T12:00:00Z");
 const gateway = "203.0.113.7";
@@ -32,9 +32,10 @@ const detail = (facts: BrowserFacts, id: string) =>
 
 describe("connection checks in the browser", () => {
   it("passes a browser that goes out through the gateway", () => {
-    expect(statuses(viaGateway)).toEqual({ exit: "ok", ipv6: "ok", webrtc: "ok", dns: "ok", timezone: "ok" });
+    expect(statuses(viaGateway)).toEqual({ exit: "ok", ipv6: "ok", webrtc: "ok", dns: "info", timezone: "ok" });
     expect(detail(viaGateway, "exit")).toContain("ваш шлюз (DigitalOcean, LLC, Нидерланды)");
-    expect(detail(viaGateway, "dns")).toContain("Cloudflare, Inc. — публичный DNS");
+    expect(detail(viaGateway, "dns")).toContain("Cloudflare, Inc. — обнаружено 1 адрес");
+    expect(detail(viaGateway, "dns")).toContain("Маршрут DNS-запросов этой проверкой не подтверждён");
   });
 
   it("does not call another VPN a leak when all its addresses are in one network", () => {
@@ -45,11 +46,11 @@ describe("connection checks in the browser", () => {
       dns: [net("192.0.2.53", 9009, "M247 Europe SRL", "DE")],
       timeZone: "Europe/Berlin",
     };
-    expect(statuses(otherVPN)).toEqual({ exit: "warn", ipv6: "ok", webrtc: "ok", dns: "ok", timezone: "ok" });
-    expect(detail(otherVPN, "exit")).toContain("Это не ваш шлюз");
+    expect(statuses(otherVPN)).toEqual({ exit: "info", ipv6: "ok", webrtc: "ok", dns: "info", timezone: "ok" });
+    expect(detail(otherVPN, "exit")).toContain("Это не IP сервера");
   });
 
-  it("names the provider an IPv6 address, WebRTC or DNS leaks to", () => {
+  it("names the provider an IPv6 or WebRTC leak reveals without judging DNS by ASN", () => {
     const leaking: BrowserFacts = {
       ipv4: otherVPN4,
       ipv6: home6,
@@ -57,11 +58,64 @@ describe("connection checks in the browser", () => {
       dns: [net("192.0.2.54", 8359, "MTS PJSC", "RU"), cloudflareDNS],
       timeZone: "Europe/Moscow",
     };
-    expect(statuses(leaking)).toEqual({ exit: "warn", ipv6: "fail", webrtc: "fail", dns: "warn", timezone: "warn" });
+    expect(statuses(leaking)).toEqual({ exit: "info", ipv6: "fail", webrtc: "fail", dns: "info", timezone: "warn" });
     expect(detail(leaking, "ipv6")).toContain("MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL, Германия");
     expect(detail(leaking, "webrtc")).toContain("198.51.100.20 (MTS PJSC, Россия)");
-    expect(detail(leaking, "dns")).toContain("MTS PJSC, Россия");
-    expect(detail(leaking, "dns")).not.toContain("Cloudflare");
+    expect(detail(leaking, "dns")).toContain("MTS PJSC — обнаружено 1 адрес");
+    expect(detail(leaking, "dns")).toContain("Cloudflare, Inc. — обнаружено 1 адрес");
+  });
+
+  it("groups all resolver addresses by operator even when ASNs differ", () => {
+    const dns = [
+      net("192.0.2.1", 13335, "Cloudflare, Inc.", "US"),
+      net("192.0.2.2", 64500, "Cloudflare, Inc.", "NL"),
+      net("192.0.2.3", 64501, "Cloudflare, Inc.", null),
+    ];
+    const facts = { ...viaGateway, dns };
+    expect(statuses(facts).dns).toBe("info");
+    expect(detail(facts, "dns")).toContain("Cloudflare, Inc. — обнаружено 3 адреса");
+    expect(dnsGroups(dns)[0].addresses).toEqual(["192.0.2.1", "192.0.2.2", "192.0.2.3"]);
+  });
+
+  it("does not call a selected proxy IP a VPN failure", () => {
+    const proxy = net("155.103.141.121", 64502, "Proxy provider", "US");
+    const facts = { ...viaGateway, ipv4: proxy };
+    expect(statuses(facts).exit).toBe("info");
+    expect(detail(facts, "exit")).toContain("Если выбран профиль «IP прокси»");
+    expect(detail(facts, "exit")).not.toContain("VPN на этом устройстве не работает");
+  });
+
+  it("keeps unknown operators separate and never treats WoodyNet or HostPapa names as proof", () => {
+    const dns = [
+      net("192.0.2.1", 42, "WoodyNet", null),
+      net("192.0.2.2", 43, "HostPapa", null),
+      net("192.0.2.3", null, null, null),
+      net("192.0.2.4", null, "Unknown", null),
+    ];
+    const facts = { ...viaGateway, dns };
+    expect(statuses(facts).dns).toBe("info");
+    expect(detail(facts, "dns")).toContain("WoodyNet — обнаружено 1 адрес");
+    expect(detail(facts, "dns")).toContain("HostPapa — обнаружено 1 адрес");
+    expect(detail(facts, "dns")).toContain("Оператор неизвестен — обнаружено 2 адреса");
+    expect(dnsGroups(dns).at(-1)?.addresses).toEqual(["192.0.2.3", "192.0.2.4"]);
+  });
+
+  it("marks a partial DNS probe and missing network metadata as incomplete information", () => {
+    const facts = { ...viaGateway, dns: [cloudflareDNS, net("192.0.2.5", null, null, null)],
+      dnsProgress: { answered: 6, total: 10 } };
+    expect(statuses(facts).dns).toBe("warn");
+    expect(detail(facts, "dns")).toContain("Проверка DNS не завершена: ответили 6 из 10 проб");
+    expect(detail(facts, "dns")).toContain("Оператор неизвестен — обнаружено 1 адрес");
+    expect(detail(facts, "dns")).not.toMatch(/утечки нет|ваш провайдер не видит/);
+  });
+
+  it("marks unavailable operator metadata without losing the observed resolver", () => {
+    const unknown = { ...net("192.0.2.5", null, null, null), metadataUnavailable: true };
+    const facts = { ...viaGateway, dns: [cloudflareDNS, unknown], dnsProgress: { answered: 10, total: 10 } };
+    expect(statuses(facts).dns).toBe("warn");
+    expect(detail(facts, "dns")).toContain("Оператор неизвестен — обнаружено 1 адрес");
+    expect(detail(facts, "dns")).toContain("Сведения об операторе недоступны для 1 адреса");
+    expect(dnsGroups(facts.dns)[1].addresses).toEqual(["192.0.2.5"]);
   });
 
   it("reports an address sites already see once, not again under WebRTC", () => {
@@ -75,6 +129,10 @@ describe("connection checks in the browser", () => {
     expect(statuses({ ...viaGateway, ipv6: net("2001:db8::9", null, null, null) }).ipv6).toBe("warn");
     expect(statuses({ ...viaGateway, dns: null }).dns).toBe("skip");
     expect(statuses({ ...viaGateway, dns: [] }).dns).toBe("skip");
+    expect(detail({ ...viaGateway, dns: null }, "dns")).toContain("Проверка DNS не завершена");
+    expect(detail({ ...viaGateway, dns: [] }, "dns")).toContain("Недостаточно данных");
+    expect(detail({ ...viaGateway, dns: [], dnsProgress: { answered: 8, total: 10 } }, "dns"))
+      .toContain("Проверка DNS не завершена: ответили 8 из 10 проб");
     // Без ответа ipleak.net сравнивать не с чем: это не утечка.
     expect(statuses({ ...viaGateway, ipv4: null, ipv6: null })).toMatchObject({ exit: "warn", webrtc: "info" });
     expect(statuses(viaGateway, null).exit).toBe("info");

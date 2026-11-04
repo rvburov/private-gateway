@@ -213,7 +213,7 @@ func (p *realXrayProcess) stop(t *testing.T) {
 	}
 }
 
-func startRealXrayClient(t *testing.T, binary string, serverPort int, key string, settings Settings, credential string) string {
+func startRealXrayClient(t *testing.T, binary string, serverPort int, key string, settings Settings, credential string, udp ...bool) string {
 	t.Helper()
 	port := unusedPort(t)
 	profile, err := Profile(model.Node{
@@ -230,7 +230,7 @@ func startRealXrayClient(t *testing.T, binary string, serverPort int, key string
 	profileParams := uri.Query()
 	config := map[string]any{
 		"log":      map[string]any{"loglevel": "warning"},
-		"inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": map[string]any{"auth": "noauth", "udp": false}}},
+		"inbounds": []any{map[string]any{"listen": "127.0.0.1", "port": port, "protocol": "socks", "settings": map[string]any{"auth": "noauth", "udp": len(udp) > 0 && udp[0]}}},
 		"outbounds": []any{map[string]any{
 			"protocol": "vless",
 			"settings": map[string]any{"vnext": []any{map[string]any{

@@ -53,7 +53,8 @@ def stop(process):
 
 class VPNSmokeTest(unittest.TestCase):
     def exported_checks(self, public_port=8443, internal_port=443, configured_internal=443,
-                        profile_port=None, xhttp=False, xhttp_path=None, xhttp_flow=None):
+                        profile_port=None, xhttp=False, xhttp_path=None, xhttp_flow=None,
+                        proxy=False, proxy_route=True, proxy_available=True):
         credential = "00000000-0000-4000-8000-000000000000"
         public_key, short_id, server_name = "public-key", "0123456789abcdef", "reality.example"
         profile = (f"vless://{credential}@vpn.example:{profile_port or public_port}?"
@@ -65,11 +66,24 @@ class VPNSmokeTest(unittest.TestCase):
                                    "serverNames": [server_name]}}}]}
         responses = {
             "/devices": {"devices": [{"id": "test-device", "node_id": "local"}]},
-            "/devices/test-device/profile": {"uri": profile},
+            "/devices/test-device/profile?exit=server": {"uri": profile},
             "/nodes": {"nodes": [{"id": "local", "host": "vpn.example", "port": public_port,
                                   "public_key": public_key, "short_id": short_id,
                                   "server_name": server_name}]},
         }
+        if proxy:
+            proxy_credential = "22222222-3333-4444-8555-666666666666"
+            proxy_profile = profile.replace(credential, proxy_credential)
+            responses["/devices/test-device/profile?exit=proxy"] = {"uri": proxy_profile}
+            responses["/nodes"]["nodes"][0]["proxy_available"] = proxy_available
+            config["inbounds"][0]["settings"]["clients"].append({
+                "id": proxy_credential, "flow": "xtls-rprx-vision",
+            })
+            config["outbounds"] = [{"protocol": "blackhole", "tag": "block"},
+                                   {"protocol": "freedom", "tag": "direct"},
+                                   {"protocol": "socks", "tag": "proxy"}]
+            config["routing"] = {"rules": [{"outboundTag": "proxy" if proxy_route else "direct",
+                                             "user": [proxy_credential + "@private-gateway"]}]}
         if xhttp:
             credential = "11111111-2222-3333-4444-555555555555"
             sid, path = "1111222233334444", "/test-xhttp-path-1234"
@@ -77,7 +91,7 @@ class VPNSmokeTest(unittest.TestCase):
             node.update(host="192.0.2.10", server_name="example.com", xhttp={
                 "port": 8444, "public_key": "xhttp-public-key", "short_id": sid, "path": path, "mode": "auto",
             })
-            responses["/devices/test-device/profile"]["xhttp_uri"] = (
+            responses["/devices/test-device/profile?exit=server"]["xhttp_uri"] = (
                 f"vless://{credential}@192.0.2.10:8444?encryption=none&type=xhttp&security=reality&"
                 f"pbk=xhttp-public-key&sid={sid}&sni=example.com&path={path}&mode=auto")
             account = {"id": credential}
@@ -113,6 +127,7 @@ class VPNSmokeTest(unittest.TestCase):
                                                "GATEWAY_REALITY_PRIVATE_KEY": "private-key",
                                                "GATEWAY_XRAY_PORT": str(configured_internal),
                                                "GATEWAY_SMOKE_TRANSPORT": "xhttp" if xhttp else "tcp",
+                                               "GATEWAY_SMOKE_EXIT": "proxy" if proxy else "server",
                                                "GATEWAY_XHTTP_PORT": "8444",
                                                "GATEWAY_XHTTP_PRIVATE_KEY": "xhttp-private-key"}), \
                  contextlib.redirect_stdout(output):
@@ -130,6 +145,11 @@ class VPNSmokeTest(unittest.TestCase):
         self.assertTrue(all(self.exported_checks(xhttp=True).values()))
         self.assertFalse(self.exported_checks(xhttp=True, xhttp_path="/different-test-path")["profile_xhttp"])
         self.assertFalse(self.exported_checks(xhttp=True, xhttp_flow="xtls-rprx-vision")["profile_client"])
+
+    def test_proxy_export_requires_applied_route_and_blackhole_default(self):
+        self.assertTrue(all(self.exported_checks(proxy=True).values()))
+        self.assertFalse(self.exported_checks(proxy=True, proxy_route=False)["proxy_route"])
+        self.assertFalse(self.exported_checks(proxy=True, proxy_available=False)["proxy_available"])
 
     def test_client_uses_public_profile_port_or_explicit_published_ingress(self):
         profile = ("vless://00000000-0000-4000-8000-000000000000@vpn.example:8443?"

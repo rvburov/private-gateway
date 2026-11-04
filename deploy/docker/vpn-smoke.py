@@ -8,6 +8,8 @@
 
 import argparse
 import base64
+import http.client
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -44,7 +46,8 @@ if not active:
     raise SystemExit(2)
 device = active[0]
 transport = os.environ.get("GATEWAY_SMOKE_TRANSPORT", "tcp")
-profiles = get("/devices/" + device["id"] + "/profile")
+exit = os.environ.get("GATEWAY_SMOKE_EXIT", "server")
+profiles = get("/devices/" + device["id"] + "/profile?exit=" + exit)
 profile = profiles.get("xhttp_uri" if transport == "xhttp" else "uri")
 if not profile:
     raise SystemExit(3)
@@ -88,6 +91,14 @@ checks = {
                      status.get("sha256") == hashlib.sha256(content).hexdigest() and
                      status.get("mtime_ns") == modified,
 }
+if exit == "proxy":
+    email = (uri.username or "").lower() + "@private-gateway"
+    checks["proxy_available"] = node.get("proxy_available") is True
+    checks["proxy_fail_closed"] = bool(config.get("outbounds")) and config["outbounds"][0].get("protocol") == "blackhole"
+    checks["proxy_outbound"] = any(item.get("tag") == "proxy" and item.get("protocol") == "socks"
+                                   for item in config.get("outbounds", []))
+    checks["proxy_route"] = any(item.get("outboundTag") == "proxy" and email in item.get("user", [])
+                                for item in config.get("routing", {}).get("rules", []))
 if transport == "xhttp":
     xhttp = inbound["streamSettings"].get("xhttpSettings", {})
     checks["profile_xhttp"] = (query.get("type") == ["xhttp"] and "flow" not in query and
@@ -102,10 +113,11 @@ class SmokeError(Exception):
     pass
 
 
-def get_profile(transport="tcp"):
+def get_profile(transport="tcp", exit="server"):
     try:
         result = subprocess.run(
             ["docker", "exec", "-e", "GATEWAY_SMOKE_TRANSPORT=" + transport,
+             "-e", "GATEWAY_SMOKE_EXIT=" + exit,
              "private-gateway-api-1", "python3", "-c", EXPORT],
             capture_output=True, text=True, timeout=12, check=False,
         )
@@ -187,7 +199,7 @@ def read_exact(connection, length, stage):
     return bytes(data)
 
 
-def probe_socks(port, target, destination=None, timeout=10):
+def probe_socks(port, target, destination=None, timeout=10, check_ip=False):
     destination_host, destination_port = destination or (target, 443)
     hostname = destination_host.encode("ascii")
     if not hostname or len(hostname) > 253:
@@ -214,6 +226,16 @@ def probe_socks(port, target, destination=None, timeout=10):
             with ssl.create_default_context().wrap_socket(connection, server_hostname=target) as tls:
                 stage = "HTTPS response through VLESS"
                 tls.sendall(b"GET / HTTP/1.1\r\nHost: " + target.encode("ascii") + b"\r\nConnection: close\r\n\r\n")
+                if check_ip:
+                    response = http.client.HTTPResponse(tls)
+                    response.begin()
+                    if response.status != 200:
+                        raise SmokeError("external IP service returned an error")
+                    raw = response.read(128).strip().decode("ascii")
+                    try:
+                        return str(ipaddress.ip_address(raw))
+                    except ValueError as error:
+                        raise SmokeError("external IP service returned an invalid address") from error
                 if not tls.recv(128).startswith(b"HTTP/"):
                     raise SmokeError("target did not answer through VLESS")
                 return tls.version()
@@ -340,7 +362,7 @@ def check_reality_public_key(profile, transport="tcp"):
         raise SmokeError("profile REALITY public key differs from server private key")
 
 
-def run_client(directory, config, target, port, timeout=10):
+def run_client(directory, config, target, port, timeout=10, check_ip=False):
     path = Path(directory) / "client.json"
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(descriptor, "w") as output:
@@ -362,7 +384,7 @@ def run_client(directory, config, target, port, timeout=10):
                 time.sleep(0.1)
         else:
             raise SmokeError("local Xray client did not start")
-        return probe_socks(port, target, timeout=timeout)
+        return probe_socks(port, target, timeout=timeout, check_ip=check_ip)
     finally:
         stop(process)
 
@@ -375,14 +397,26 @@ def main():
     parser.add_argument("--port", type=int, help="Проверить опубликованный порт вместо порта основного профиля")
     parser.add_argument("--transport", choices=("tcp", "xhttp"), default="tcp",
                         help="Проверить прежний TCP/Vision либо дополнительный XHTTP")
+    parser.add_argument("--exit", choices=("server", "proxy"), default="server",
+                        help="Проверить прямой выход или отдельный SOCKS5-выход")
+    parser.add_argument("--expected-ip", help="Ожидаемый внешний IP SOCKS5-выхода")
     args = parser.parse_args()
     if args.isolated_target and not args.isolated:
         parser.error("--isolated-target requires --isolated")
     if args.port is not None and (not 1 <= args.port <= 65535 or args.isolated):
         parser.error("--port requires a valid public port and cannot be combined with --isolated")
+    if args.exit == "proxy" and args.isolated:
+        parser.error("proxy exit requires the running server with its routing configuration")
+    if args.expected_ip is not None:
+        if args.exit != "proxy":
+            parser.error("--expected-ip requires --exit proxy")
+        try:
+            args.expected_ip = str(ipaddress.ip_address(args.expected_ip))
+        except ValueError:
+            parser.error("--expected-ip must be an IP address")
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
-    profile = get_profile(args.transport)
+    profile = get_profile(args.transport, args.exit)
     if args.isolated:
         check_reality_public_key(profile, args.transport)
     port = free_port()
@@ -400,7 +434,8 @@ def main():
             if args.isolated:
                 server, server_log = start_isolated_server(directory, server_port, args.isolated_target, args.transport)
             try:
-                protocol = run_client(directory, config, target, port, timeout=30 if args.isolated else 10)
+                result = run_client(directory, config, "api.ipify.org" if args.exit == "proxy" else target,
+                                    port, timeout=30 if args.isolated else 10, check_ip=args.exit == "proxy")
             except SmokeError as error:
                 if server is not None:
                     stop(server)
@@ -410,7 +445,13 @@ def main():
         finally:
             if server is not None:
                 stop(server)
-    print("VLESS traffic OK:", protocol, "; transport", args.transport, "; port", args.port or urlsplit(profile).port)
+    if args.exit == "proxy":
+        if args.expected_ip is not None and result != args.expected_ip:
+            raise SmokeError("proxy exit IP differs: observed " + result + ", expected " + args.expected_ip)
+        print("VLESS proxy traffic OK: TLS verified; observed IP", result,
+              "; transport", args.transport, "; port", args.port or urlsplit(profile).port)
+    else:
+        print("VLESS traffic OK:", result, "; transport", args.transport, "; port", args.port or urlsplit(profile).port)
 
 
 if __name__ == "__main__":

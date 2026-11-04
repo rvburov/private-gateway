@@ -30,6 +30,7 @@ var (
 	ErrPendingConfig = errors.New("apply the pending Xray configuration before deleting the device")
 	ErrInvalid       = errors.New("invalid device name or node ID")
 	ErrStaleConfig   = errors.New("node settings changed; restart this API process")
+	ErrProxyUnavailable = errors.New("proxy exit is not available")
 	validName        = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
 )
 
@@ -38,6 +39,7 @@ type Store struct {
 	queries    *db.Queries
 	cipher     *secure.Cipher
 	configHash atomic.Value
+	proxyEnabled atomic.Bool
 }
 
 func Open(ctx context.Context, dsn string, cipher *secure.Cipher) (*Store, error) {
@@ -103,6 +105,7 @@ func (s *Store) EnsureNode(ctx context.Context, node model.Node) error {
 	})
 	if err == nil {
 		s.configHash.Store(node.ConfigHash)
+		s.proxyEnabled.Store(node.ProxyAvailable)
 	}
 	return err
 }
@@ -117,6 +120,9 @@ func (s *Store) Nodes(ctx context.Context) ([]model.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		expected, initialized := s.configHash.Load().(string)
+		node.ProxyAvailable = s.proxyEnabled.Load() && initialized && r.ConfigHash == expected &&
+			r.Revision == r.AppliedRevision
 		out = append(out, node)
 	}
 	return out, nil
@@ -147,6 +153,9 @@ func (s *Store) ActiveTrafficIDs(ctx context.Context) (map[string]string, error)
 			return nil, err
 		}
 		ids[strings.ToLower(credential)] = id(row.ID)
+		if s.proxyEnabled.Load() {
+			ids[s.cipher.ProxyCredential(id(row.ID))] = id(row.ID)
+		}
 	}
 	return ids, nil
 }
@@ -230,6 +239,15 @@ func (s *Store) DeleteRevoked(ctx context.Context, deviceID string) error {
 	})
 }
 func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, error) {
+	return s.ExportForExit(ctx, deviceID, "server")
+}
+
+// ExportForExit выдаёт профиль выбранного выхода. Прежний путь без выбора сохраняет
+// исходный UUID устройства и исходную ссылку-подписку.
+func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model.Profile, error) {
+	if exit != "server" && exit != "proxy" {
+		return model.Profile{}, ErrInvalid
+	}
 	if _, err := uuid.Parse(deviceID); err != nil {
 		return model.Profile{}, ErrNotFound
 	}
@@ -249,15 +267,25 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 		if err := s.checkConfigHash(node.ConfigHash); err != nil {
 			return err
 		}
+		if exit == "proxy" && (!s.proxyEnabled.Load() || node.Revision != node.AppliedRevision) {
+			return ErrProxyUnavailable
+		}
 		credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
 		if err != nil {
 			return err
+		}
+		if exit == "proxy" {
+			credential = s.cipher.ProxyCredential(id(row.ID))
 		}
 		clientNode, err := nodeModel(node)
 		if err != nil {
 			return err
 		}
-		result, err = xray.ClientProfiles(clientNode, credential, row.Name)
+		profileName := row.Name
+		if exit == "proxy" {
+			profileName += " · IP прокси"
+		}
+		result, err = xray.ClientProfiles(clientNode, credential, profileName)
 		result.Port = clientNode.Port
 		if err != nil {
 			return err
@@ -270,6 +298,9 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 			}
 		}
 		result.SubscriptionPath = SubscriptionPathPrefix + token
+		if exit == "proxy" {
+			result.SubscriptionPath = ProxySubscriptionPathPrefix + token
+		}
 		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.export", DeviceID: row.ID})
 	})
 	return result, err
@@ -313,9 +344,22 @@ func (s *Store) ProbeCredential(ctx context.Context) (model.Node, string, error)
 // SubscriptionPathPrefix — путь, по которому открытый адрес подписки выдаёт профили.
 const SubscriptionPathPrefix = "/sub/"
 
+// ProxySubscriptionPathPrefix содержит выбор выхода в пути: клиент не может
+// случайно отбросить query и получить прямой выход при обновлении подписки.
+const ProxySubscriptionPathPrefix = "/sub/proxy/"
+
 // RotateSubscription выдаёт активному устройству новую ссылку-подписку; прежняя сразу перестаёт
 // работать.
 func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string, error) {
+	return s.RotateSubscriptionForExit(ctx, deviceID, "server")
+}
+
+// RotateSubscriptionForExit меняет общий секрет обеих ссылок устройства. Суффикс
+// выхода определяет только возвращаемый URL; прежняя ссылка всегда остаётся без него.
+func (s *Store) RotateSubscriptionForExit(ctx context.Context, deviceID, exit string) (string, error) {
+	if exit != "server" && exit != "proxy" {
+		return "", ErrInvalid
+	}
 	if _, err := uuid.Parse(deviceID); err != nil {
 		return "", ErrNotFound
 	}
@@ -328,6 +372,18 @@ func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string
 		if row.RevokedAt.Valid {
 			return ErrRevoked
 		}
+		if exit == "proxy" {
+			node, err := q.GetNode(ctx, row.NodeID)
+			if err != nil {
+				return err
+			}
+			if err := s.checkConfigHash(node.ConfigHash); err != nil {
+				return err
+			}
+			if !s.proxyEnabled.Load() || node.Revision != node.AppliedRevision {
+				return ErrProxyUnavailable
+			}
+		}
 		if row, err = q.AdvanceSubscription(ctx, row.ID); err != nil {
 			return err
 		}
@@ -336,6 +392,9 @@ func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string
 			return err
 		}
 		path = SubscriptionPathPrefix + token
+		if exit == "proxy" {
+			path = ProxySubscriptionPathPrefix + token
+		}
 		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.subscription_rotate", DeviceID: row.ID})
 	})
 	return path, err
@@ -345,6 +404,14 @@ func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string
 // Отозванное устройство и заменённая ссылка не находятся. Клиенты регулярно опрашивают ссылки,
 // поэтому чтения не попадают в аудит.
 func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, string, error) {
+	return s.SubscriptionForExit(ctx, token, "server")
+}
+
+// SubscriptionForExit возвращает профиль нужного выхода по той же защищённой ссылке.
+func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (model.Profile, string, error) {
+	if exit != "server" && exit != "proxy" {
+		return model.Profile{}, "", ErrInvalid
+	}
 	row, err := s.queries.GetActiveDeviceBySubscription(ctx, secure.SubscriptionHash(token))
 	if err != nil {
 		return model.Profile{}, "", classify(err)
@@ -356,9 +423,15 @@ func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, 
 	if err = s.checkConfigHash(node.ConfigHash); err != nil {
 		return model.Profile{}, "", err
 	}
+	if exit == "proxy" && (!s.proxyEnabled.Load() || node.Revision != node.AppliedRevision) {
+		return model.Profile{}, "", ErrProxyUnavailable
+	}
 	credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
 	if err != nil {
 		return model.Profile{}, "", err
+	}
+	if exit == "proxy" {
+		credential = s.cipher.ProxyCredential(id(row.ID))
 	}
 	clientNode, err := nodeModel(node)
 	if err != nil {
@@ -369,12 +442,16 @@ func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, 
 	if node.Revision != node.AppliedRevision {
 		clientNode.XHTTP = nil
 	}
-	profile, err := xray.ClientProfiles(clientNode, credential, row.Name)
+	profileName := row.Name
+	if exit == "proxy" {
+		profileName += " · IP прокси"
+	}
+	profile, err := xray.ClientProfiles(clientNode, credential, profileName)
 	profile.Port = clientNode.Port
 	if err != nil {
 		return model.Profile{}, "", err
 	}
-	return profile, row.Name, nil
+	return profile, profileName, nil
 }
 
 type Status struct {
@@ -437,7 +514,11 @@ func (s *Store) Configure(ctx context.Context, apply bool, operation func(contex
 			if err != nil {
 				return err
 			}
-			clients = append(clients, xray.Client{ID: credential, Name: row.Name})
+			client := xray.Client{ID: credential, Name: row.Name}
+			if s.proxyEnabled.Load() {
+				client.ProxyID = s.cipher.ProxyCredential(id(row.ID))
+			}
+			clients = append(clients, client)
 		}
 		if err = operation(ctx, clients); err != nil {
 			return err

@@ -23,6 +23,7 @@ export interface Network {
   countryCode: string | null;
   city: string | null;
   timeZone: string | null;
+  metadataUnavailable?: boolean;
 }
 
 // Что браузер узнаёт о себе по нажатию кнопки.
@@ -33,6 +34,8 @@ export interface BrowserFacts {
   webrtc: { public: Network[]; local: string[] } | null;
   // DNS-серверы, которые разрешали имена для этого браузера; null — проверка DNS не ответила.
   dns: Network[] | null;
+  // Сколько проб DNS получили ответ: частичный результат нельзя считать завершённой проверкой.
+  dnsProgress?: { answered: number; total: number };
   timeZone: string;
 }
 
@@ -50,12 +53,10 @@ export const ipv4Service = "https://ipv4.ipleak.net/json/";
 export const ipv6Service = "https://ipv6.ipleak.net/json/";
 const lookupService = "https://ipleak.net/json/";
 const stunServers = ["stun:stun.l.google.com:19302", "stun:stun.cloudflare.com:3478"];
-// Публичные DNS-сервисы: они видят запросы, но это не интернет-провайдер владельца.
-const publicDNS = /google|cloudflare|quad9|opendns|cisco|adguard|nextdns|control ?d|mullvad|yandex/i;
 // Так выглядят IPv4- и IPv6-адреса; всё остальное в запрос к ipleak.net не подставляется.
 const addressPattern = /^[0-9a-f:.]+$/i;
 
-const sites = [
+const reputationSites = [
   {
     name: "IP2Location",
     url: "https://www.ip2location.com/demo",
@@ -63,16 +64,97 @@ const sites = [
     expect: "Сведения относятся к проверяемому IP; отсутствие отметки VPN не гарантирует доступ к сайтам.",
   },
   {
+    name: "Scamalytics",
+    url: "https://scamalytics.com/ip",
+    checks: "Оценка риска IP и отметки VPN или прокси.",
+    expect: "Проверьте выбранный IP; оценка отражает данные сервиса, а не фактический маршрут.",
+  },
+  {
+    name: "IPData",
+    url: "https://ipdata.co/",
+    checks: "География, ASN и признаки угроз для IP.",
+    expect: "Сведения относятся к выбранному IP; отсутствие отметки не гарантирует отсутствие риска.",
+  },
+  {
+    name: "IPLocation",
+    url: "https://www.iplocation.net/",
+    checks: "Геолокация IP по нескольким базам.",
+    expect: "Геолокация разных баз может различаться и не показывает точное местоположение.",
+  },
+  {
+    name: "DB-IP",
+    url: "https://db-ip.com/",
+    checks: "География и сведения о сети IP.",
+    expect: "Проверьте выбранный IP; сведения базы могут отличаться от других источников.",
+  },
+  {
+    name: "ipapi.is",
+    url: "https://ipapi.is/",
+    checks: "ASN, хостинг, VPN и прокси по данным сервиса.",
+    expect: "Признаки относятся к базе сервиса и не подтверждают маршрут вашего подключения.",
+  },
+  {
+    name: "Hurricane Electric BGP",
+    url: "https://bgp.he.net/",
+    checks: "ASN, сетевой префикс и маршрутизация IP.",
+    expect: "Данные BGP показывают сеть выбранного IP, а не качество или безопасность прокси.",
+  },
+  {
+    name: "AbuseIPDB",
+    url: "https://www.abuseipdb.com/",
+    checks: "Жалобы на подозрительную активность с IP.",
+    expect: "Отсутствие жалоб не доказывает чистую репутацию; проверьте дату сообщений.",
+  },
+  {
+    name: "VirusTotal",
+    url: "https://www.virustotal.com/",
+    checks: "Репутация IP по нескольким источникам.",
+    expect: "Сверьте выбранный IP; отметки источников могут отличаться и устаревать.",
+  },
+  {
+    name: "Spamhaus",
+    url: "https://check.spamhaus.org/",
+    checks: "Наличие IP в блок-листах Spamhaus.",
+    expect: "Отсутствие записи в списке не гарантирует доступность всех сайтов.",
+  },
+  {
+    name: "2ip.ru",
+    url: "https://2ip.ru/",
+    checks: "IP, провайдер и подозрение на прокси — по-русски.",
+    expect: "IP и сеть выбранного выхода.",
+  },
+  {
+    name: "IPinfo",
+    url: "https://ipinfo.io/",
+    checks: "Кому принадлежит адрес: страна, сеть, отметки VPN и hosting.",
+    expect: "Сеть выбранного выхода; отметка hosting сама по себе не означает проблему.",
+  },
+];
+
+const connectionSites = [
+  {
     name: "ipleak.net",
     url: "https://ipleak.net/",
     checks: "IP, DNS, WebRTC и IPv6 на одной странице.",
-    expect: "IP сервера; DNS-серверы не вашего провайдера; в WebRTC нет вашего адреса.",
+    expect: "IP выбранного выхода; DNS-серверы не вашего провайдера; в WebRTC нет адреса домашней сети.",
   },
   {
-    name: "BrowserLeaks",
+    name: "BrowserLeaks WebRTC",
     url: "https://browserleaks.com/webrtc",
     checks: "Подробно WebRTC, а в соседних разделах — отпечаток браузера.",
-    expect: "Public IP пуст или это IP сервера; локальные адреса скрыты (.local).",
+    expect: "Public IP пуст или это IP выбранного выхода; локальные адреса скрыты (.local).",
+  },
+  {
+    name: "BrowserLeaks IP",
+    url: "https://browserleaks.com/ip",
+    checks: "Внешний IP и сетевые сведения, видимые сайту.",
+    expect: "Виден IP выбранного выхода, а не адрес домашнего или мобильного провайдера.",
+  },
+  {
+    name: "BrowserLeaks DNS",
+    url: "https://browserleaks.com/dns",
+    checks: "DNS-серверы, видимые при проверке браузера.",
+    expect: "Домашний или мобильный провайдер не виден; список резолверов не доказывает путь DNS-запросов.",
   },
   {
     name: "DNS Leak Test",
@@ -84,25 +166,25 @@ const sites = [
     name: "test-ipv6.com",
     url: "https://test-ipv6.com/",
     checks: "Есть ли у устройства IPv6 мимо туннеля.",
-    expect: "IPv4 — адрес сервера; IPv6 не найден.",
+    expect: "IPv4 — IP выбранного выхода; IPv6 идёт тем же маршрутом или недоступен.",
   },
   {
     name: "Whoer",
     url: "https://whoer.net/",
     checks: "Сводка: IP, DNS, часовой пояс, язык, признаки прокси.",
-    expect: "IP сервера; замечания о поясе и языке — подсказки, а не утечка.",
+    expect: "IP выбранного выхода; замечания о поясе и языке — подсказки, а не утечка.",
   },
   {
-    name: "2ip.ru",
-    url: "https://2ip.ru/",
-    checks: "IP, провайдер и подозрение на прокси — по-русски.",
-    expect: "IP и хостинг-провайдер сервера.",
+    name: "IPhey",
+    url: "https://iphey.com/",
+    checks: "IP и согласованность параметров браузера.",
+    expect: "Виден IP выбранного выхода; замечания об отпечатке сами по себе не означают утечку.",
   },
   {
-    name: "IPinfo",
-    url: "https://ipinfo.io/",
-    checks: "Кому принадлежит адрес: страна, сеть, отметки VPN и hosting.",
-    expect: "Сеть хостера сервера; отметка hosting для VPS — нормально.",
+    name: "Pixelscan",
+    url: "https://pixelscan.net/",
+    checks: "IP, WebRTC и признаки отпечатка браузера.",
+    expect: "Виден IP выбранного выхода; сравните WebRTC с выбранным подключением.",
   },
   {
     name: "Cover Your Tracks",
@@ -122,6 +204,22 @@ const sites = [
     checks: "Согласованы ли отпечаток, часовой пояс, язык, WebRTC и IP.",
     expect: "Без красных пунктов; несовпадение пояса с IP выдаёт VPN.",
   },
+];
+const siteGroups = [
+  {
+    title: "Данные об IP и репутации",
+    description: "Проверьте нужный IP на сайте сервиса; где доступно, введите его вручную. Результаты баз могут различаться.",
+    sites: reputationSites,
+  },
+  {
+    title: "Текущее подключение и браузер",
+    description: "Откройте эти сайты на проверяемом устройстве с включённым нужным VPN-подключением.",
+    sites: connectionSites,
+  },
+];
+const sites = siteGroups.flatMap((group) => group.sites);
+const siteWord = { one: "сайт", few: "сайта", many: "сайтов", zero: "сайтов", two: "сайта", other: "сайтов" }[
+  new Intl.PluralRules("ru").select(sites.length)
 ];
 
 export function isIPAddress(value: string) {
@@ -191,8 +289,45 @@ function addresses(networks: Network[]) {
   return networks.map((network) => `${network.ip} (${owner(network)})`).join(", ");
 }
 
-// Превращает увиденное браузером в результаты. Основной выход в интернет — по IPv4; утечка —
-// адрес или DNS-сервер другой сети. serverIP — адрес шлюза, который видят сайты.
+interface DNSGroup {
+  operator: string;
+  addresses: string[];
+}
+
+// Группируем по названию оператора из справки об IP, не по ASN или знакомому бренду DNS.
+// Неизвестные сети остаются отдельной группой, а каждый обнаруженный IP — в подробностях.
+export function dnsGroups(networks: Network[]): DNSGroup[] {
+  const groups = new Map<string, DNSGroup>();
+  const seen = new Set<string>();
+  for (const network of networks) {
+    const ip = network.ip.toLowerCase();
+    if (seen.has(ip)) continue;
+    seen.add(ip);
+    const name = network.isp?.trim();
+    const operator = name && !/^(unknown|n\/?a|-)$/i.test(name) ? name : "Оператор неизвестен";
+    const key = operator.toLowerCase();
+    const group = groups.get(key) ?? { operator, addresses: [] };
+    group.addresses.push(network.ip);
+    groups.set(key, group);
+  }
+  return [...groups.values()].sort((a, b) =>
+    Number(a.operator === "Оператор неизвестен") - Number(b.operator === "Оператор неизвестен"));
+}
+
+function dnsCount(count: number) {
+  const last = count % 10;
+  const lastTwo = count % 100;
+  const form = last === 1 && lastTwo !== 11 ? "адрес"
+    : last >= 2 && last <= 4 && (lastTwo < 12 || lastTwo > 14) ? "адреса" : "адресов";
+  return `${count} ${form}`;
+}
+
+function dnsCountAfterFor(count: number) {
+  return `${count} ${count % 10 === 1 && count % 100 !== 11 ? "адреса" : "адресов"}`;
+}
+
+// Превращает увиденное браузером в результаты. Основной выход в интернет — по IPv4.
+// Список DNS-резолверов не устанавливает маршрут DNS-запросов. serverIP — адрес шлюза.
 export function browserVerdicts(facts: BrowserFacts, serverIP: string | null, now = new Date()): CheckResult[] {
   const results: CheckResult[] = [];
   const main = facts.ipv4 ?? facts.ipv6;
@@ -208,14 +343,14 @@ export function browserVerdicts(facts: BrowserFacts, serverIP: string | null, no
   } else if (serverIP) {
     results.push({
       ...exit,
-      status: "warn",
-      detail: `Сайты видят ${main.ip} — ${owner(main)}. Это не ваш шлюз (${serverIP}): если сейчас включён другой VPN, так и должно быть, а если это ваш домашний провайдер — VPN на этом устройстве не работает.`,
+      status: "info",
+      detail: `Сайты видят ${main.ip} — ${owner(main)}. Это не IP сервера (${serverIP}). Если выбран профиль «IP прокси» или другой VPN, сравните адрес с ожидаемым IP выбранного выхода. Панель не знает, какой профиль сейчас включён на устройстве.`,
     });
   } else {
     results.push({
       ...exit,
       status: "info",
-      detail: `Сайты видят ${main.ip} — ${owner(main)}. Адрес шлюза узнать не удалось.`,
+      detail: `Сайты видят ${main.ip} — ${owner(main)}. IP сервера не указан или задан доменом; автоматическое сравнение недоступно. Сверьте с ожидаемым IP выбранного профиля.`,
     });
   }
 
@@ -287,28 +422,25 @@ export function browserVerdicts(facts: BrowserFacts, serverIP: string | null, no
 
   const dns = { id: "dns", title: "DNS" };
   if (!facts.dns) {
-    results.push({ ...dns, status: "skip", detail: "Не удалось проверить: ipleak.net не ответил." });
+    results.push({ ...dns, status: "skip", detail: "Проверка DNS не завершена: ipleak.net не ответил. Недостаточно данных о резолверах и маршруте запросов." });
   } else if (!facts.dns.length) {
+    const partial = !!facts.dnsProgress && facts.dnsProgress.answered < facts.dnsProgress.total;
     results.push({
       ...dns,
       status: "skip",
-      detail: "ipleak.net не увидел DNS-запросов этого браузера — повторите проверку.",
+      detail: `${partial ? `Проверка DNS не завершена: ответили ${facts.dnsProgress!.answered} из ${facts.dnsProgress!.total} проб. ` : ""}Недостаточно данных: ipleak.net не показал DNS-резолверов этого браузера. Повторите проверку; отсутствие адресов не подтверждает отсутствие утечки.`,
     });
   } else {
-    const role = (network: Network) =>
-      main && sameNetwork(network, main) ? "сеть вашего выхода" : publicDNS.test(network.isp ?? "") ? "публичный DNS" : null;
-    const owners = (networks: Network[]) =>
-      [...new Set(networks.map((network) => owner(network) + (role(network) ? ` — ${role(network)}` : "")))].join("; ");
-    const foreign = facts.dns.filter((network) => !role(network));
-    results.push(
-      foreign.length
-        ? {
-            ...dns,
-            status: "warn",
-            detail: `Среди DNS-серверов обнаружены ${owners(foreign)}. Они отличаются от сети выхода; по одному списку нельзя установить, шли ли запросы мимо прокси или VPN. Если здесь ваш домашний провайдер, проверьте маршрут DNS в настройках клиента.`,
-          }
-        : { ...dns, status: "ok", detail: `Ваши DNS-запросы видит ${owners(facts.dns)}, а не ваш провайдер.` },
-    );
+    const summary = dnsGroups(facts.dns)
+      .map((group) => `${group.operator} — обнаружено ${dnsCount(group.addresses.length)}`)
+      .join("; ");
+    const incomplete = !!facts.dnsProgress && facts.dnsProgress.answered < facts.dnsProgress.total;
+    const missingMetadata = facts.dns.filter((network) => network.metadataUnavailable).length;
+    results.push({
+      ...dns,
+      status: incomplete || missingMetadata ? "warn" : "info",
+      detail: `${incomplete ? `Проверка DNS не завершена: ответили ${facts.dnsProgress!.answered} из ${facts.dnsProgress!.total} проб. ` : ""}Обнаружены резолверы: ${summary}. ${missingMetadata ? `Сведения об операторе недоступны для ${dnsCountAfterFor(missingMetadata)}. ` : ""}Адреса показаны в подробностях. Маршрут DNS-запросов этой проверкой не подтверждён; она относится только к этому браузеру.`,
+    });
   }
 
   const ipZone = main?.timeZone ?? null;
@@ -389,15 +521,18 @@ async function lookup(ip: string, signal: AbortSignal): Promise<Network> {
   const unknown = { ip, asn: null, isp: null, countryCode: null, city: null, timeZone: null };
   if (!addressPattern.test(ip)) return unknown;
   try {
-    return network(await outside<Lookup>(lookupService + ip, signal), ip);
+    // Источник адреса — DNS/STUN-наблюдение. Справка может уточнить только сеть,
+    // но её поле ip не должно подменять фактически обнаруженный адрес.
+    return { ...network(await outside<Lookup>(lookupService + ip, signal), ip), ip };
   } catch {
-    return unknown;
+    return { ...unknown, metadataUnavailable: true };
   }
 }
 
 // ipleak.net — авторитетный DNS-сервер своих поддоменов. Каждое имя ниже новое, поэтому DNS-сервер,
 // которым пользуется браузер, спрашивает его у ipleak.net, а ответ на запрос называет всех, кто
-// спрашивал имена этой сессии. null — ни одного ответа.
+// спрашивал имена этой сессии. Сохраняем число ответивших проб: частичный ответ
+// внешнего сервиса нельзя выдавать за законченную проверку.
 async function dnsServers(signal: AbortSignal) {
   const session = Array.from(crypto.getRandomValues(new Uint8Array(20)), (byte) =>
     byte.toString(16).padStart(2, "0"),
@@ -408,14 +543,14 @@ async function dnsServers(signal: AbortSignal) {
     ),
   );
   const found = new Set<string>();
-  let answered = false;
+  let answered = 0;
   for (const answer of answers) {
-    if (!answer) continue;
-    answered = true;
-    if (answer.ip && typeof answer.ip === "object")
-      for (const address of Object.keys(answer.ip)) if (addressPattern.test(address)) found.add(address);
+    if (!answer || typeof answer !== "object" || !answer.ip ||
+        typeof answer.ip !== "object" || Array.isArray(answer.ip)) continue;
+    answered++;
+    for (const address of Object.keys(answer.ip)) if (addressPattern.test(address)) found.add(address);
   }
-  return answered ? [...found] : null;
+  return { addresses: [...found], answered, total: answers.length };
 }
 
 // Собирает кандидатов WebRTC так же, как это сделал бы сайт: STUN-сервер сообщает браузеру его
@@ -493,7 +628,12 @@ async function browserFacts(signal: AbortSignal, step: (label: string) => void):
     : [];
   const [rtc, servers] = await Promise.all([
     Promise.all(outsideRTC.map(find)),
-    dns ? Promise.all(dns.slice(0, 12).map(find)) : null,
+    // Все адреса остаются в результате. Для остальных после 12 запросов к справке
+    // оператор остаётся неизвестным, а неполнота справки отмечается отдельно.
+    dns.answered ? Promise.all(dns.addresses.map((address, index) => index < 12
+      ? find(address)
+      : Promise.resolve({ ip: address, asn: null, isp: null, countryCode: null, city: null, timeZone: null,
+        metadataUnavailable: true }))) : null,
   ]);
   signal.throwIfAborted();
   step("Готовим результат…");
@@ -502,6 +642,7 @@ async function browserFacts(signal: AbortSignal, step: (label: string) => void):
     ipv6,
     webrtc: webrtc && { public: rtc, local: webrtc.local.filter(isPrivateAddress) },
     dns: servers,
+    dnsProgress: { answered: dns.answered, total: dns.total },
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
   };
 }
@@ -560,6 +701,7 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
   const result = run.data;
   const problems = result?.browser.filter((check) => check.status === "fail").length ?? 0;
   const warnings = result?.browser.filter((check) => check.status === "warn").length ?? 0;
+  const dnsIncomplete = result?.browser.some((check) => check.id === "dns" && check.status === "skip") ?? false;
   const previousResult = run.isFetching || stopped || run.isError;
   return (
     <>
@@ -570,6 +712,7 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
             <HelpTip label="О проверке безопасности">
               <p>Проверяем IP, DNS, IPv6, WebRTC, часовой пояс и сведения об устройстве, доступные сайтам. Скорость и состояние VPS — в разделе «Сервер».</p>
               <p>Проверка запускается только по кнопке на этом устройстве. Браузер обращается к ipleak.net (AirVPN) и STUN-серверам Google и Cloudflare. Они увидят внешний IP; токен входа и VPN-профиль им не передаются.</p>
+              <p>DNS-результат показывает резолверы этого браузера, но не доказывает маршрут DNS-запросов и не описывает все программы устройства.</p>
               <p>Измеренные IPv4 и IPv6 передаются через API панели в IP2Location.io для справки о сети и репутации. Ключ сервиса хранится на сервере.</p>
               <p>Процент показывает завершённые этапы, а не оставшееся время. 100% означает, что проверка закончена; её результат смотрите ниже.</p>
             </HelpTip>
@@ -597,17 +740,20 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
         </div>
         {result && (
           <div
-            className={`notice check-summary ${previousResult ? "" : problems ? "error" : warnings ? "warning-notice" : "success-notice"}`}
+            className={`notice check-summary ${previousResult ? "" : problems ? "error" : warnings || dnsIncomplete ? "warning-notice" : "success-notice"}`}
             role="status"
           >
-            <Icon name={previousResult ? "info" : problems ? "close" : warnings ? "alert" : "check"} size={17} />
+            <Icon name={previousResult ? "info" : problems ? "close" : warnings || dnsIncomplete ? "alert" : "check"} size={17} />
             <span>
               {previousResult && "Предыдущая проверка: "}
               {problems
                 ? `Найдено проблем: ${problems}${warnings ? `, замечаний: ${warnings}` : ""}. Подробности и что сделать — ниже.`
                 : warnings
-                  ? `Проблем нет, замечаний: ${warnings}. Посмотрите их ниже.`
-                  : "По выполненным сетевым проверкам проблем не найдено."}{" "}
+                  ? `Найдено замечаний: ${warnings}. Посмотрите подробности ниже.`
+                  : dnsIncomplete
+                    ? "Данных DNS-проверки недостаточно. Посмотрите причину ниже."
+                  : "По выполненным проверкам IP, IPv6 и WebRTC проблем не найдено."}{" "}
+              Маршрут DNS-запросов не подтверждён. {" "}
               Проверено в {new Date(result.checkedAt).toLocaleTimeString("ru-RU", { timeStyle: "short" })}.
             </span>
           </div>
@@ -620,11 +766,25 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
         <div className="card-heading">
           <div>
             <h2>Что видят сайты</h2>
-            <p>Проверки этого браузера на этом устройстве.</p>
+            <p>Проверки этого браузера на этом устройстве, не всех программ компьютера.</p>
           </div>
           <Icon name="browser" size={23} />
         </div>
         {result ? <CheckList checks={result.browser} /> : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить безопасность»."}</div>}
+        {result?.browserFacts.dns && result.browserFacts.dns.length > 0 && (
+          <details className="check-fingerprint">
+            <summary>Адреса DNS-резолверов ({result.browserFacts.dns.length})</summary>
+            <dl>
+              {dnsGroups(result.browserFacts.dns).map((group) => (
+                <div key={group.operator}>
+                  <dt>{group.operator} — {dnsCount(group.addresses.length)}</dt>
+                  <dd>{group.addresses.join(", ")}</dd>
+                </div>
+              ))}
+            </dl>
+            <p className="hint">Эти адреса увидел внешний сервис; путь DNS-запросов и DNS других программ здесь не проверяются.</p>
+          </details>
+        )}
         {result && (
           <details className="check-fingerprint">
             <summary>Что ещё видит любой сайт</summary>
@@ -659,26 +819,32 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
       <section className="card">
         <div className="card-heading">
           <div>
-            <h2>{sites.length} сайтов для проверки</h2>
-            <p>Откройте с включённым VPN на устройстве, которое проверяете.</p>
+            <h2>{sites.length} {siteWord} для проверки</h2>
+            <p>Сведения об IP и проверки текущего подключения собраны отдельно.</p>
           </div>
         </div>
-        <ul className="check-sites">
-          {sites.map((site) => (
-            <li key={site.name}>
-              <div>
-                <a className="button secondary-button" href={site.url} target="_blank" rel="noopener noreferrer">
-                  {site.name}
-                  <Icon name="external" size={14} />
-                </a>
-                <span>{site.checks}</span>
-              </div>
-              <p>
-                <strong>Ожидается:</strong> {site.expect}
-              </p>
-            </li>
-          ))}
-        </ul>
+        {siteGroups.map((group) => (
+          <div className="check-site-group" key={group.title}>
+            <h3>{group.title}</h3>
+            <p>{group.description}</p>
+            <ul className="check-sites">
+              {group.sites.map((site) => (
+                <li key={site.name}>
+                  <div>
+                    <a className="button secondary-button" href={site.url} target="_blank" rel="noopener noreferrer">
+                      {site.name}
+                      <Icon name="external" size={14} />
+                    </a>
+                    <span>{site.checks}</span>
+                  </div>
+                  <p>
+                    <strong>Ожидается:</strong> {site.expect}
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
       </section>
     </>
   );

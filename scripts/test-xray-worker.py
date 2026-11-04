@@ -29,11 +29,13 @@ class XrayWorkerMetricsTest(unittest.TestCase):
 
     def test_xhttp_startup_does_not_inherit_container_output(self):
         configuration = self.root / "test-config.json"
-        for networks, suppressed in ((["raw"], False), (["raw", "xhttp"], True), (None, True)):
-            with self.subTest(networks=networks):
+        for networks, outbounds, suppressed in ((["raw"], [], False), (["raw", "xhttp"], [], True),
+                                                (["raw"], [{"protocol": "socks"}], True),
+                                                (None, [], True)):
+            with self.subTest(networks=networks, outbounds=outbounds):
                 configuration.write_text(json.dumps({"inbounds": [
                     {"streamSettings": {"network": network}} for network in networks
-                ]}) if networks is not None else "invalid-test-document", encoding="utf-8")
+                ], "outbounds": outbounds}) if networks is not None else "invalid-test-document", encoding="utf-8")
                 child = mock.Mock()
                 child.poll.return_value = 1
                 with mock.patch.object(worker, "CONFIG", configuration), \

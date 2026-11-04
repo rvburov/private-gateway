@@ -75,3 +75,57 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 		t.Fatal("invalid master key accepted")
 	}
 }
+
+func TestProxySettingsAreExplicitAndSupportPasswordOrIPAuthentication(t *testing.T) {
+	key, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, value := range map[string]string{
+		"GATEWAY_DATABASE_URL": "postgres://localhost/gateway",
+		"GATEWAY_API_TOKEN": strings.Repeat("x", 32),
+		"GATEWAY_MASTER_KEY": base64.StdEncoding.EncodeToString(make([]byte, 32)),
+		"GATEWAY_REALITY_PRIVATE_KEY": base64.RawURLEncoding.EncodeToString(key.Bytes()),
+		"GATEWAY_SHORT_ID": "0011223344556677",
+		"GATEWAY_PROXY_ENABLED": "0",
+		"GATEWAY_PROXY_HOST": "",
+		"GATEWAY_PROXY_PORT": "",
+		"GATEWAY_PROXY_AUTH": "",
+		"GATEWAY_PROXY_USERNAME_B64": "",
+		"GATEWAY_PROXY_PASSWORD_B64": "",
+	} {
+		t.Setenv(name, value)
+	}
+	direct, err := Load()
+	if err != nil || direct.Xray.Settings.Proxy != nil || direct.Node.ProxyAvailable {
+		t.Fatal("proxy settings changed the default direct connection")
+	}
+	t.Setenv("GATEWAY_PROXY_ENABLED", "1")
+	t.Setenv("GATEWAY_PROXY_HOST", "198.51.100.10")
+	t.Setenv("GATEWAY_PROXY_PORT", "1080")
+	t.Setenv("GATEWAY_PROXY_AUTH", "password")
+	t.Setenv("GATEWAY_PROXY_USERNAME_B64", base64.StdEncoding.EncodeToString([]byte("sample-user")))
+	t.Setenv("GATEWAY_PROXY_PASSWORD_B64", base64.StdEncoding.EncodeToString([]byte("sample-password")))
+	withPassword, err := Load()
+	if err != nil || withPassword.Xray.Settings.Proxy == nil || !withPassword.Node.ProxyAvailable ||
+		withPassword.Node.ConfigHash == direct.Node.ConfigHash ||
+		withPassword.Xray.Settings.Proxy.Username != "sample-user" ||
+		withPassword.Xray.Settings.Proxy.Password != "sample-password" {
+		t.Fatal("valid SOCKS5 password settings were not loaded")
+	}
+	t.Setenv("GATEWAY_PROXY_PASSWORD_B64", "")
+	if _, err = Load(); err == nil {
+		t.Fatal("one-sided SOCKS5 credentials were accepted")
+	}
+	t.Setenv("GATEWAY_PROXY_USERNAME_B64", "")
+	t.Setenv("GATEWAY_PROXY_AUTH", "none")
+	withoutPassword, err := Load()
+	if err != nil || withoutPassword.Xray.Settings.Proxy == nil || !withoutPassword.Node.ProxyAvailable ||
+		withoutPassword.Xray.Settings.Proxy.Username != "" || withoutPassword.Xray.Settings.Proxy.Password != "" {
+		t.Fatal("IP-authenticated SOCKS5 was not loaded")
+	}
+	t.Setenv("GATEWAY_PROXY_USERNAME_B64", "invalid-base64")
+	if _, err = Load(); err == nil {
+		t.Fatal("invalid encoded SOCKS5 credentials were accepted")
+	}
+}

@@ -172,7 +172,9 @@ describe("IP lookup in diagnostic sections", () => {
     expect(new Headers(options.headers).get("Authorization")).toBe("Bearer diagnostic-session");
     const result = client.getQueryData<{ ipLookups: Array<{ ip: string }> }>(["privacy-checks"]);
     expect(result?.ipLookups.map(({ ip }) => ip)).toEqual([browserIP]);
-    expect(screen.getByRole("heading", { name: "11 сайтов для проверки" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "24 сайта для проверки" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Данные об IP и репутации" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Текущее подключение и браузер" })).toBeTruthy();
     expect(screen.getByRole("link", { name: "IP2Location" }).getAttribute("href")).toBe("https://www.ip2location.com/demo");
     view.unmount();
     render(component);

@@ -35,6 +35,10 @@ func NewManager(options Options) *Manager {
 		xhttp := *options.Settings.XHTTP
 		options.Settings.XHTTP = &xhttp
 	}
+	if options.Settings.Proxy != nil {
+		proxy := *options.Settings.Proxy
+		options.Settings.Proxy = &proxy
+	}
 	return &Manager{options: options}
 }
 
@@ -124,7 +128,7 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 	// вызывающего.
 	cmd.WaitDelay = time.Second
 	var output limitedOutput
-	if m.options.Settings.XHTTP != nil {
+	if m.options.Settings.XHTTP != nil || m.options.Settings.Proxy != nil {
 		// Ошибка ядра может содержать не только известный путь, но и адрес после DNS.
 		// Для нового входа вывод полностью отбрасывается, а не фильтруется по шаблону.
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
@@ -132,7 +136,7 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 		cmd.Stdout, cmd.Stderr = &output, &output
 	}
 	if err := cmd.Run(); err != nil {
-		if m.options.Settings.XHTTP != nil {
+		if m.options.Settings.XHTTP != nil || m.options.Settings.Proxy != nil {
 			if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
 				return errors.New(action + ": timed out")
 			}

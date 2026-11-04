@@ -9,6 +9,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -16,6 +17,7 @@ import (
 type Cipher struct {
 	aead         cipher.AEAD
 	subscription []byte
+	proxyClient  []byte
 }
 
 func New(encodedKey string) (*Cipher, error) {
@@ -36,7 +38,11 @@ func New(encodedKey string) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cipher{aead: aead, subscription: subscription}, nil
+	proxyClient, err := hkdf.Key(sha256.New, key, nil, "private-gateway proxy VLESS credential v1", 32)
+	if err != nil {
+		return nil, err
+	}
+	return &Cipher{aead: aead, subscription: subscription, proxyClient: proxyClient}, nil
 }
 
 func (c *Cipher) Encrypt(value, recordID string) ([]byte, error) {
@@ -66,6 +72,18 @@ func (c *Cipher) SubscriptionToken(deviceID string, generation int64) string {
 	mac := hmac.New(sha256.New, c.subscription)
 	mac.Write([]byte(strings.ToLower(deviceID) + "/" + strconv.FormatInt(generation, 10)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// ProxyCredential выводит отдельный UUID для выхода через прокси. Знание ID устройства
+// или основного UUID не позволяет получить этот секрет без главного ключа сервера.
+func (c *Cipher) ProxyCredential(deviceID string) string {
+	mac := hmac.New(sha256.New, c.proxyClient)
+	mac.Write([]byte(strings.ToLower(deviceID)))
+	var id [16]byte
+	copy(id[:], mac.Sum(nil))
+	id[6] = (id[6] & 0x0f) | 0x40
+	id[8] = (id[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])
 }
 
 // SubscriptionHash — то, что хранит база, чтобы найти устройство по его ссылке.

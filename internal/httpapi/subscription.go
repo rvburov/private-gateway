@@ -28,6 +28,14 @@ var (
 // сама ссылка. Ни токен, ни путь не журналируются, а отозванное устройство и заменённая ссылка
 // отвечают в точности как ссылка, которой никогда не было.
 func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
+	s.serveSubscription(w, r, "server")
+}
+
+func (s *Server) proxySubscription(w http.ResponseWriter, r *http.Request) {
+	s.serveSubscription(w, r, "proxy")
+}
+
+func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, exit string) {
 	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
 	token := chi.URLParam(r, "token")
 	if !subscriptionToken.MatchString(token) {
@@ -43,12 +51,20 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 		fail(w, 400, "unsupported profile port")
 		return
 	}
-	profile, name, err := s.store.Subscription(r.Context(), token)
+	if _, exists := r.URL.Query()["exit"]; exists {
+		fail(w, 400, "unsupported profile exit")
+		return
+	}
+	profile, name, err := s.store.SubscriptionForExit(r.Context(), token, exit)
 	if errors.Is(err, storage.ErrNotFound) {
 		fail(w, 404, "not found")
 		return
 	}
 	if err != nil {
+		if errors.Is(err, storage.ErrProxyUnavailable) {
+			fail(w, 503, err.Error())
+			return
+		}
 		slog.Error("subscription lookup failed")
 		fail(w, 500, "operation failed")
 		return
@@ -57,7 +73,7 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Profile-Update-Interval", "24")
 	switch format {
 	case "html":
-		s.subscriptionPage(w, r, token, name, profile.Port)
+		s.subscriptionPage(w, r, token, name, profile.Port, exit)
 	case "uri":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(profile.URI + "\n"))
@@ -137,7 +153,7 @@ func attachment(name, extension string) string {
 }
 
 // subscriptionPage помогает импортировать ссылку тому, кто открыл её в браузере телефона.
-func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token, name string, port int) {
+func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token, name string, port int, exit string) {
 	if !requestHost.MatchString(r.Host) {
 		fail(w, 400, "invalid host")
 		return
@@ -154,7 +170,11 @@ func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token,
 		}
 		host = net.JoinHostPort(hostname, strconv.Itoa(port))
 	}
-	link := scheme + "://" + host + (storage.SubscriptionPathPrefix + token)
+	path := storage.SubscriptionPathPrefix + token
+	if exit == "proxy" {
+		path = storage.ProxySubscriptionPathPrefix + token
+	}
+	link := scheme + "://" + host + path
 	mihomoLink, _ := url.Parse(link)
 	query := mihomoLink.Query()
 	query.Set("format", "mihomo")

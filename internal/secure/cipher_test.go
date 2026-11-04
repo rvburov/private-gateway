@@ -6,6 +6,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 func TestCipher(t *testing.T) {
@@ -37,6 +39,29 @@ func TestCipher(t *testing.T) {
 	}
 	if _, err := New("bad-key"); err == nil {
 		t.Fatal("invalid key accepted")
+	}
+}
+
+func TestProxyCredentialIsStableAndDomainSeparated(t *testing.T) {
+	c, err := New(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := New(base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{8}, 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const device = "6f0b8c3e-2d1a-4c5b-9e7f-0123456789ab"
+	credential := c.ProxyCredential(device)
+	parsed, err := uuid.Parse(credential)
+	if err != nil || parsed.Version() != 4 || parsed.Variant() != uuid.RFC4122 {
+		t.Fatal("proxy credential is not a valid VLESS UUID")
+	}
+	if credential != c.ProxyCredential(strings.ToUpper(device)) ||
+		credential == other.ProxyCredential(device) ||
+		credential == c.ProxyCredential("6f0b8c3e-2d1a-4c5b-9e7f-0123456789ac") ||
+		credential == device {
+		t.Fatal("proxy credential is not stable and independent from the device ID and master key")
 	}
 }
 

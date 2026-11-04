@@ -6,7 +6,10 @@ export interface Node {
   server_name: string;
   public_key: string;
   short_id: string;
+  proxy_available?: boolean;
 }
+
+export type ProfileExit = "server" | "proxy";
 
 export interface Device {
   id: string;

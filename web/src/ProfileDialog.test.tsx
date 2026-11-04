@@ -9,6 +9,7 @@ vi.mock("qrcode", () => ({ toDataURL: vi.fn().mockResolvedValue("data:image/png;
 
 const initial: RevealedProfile = {
   device: { id: "device-test", node_id: "node-test", name: "Test", created_at: "", revoked_at: null },
+  exit: "server",
   port: 8443,
   uri: "vless://test-credential@vpn.example:8443",
   sing_box_json: '{"outbounds":[{"server_port":8443}]}',
@@ -22,9 +23,9 @@ const xhttpProfile: RevealedProfile = {
   xhttp_uri: "vless://11111111-2222-3333-4444-555555555555@198.51.100.10:8444?type=xhttp&security=reality&path=%2Ftest-xhttp-path-0001&mode=auto&sni=example.org&fp=chrome&pbk=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0011223344556677#Test%20XHTTP",
 };
 
-function Dialog({ value = initial }: { value?: RevealedProfile }) {
+function Dialog({ value = initial, proxyAvailable = false }: { value?: RevealedProfile; proxyAvailable?: boolean }) {
   const [profile, setProfile] = useState(value);
-  return <ProfileDialog token="test-session" profile={profile} onChange={setProfile}
+  return <ProfileDialog token="test-session" profile={profile} proxyAvailable={proxyAvailable} onChange={setProfile}
     onClose={() => {}} />;
 }
 
@@ -113,13 +114,64 @@ it("retains TCP configuration files when an XHTTP link is available", () => {
 });
 
 it("falls back to TCP if an updated profile no longer exposes XHTTP", () => {
-  const props = { token: "test-session", onChange: () => {}, onClose: () => {} };
+  const props = { token: "test-session", proxyAvailable: false, onChange: () => {}, onClose: () => {} };
   const { rerender } = render(<ProfileDialog {...props} profile={xhttpProfile} />);
   fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "xhttp_uri" } });
   rerender(<ProfileDialog {...props} profile={initial} />);
   expect((screen.getByLabelText("Формат профиля") as HTMLSelectElement).value).toBe("uri");
   expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(initial.uri);
   expect(screen.queryByRole("option", { name: /XHTTP/ })).toBeNull();
+});
+
+it("switches between separate server and proxy profiles without changing the format list", async () => {
+  const proxyPath = "/sub/proxy/test-subscription";
+  const proxyURI = "vless://proxy-test-credential@vpn.example:8443";
+  const fetchMock = vi.fn(async (path: string) => {
+    if (path.endsWith("/profile?exit=proxy"))
+      return Response.json({ ...xhttpProfile, uri: proxyURI, subscription_path: proxyPath });
+    if (path.endsWith("/profile?exit=server"))
+      return Response.json(initial);
+    throw new Error("Unexpected request");
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  render(<Dialog value={xhttpProfile} proxyAvailable />);
+  expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
+  const format = screen.getByLabelText("Формат профиля") as HTMLSelectElement;
+  expect(format.options).toHaveLength(5);
+  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
+  await waitFor(() => expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy"));
+  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL(proxyPath));
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/devices/device-test/profile?exit=proxy");
+  expect(format.options).toHaveLength(5);
+  fireEvent.change(format, { target: { value: "uri" } });
+  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(proxyURI);
+  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "server" } });
+  await waitFor(() => expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server"));
+  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(initial.uri);
+  expect(fetchMock.mock.calls[1][0]).toBe("/api/v1/devices/device-test/profile?exit=server");
+});
+
+it("keeps the server profile available when the proxy is not configured", () => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal("fetch", fetchMock);
+  render(<Dialog />);
+  expect((screen.getByRole("option", { name: "IP прокси" }) as HTMLOptionElement).disabled).toBe(true);
+  expect(screen.getByText(/Прокси ещё не настроен или конфигурация не применена/)).toBeTruthy();
+  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("keeps the proxy exit in the subscription link after rotating both links", async () => {
+  const fetchMock = vi.fn(async (_path: string) => Response.json({ subscription_path: "/sub/proxy/test-rotated" }));
+  vi.stubGlobal("fetch", fetchMock);
+  render(<Dialog value={{ ...xhttpProfile, exit: "proxy", subscription_path: "/sub/proxy/test-subscription" }} proxyAvailable />);
+  fireEvent.click(screen.getByText("Новая ссылка"));
+  expect(screen.getByText(/Прежние ссылки для IP сервера и IP прокси/)).toBeTruthy();
+  fireEvent.click(screen.getByText("Заменить ссылку"));
+  await waitFor(() => expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value)
+    .toBe(subscriptionURL("/sub/proxy/test-rotated")));
+  expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/devices/device-test/subscription?exit=proxy");
+  expect(screen.getByText("Ссылки обоих выходов заменены: прежние больше не работают.")).toBeTruthy();
 });
 
 it("keeps port 8443 after rotating a legacy subscription link", async () => {

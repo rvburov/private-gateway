@@ -240,8 +240,13 @@ paths:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
       - {$ref: '#/components/parameters/ProfilePort'}
+      - {$ref: '#/components/parameters/ProfileExit'}
     get:
       operationId: exportDevice
+      description: >-
+        По умолчанию выдаёт прежний прямой профиль. exit=proxy выдаёт отдельный
+        VLESS-идентификатор с выходом через SOCKS5 только после настройки и
+        применения конфигурации. Все форматы выбираются независимо от выхода.
       responses:
         '200':
           description: Секретная ссылка VLESS и конфигурации клиентов sing-box и Mihomo, Cache-Control no-store
@@ -257,17 +262,24 @@ paths:
                   xhttp_port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт необязательного входа XHTTP}
                   sing_box_json: {type: string, description: Полная конфигурация sing-box в JSON}
                   mihomo_yaml: {type: string, description: Полная конфигурация Mihomo в YAML}
-                  subscription_path: {type: string, description: '/sub/ и секретный токен ссылки-подписки; HTTPS-адрес панели в production содержит :8443'}
+                  subscription_path: {type: string, description: 'Для прямого выхода /sub/{token}, для прокси /sub/proxy/{token}; токен секретный, HTTPS-адрес панели в production содержит :8443'}
+        '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
   /api/v1/devices/{id}/subscription:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
       - {$ref: '#/components/parameters/ProfilePort'}
+      - {$ref: '#/components/parameters/ProfileExit'}
     post:
       operationId: rotateSubscription
-      description: Выдать активному устройству новую ссылку-подписку. Прежняя ссылка сразу перестаёт работать.
+      description: >-
+        Заменить общий секрет подписок активного устройства. Прежние ссылки обоих
+        выходов сразу перестают работать. Ответ возвращает путь выбранного выхода;
+        по умолчанию это прямой /sub/{token}, при exit=proxy — /sub/proxy/{token}.
+        Ротация с exit=proxy доступна только после настройки и применения прокси.
       responses:
         '200':
           description: Путь новой ссылки, Cache-Control no-store
@@ -278,8 +290,10 @@ paths:
                 required: [subscription_path]
                 properties:
                   subscription_path: {type: string}
+        '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
         default: {$ref: '#/components/responses/Error'}
   /api/v1/devices/traffic:
     get:
@@ -313,17 +327,38 @@ paths:
       operationId: subscription
       security: []
       description: >-
-        Открытая ссылка-подписка активного устройства: секрет — токен в пути. Без format
-        формат выбирает User-Agent клиента; браузер получает HTML-страницу. Отозванные
-        устройства и заменённые ссылки отвечают 404. Чтения не журналируются и не попадают
-        в аудит. При включённом и успешно применённом XHTTP общий список base64 содержит сначала XHTTP, затем
-        TCP/Vision. Известные legacy-клиенты Hiddify, sing-box, Clash/Mihomo и Stash
-        продолжают получать совместимый TCP-профиль. Форматы uri, sing-box и mihomo
-        сохраняют прежнее содержимое. Каноническая ссылка и токен устройства не меняются.
+        Прежняя прямая ссылка-подписка активного устройства: секрет — токен в пути.
+        Без format формат выбирает User-Agent клиента; браузер получает HTML-страницу.
+        Отозванные устройства и заменённые ссылки отвечают 404. Чтения не журналируются
+        и не попадают в аудит. При включённом и успешно применённом XHTTP общий список
+        base64 содержит сначала XHTTP, затем TCP/Vision. Известные legacy-клиенты
+        Hiddify, sing-box, Clash/Mihomo и Stash получают совместимый TCP-профиль.
+        Форматы uri, sing-box и mihomo сохраняют прежнее содержимое. Для прокси
+        предусмотрен отдельный путь /sub/proxy/{token}; query exit не принимается.
       responses:
         '200': {description: Профиль устройства в запрошенном формате}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
+  /sub/proxy/{token}:
+    parameters:
+      - {name: token, in: path, required: true, schema: {type: string}}
+      - {name: format, in: query, required: false, schema: {type: string, enum: [base64, uri, sing-box, mihomo, html]}}
+      - {$ref: '#/components/parameters/ProfilePort'}
+    get:
+      operationId: proxySubscription
+      security: []
+      description: >-
+        Отдельная ссылка того же активного устройства с выходом через SOCKS5.
+        Использует общий секрет с прямой ссылкой, но отдельный VLESS-идентификатор.
+        Ссылка доступна после настройки и применения прокси; при недоступности
+        конфигурации возвращает 503, а не прямой профиль. Правила выбора формата
+        те же, что у /sub/{token}. Query exit не принимается. Ротация подписки
+        или отзыв устройства отключают оба пути.
+      responses:
+        '200': {description: Прокси-профиль устройства в запрошенном формате}
+        '400': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
   /api/v1/devices/{id}/revoke:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
@@ -776,6 +811,15 @@ components:
   securitySchemes:
     bearerAuth: {type: http, scheme: bearer}
   parameters:
+    ProfileExit:
+      name: exit
+      in: query
+      required: false
+      description: >-
+        server (по умолчанию) выдаёт прежний прямой выход; proxy — отдельный
+        SOCKS5-выход только после применения. Неверное, пустое или повторённое
+        значение даёт 400, недоступный прокси — 503 без подмены прямым профилем.
+      schema: {type: string, enum: [server, proxy], default: server}
     ProfilePort:
       name: port
       in: query
@@ -1109,6 +1153,7 @@ components:
         server_name: {type: string}
         public_key: {type: string}
         short_id: {type: string}
+        proxy_available: {type: boolean, description: 'true только когда SOCKS5 настроен и конфигурация применена; не является проверкой доступности прокси в сети'}
         xhttp:
           type: object
           description: Необязательные параметры дополнительного входа XHTTP; закрытый ключ сюда не входит

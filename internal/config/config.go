@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/rvburov/private-gateway/internal/adminauth"
 	"github.com/rvburov/private-gateway/internal/model"
@@ -98,8 +100,32 @@ func Load() (Config, error) {
 	default:
 		return c, errors.New("GATEWAY_XHTTP_ENABLED must be 0 or 1")
 	}
+	switch value("GATEWAY_PROXY_ENABLED", "0") {
+	case "0":
+	case "1":
+		proxyPort, portErr := integer("GATEWAY_PROXY_PORT", 0)
+		username, userErr := base64.StdEncoding.Strict().DecodeString(os.Getenv("GATEWAY_PROXY_USERNAME_B64"))
+		password, passErr := base64.StdEncoding.Strict().DecodeString(os.Getenv("GATEWAY_PROXY_PASSWORD_B64"))
+		auth := os.Getenv("GATEWAY_PROXY_AUTH")
+		settings.Proxy = &xray.ProxySettings{
+			Address: os.Getenv("GATEWAY_PROXY_HOST"), Port: proxyPort,
+			Username: string(username), Password: string(password),
+		}
+		if portErr != nil || userErr != nil || passErr != nil || !utf8.Valid(username) || !utf8.Valid(password) ||
+			(auth != "password" && auth != "none") ||
+			(auth == "password" && (len(username) == 0 || len(password) == 0)) ||
+			(auth == "none" && (len(username) != 0 || len(password) != 0)) {
+			return c, errors.New("SOCKS5 proxy settings are incomplete or invalid")
+		}
+		c.Node.ProxyAvailable = true
+	default:
+		return c, errors.New("GATEWAY_PROXY_ENABLED must be 0 or 1")
+	}
 	rendered, err := xray.Render(settings, nil)
 	if err != nil {
+		if settings.Proxy != nil {
+			return c, errors.New("invalid SOCKS5 proxy settings; verify address, port and authentication length")
+		}
 		if settings.XHTTP != nil {
 			return c, errors.New("invalid Xray settings; verify TCP and XHTTP ports, separate REALITY keys, short IDs and XHTTP path")
 		}
