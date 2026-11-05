@@ -216,6 +216,8 @@ func TestIPLookupProviderFailuresDoNotBecomePanelFailuresOrLeakSecrets(t *testin
 		{"array", 200, `[]`, "unavailable"},
 		{"ip-only", 200, `{"ip":"162.35.172.6"}`, "unavailable"},
 		{"another-ip", 200, `{"ip":"8.8.8.8","country_code":"US"}`, "unavailable"},
+		{"missing-ip", 200, `{"country_code":"US","isp":"Another network"}`, "unavailable"},
+		{"null-ip", 200, `{"ip":null,"country_code":"US"}`, "unavailable"},
 		{"invalid-ip", 200, `{"ip":123,"country_code":"US"}`, "unavailable"},
 		{"trailing-json", 200, `{"ip":"162.35.172.6","country_code":"US"} {}`, "unavailable"},
 		{"oversized", 200, strings.Repeat(" ", ipLookupResponseLimit+1) + `{}`, "unavailable"},
@@ -244,6 +246,29 @@ func TestIPLookupProviderFailuresDoNotBecomePanelFailuresOrLeakSecrets(t *testin
 	response, result = ipLookupTestRequest(t, server, `{"ip":"`+ipLookupTestIP+`"}`)
 	if result.Status != "unavailable" || !broken.closed || result.CheckedAt != nil || result.Data != nil || strings.Contains(response.Body.String(), ipLookupTestKey) {
 		t.Fatal("failed body was not closed or its raw error escaped", result)
+	}
+}
+
+func TestIPLookupMatchesCanonicalPublicAddresses(t *testing.T) {
+	for _, test := range []struct {
+		input, returned, canonical string
+	}{
+		{"2606:4700:4700::1111", "2606:4700:4700:0:0:0:0:1111", "2606:4700:4700::1111"},
+		{"::ffff:8.8.8.8", "8.8.8.8", "8.8.8.8"},
+		{"8.8.8.8", "::ffff:808:808", "8.8.8.8"},
+	} {
+		t.Run(test.input+"_"+test.returned, func(t *testing.T) {
+			server := ipLookupTestServer(func(request *http.Request) (*http.Response, error) {
+				if request.URL.Query().Get("ip") != test.canonical {
+					t.Fatal("noncanonical provider query")
+				}
+				return ipLookupTestResponse(`{"ip":"`+test.returned+`","country_code":"US"}`, http.StatusOK), nil
+			})
+			response, result := ipLookupTestRequest(t, server, `{"ip":"`+test.input+`"}`)
+			if response.Code != http.StatusOK || result.Status != "partial" || result.IP != test.canonical || result.Data == nil {
+				t.Fatalf("equivalent IP rejected: code=%d result=%+v", response.Code, result)
+			}
+		})
 	}
 }
 

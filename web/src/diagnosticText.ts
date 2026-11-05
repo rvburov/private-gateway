@@ -60,6 +60,7 @@ export function formatDiagnosticText(kind: "privacy" | "server", report: unknown
   add("Дата проверки", timestamp(source.checkedAt));
   add("Дата скачивания отчёта", timestamp(source.exportedAt));
   add("Адрес панели", text(source.panelOrigin));
+  if (kind === "privacy" && typeof source.targetIP === "string") add("Проверяемый IP", source.targetIP);
   if (source.mainCheckPerformed === false) {
     lines.push("", kind === "privacy" ? "Основная проверка безопасности не запускалась." : "Основная проверка сервера не запускалась.");
     section("Ручная проверка другого IP");

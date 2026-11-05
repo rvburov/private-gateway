@@ -1,5 +1,5 @@
 import { APIError, errorMessage, request } from "./api";
-import type { IPLookupResult } from "./ipLookup";
+import { samePublicIP, type IPLookupResult } from "./ipLookup";
 
 const statuses = new Set(["available", "partial", "not_configured", "unavailable", "rate_limited"]);
 
@@ -16,6 +16,10 @@ export async function lookupIP(token: string, ip: string, signal: AbortSignal): 
         value.source !== "IP2Location.io" || typeof value.detail !== "string" ||
         (value.data !== null && (typeof value.data !== "object" || Array.isArray(value.data)))) {
       throw new Error("Сервер вернул нераспознанный ответ проверки IP.");
+    }
+    if (!samePublicIP(value.ip, ip) ||
+        (value.data?.ip != null && (typeof value.data.ip !== "string" || !samePublicIP(value.data.ip, ip)))) {
+      throw new Error("Сервер вернул сведения о другом IP. Повторите проверку.");
     }
     return value;
   } catch (error) {

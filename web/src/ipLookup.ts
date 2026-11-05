@@ -195,33 +195,44 @@ function publicIPv4(parts: number[]): boolean {
   return true;
 }
 
-export function isValidPublicIP(value: string): boolean {
+// Одинаковые IPv6-записи и IPv4-mapped адреса должны сопоставляться с одним IP.
+export function normalizePublicIP(value: string): string | null {
   const ipv4 = ipv4Parts(value);
-  if (ipv4) return publicIPv4(ipv4);
-  if (!value.includes(":") || /[^0-9a-f:.]/i.test(value) || value.split("::").length > 2) return false;
+  if (ipv4) return publicIPv4(ipv4) ? ipv4.join(".") : null;
+  if (!value.includes(":") || /[^0-9a-f:.]/i.test(value) || value.split("::").length > 2) return null;
   let address = value;
   let embedded: number[] | null = null;
   if (value.includes(".")) {
     const divider = value.lastIndexOf(":");
     embedded = ipv4Parts(value.slice(divider + 1));
-    if (!embedded) return false;
+    if (!embedded) return null;
     address = `${value.slice(0, divider)}:${((embedded[0] << 8) | embedded[1]).toString(16)}:${((embedded[2] << 8) | embedded[3]).toString(16)}`;
   }
   const [left, right] = address.split("::");
   const leading = left ? left.split(":") : [];
   const trailing = right ? right.split(":") : [];
-  if (![...leading, ...trailing].every((group) => /^[0-9a-f]{1,4}$/i.test(group))) return false;
+  if (![...leading, ...trailing].every((group) => /^[0-9a-f]{1,4}$/i.test(group))) return null;
   const compressed = address.includes("::");
   const explicit = leading.length + trailing.length;
-  if (compressed ? explicit >= 8 : explicit !== 8) return false;
+  if (compressed ? explicit >= 8 : explicit !== 8) return null;
   const groups = [...leading, ...Array(compressed ? 8 - explicit : 0).fill("0"), ...trailing].map((group) => parseInt(group, 16));
   if (groups.slice(0, 5).every((group) => group === 0) && groups[5] === 0xffff) {
-    return publicIPv4([groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255]);
+    const mapped = [groups[6] >> 8, groups[6] & 255, groups[7] >> 8, groups[7] & 255];
+    return publicIPv4(mapped) ? mapped.join(".") : null;
   }
-  if (embedded && !publicIPv4(embedded)) return false;
+  if (embedded && !publicIPv4(embedded)) return null;
   // Диапазоны совпадают с проверкой API: исключаем также специальные туннельные и документационные адреса.
   if ((groups[0] & 0xe000) !== 0x2000 || groups[0] === 0x2002 ||
       groups[0] === 0x2001 && (groups[1] <= 0x01ff || groups[1] === 0x0db8) ||
-      groups[0] === 0x3fff && groups[1] <= 0x0fff) return false;
-  return true;
+      groups[0] === 0x3fff && groups[1] <= 0x0fff) return null;
+  return groups.map((group) => group.toString(16)).join(":");
+}
+
+export function isValidPublicIP(value: string): boolean {
+  return normalizePublicIP(value) !== null;
+}
+
+export function samePublicIP(a: string, b: string): boolean {
+  const normalized = normalizePublicIP(a);
+  return normalized !== null && normalized === normalizePublicIP(b);
 }

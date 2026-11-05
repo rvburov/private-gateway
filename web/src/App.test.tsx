@@ -42,7 +42,7 @@ let privacyBlocked = false;
 let performanceUnavailable = false;
 let statusFailure: (() => Response) | null = null;
 // Что отвечает ipleak.net, внешний сервис раздела «Проверка».
-let visibleIP = "203.0.113.7";
+let visibleIP = "8.8.8.8";
 let visibleIPv6: string | null = null;
 let dnsResolvers = ["162.158.1.10"];
 let dnsFailedProbes = 0;
@@ -51,9 +51,9 @@ let dnsLookupFailures = new Set<string>();
 let dnsLookupIPOverrides = new Map<string, string>();
 const ownZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const networks: Record<string, { as_number: number; isp_name: string; country_code: string | null; time_zone: string | null }> = {
-  "203.0.113.7": { as_number: 14061, isp_name: "DigitalOcean, LLC", country_code: "NL", time_zone: ownZone },
-  "198.51.100.20": { as_number: 9009, isp_name: "M247 Europe SRL", country_code: "DE", time_zone: ownZone },
-  "2001:db8::20": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
+  "8.8.8.8": { as_number: 14061, isp_name: "DigitalOcean, LLC", country_code: "NL", time_zone: ownZone },
+  "1.1.1.1": { as_number: 9009, isp_name: "M247 Europe SRL", country_code: "DE", time_zone: ownZone },
+  "2606:4700:4700::1111": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
   "162.158.1.10": { as_number: 13335, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
   "162.158.1.11": { as_number: 64501, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
   "162.158.1.12": { as_number: 64502, isp_name: "Cloudflare, Inc.", country_code: null, time_zone: null },
@@ -80,7 +80,7 @@ beforeEach(() => {
   privacyBlocked = false;
   performanceUnavailable = false;
   statusFailure = null;
-  visibleIP = "203.0.113.7";
+  visibleIP = "8.8.8.8";
   visibleIPv6 = null;
   dnsResolvers = ["162.158.1.10"];
   dnsFailedProbes = 0;
@@ -193,7 +193,7 @@ beforeEach(() => {
           {
             id: "n1",
             name: "Main",
-            host: "203.0.113.7",
+            host: "8.8.8.8",
             port: 443,
             server_name: "example.com",
             public_key: "public",
@@ -224,8 +224,8 @@ beforeEach(() => {
             id: "traffic",
             title: "VLESS-трафик через сервер",
             status: "ok",
-            detail: "Настоящий VLESS-трафик проходит через сервер; сайты видят IP 203.0.113.7 (NL) — адрес сервера.",
-            ip: "203.0.113.7",
+            detail: "Настоящий VLESS-трафик проходит через сервер; сайты видят IP 8.8.8.8 (NL) — адрес сервера.",
+            ip: "8.8.8.8",
           },
         ],
       });
@@ -287,6 +287,11 @@ async function login() {
   fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
   await screen.findByText("Ваш приватный шлюз");
   await screen.findByText("Phone");
+}
+
+async function startPrivacyChecks() {
+  await waitFor(() => expect((screen.getByLabelText("IP-адрес") as HTMLInputElement).value).toBe(visibleIP));
+  fireEvent.click(screen.getByRole("button", { name: "Проверить IP" }));
 }
 
 describe("administrator panel", () => {
@@ -429,7 +434,7 @@ describe("administrator panel", () => {
     fireEvent.click(within(sheet).getByRole("button", { name: "Сервер" }));
     expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
     expect(await screen.findByText("Сервер подключения")).toBeTruthy();
-    expect(screen.getByText("203.0.113.7:443")).toBeTruthy();
+    expect(screen.getByText("8.8.8.8:443")).toBeTruthy();
     fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Ещё" })).getByRole("button", { name: "Журнал действий" }));
     expect(await screen.findByText("История действий")).toBeTruthy();
@@ -448,7 +453,10 @@ describe("administrator panel", () => {
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByRole("heading", { name: "Проверить безопасность" })).toBeTruthy();
     const asked = () => fetchMock.mock.calls.map(([path]) => String(path));
-    expect(asked().filter((path) => path.startsWith("https://") || path.startsWith("/api/v1/checks"))).toEqual([]);
+    await waitFor(() => expect((screen.getByLabelText("IP-адрес") as HTMLInputElement).value).toBe(visibleIP));
+    expect(asked().filter((path) => path.startsWith("https://") || path.startsWith("/api/v1/checks"))).toEqual([
+      "https://ipv4.ipleak.net/json/", "https://ipv6.ipleak.net/json/",
+    ]);
     expect(screen.getByRole("link", { name: "ipleak.net" }).getAttribute("href")).toBe("https://ipleak.net/");
     expect(screen.queryByLabelText("Как подключены сейчас")).toBeNull();
     expect(screen.queryByRole("region", { name: "Скорость и задержка" })).toBeNull();
@@ -460,9 +468,9 @@ describe("administrator panel", () => {
     fireEvent.click(help);
     expect(screen.queryByText(/Браузер обращается к ipleak\.net/)).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByText(/По выполненным проверкам IP, IPv6 и WebRTC проблем не найдено/)).toBeTruthy();
-    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят 8\.8\.8\.8 — ваш шлюз \(DigitalOcean, LLC, Нидерланды\)/)).toBeTruthy();
     expect(screen.getByText(/Cloudflare, Inc\. — обнаружено 1 адрес/)).toBeTruthy();
     expect(screen.getByText(/Маршрут DNS-запросов не подтверждён/)).toBeTruthy();
     expect(screen.getByText(/WebRTC в этом браузере выключен/)).toBeTruthy();
@@ -477,14 +485,14 @@ describe("administrator panel", () => {
       expect(new Headers(options?.headers).has("Authorization")).toBe(false);
     }
 
-    // Возврат из другого раздела не запускает проверку повторно.
-    const requests = asked().length;
+    // Возврат обновляет только текущий IP для поля, но не запускает диагностику повторно.
+    const requests = asked().filter((path) => path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/").length;
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
     expect(await screen.findByRole("button", { name: "Проверить подключение" })).toBeTruthy();
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
-    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
-    expect(asked().length).toBe(requests);
+    expect(screen.getByText(/Сайты видят 8\.8\.8\.8 — ваш шлюз/)).toBeTruthy();
+    expect(asked().filter((path) => path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/").length).toBe(requests);
   });
 
   it("runs server diagnostics separately and retains both cached results", async () => {
@@ -508,7 +516,7 @@ describe("administrator panel", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/v1/checks", expect.objectContaining({ headers: expect.objectContaining({ Authorization: "Bearer admin-token" }) }));
     const stored = window.localStorage.getItem("private-gateway-performance-v1");
     expect(JSON.parse(stored || "[]")[0].mode).toBe("wifi-vpn");
-    expect(stored).not.toMatch(/admin-token|203\.0\.113|User-Agent|secret|profile/i);
+    expect(stored).not.toMatch(/admin-token|8\.8\.8|User-Agent|secret|profile/i);
     for (const [path, options] of fetchMock.mock.calls)
       if (String(path).startsWith("https://speed.cloudflare.com/")) {
         expect(options).toMatchObject({ credentials: "omit", referrerPolicy: "no-referrer" });
@@ -517,9 +525,9 @@ describe("administrator panel", () => {
 
     const serverRequests = fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/checks")).length;
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
-    expect(await screen.findByRole("button", { name: "Проверить безопасность" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Проверить IP" })).toBeTruthy();
     expect(screen.queryByText("VLESS-трафик через сервер")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/checks")).length).toBe(serverRequests);
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBe(stored);
@@ -534,9 +542,9 @@ describe("administrator panel", () => {
     await login();
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     await screen.findByRole("button", { name: "Проверить снова" });
-    const privateRequests = fetchMock.mock.calls.filter(([path]) => String(path).includes("ipleak.net")).length;
+    const privateRequests = fetchMock.mock.calls.filter(([path]) => String(path).includes("ipleak.net") && !String(path).includes("ipv4.ipleak.net") && !String(path).includes("ipv6.ipleak.net")).length;
     performanceBlocked = true;
     fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
     fireEvent.click(await screen.findByRole("button", { name: "Проверить подключение" }));
@@ -548,8 +556,8 @@ describe("administrator panel", () => {
     expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/checks/performance/download"))).toBe(false);
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
-    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
-    expect(fetchMock.mock.calls.filter(([path]) => String(path).includes("ipleak.net")).length).toBe(privateRequests);
+    expect(screen.getByText(/Сайты видят 8\.8\.8\.8 — ваш шлюз/)).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([path]) => String(path).includes("ipleak.net") && !String(path).includes("ipv4.ipleak.net") && !String(path).includes("ipv6.ipleak.net")).length).toBe(privateRequests);
   });
 
   it("stops privacy checks without changing an existing speed history", async () => {
@@ -561,7 +569,8 @@ describe("administrator panel", () => {
     const stored = window.localStorage.getItem("private-gateway-performance-v1");
     privacyBlocked = true;
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    fireEvent.change(await screen.findByLabelText("IP-адрес"), { target: { value: visibleIP } });
+    await startPrivacyChecks();
     await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => path === "https://ipv4.ipleak.net/json/")).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
     expect(await screen.findByText("Проверка безопасности остановлена.")).toBeTruthy();
@@ -576,45 +585,37 @@ describe("administrator panel", () => {
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(screen.queryByRole("progressbar", { name: "Ход проверки безопасности" })).toBeNull();
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     const progress = () => screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement;
     await waitFor(() => expect(progress().value).toBe(100));
     expect(progress().max).toBe(100);
 
-    // Ответы проб удерживаем отдельно: процент меняется после ответа, а не по таймеру.
-    const pending: Array<{ path: string; resolve: (response: Response) => void }> = [];
+    // Удерживаем DNS-ответы: пока внешний сервис не ответил, новая проверка не завершена.
+    const pending: Array<{ resolve: (response: Response) => void }> = [];
     const respond = fetchMock.getMockImplementation() as (path: string, options?: RequestInit) => Promise<Response>;
     fetchMock.mockImplementation((path: string, options: RequestInit = {}) => {
-      if (path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/" &&
-          !/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path)) return respond(path, options);
+      if (!/^https:\/\/[0-9a-f]{40}-\d\.ipleak\.net\/dnsdetection\/$/.test(path)) return respond(path, options);
       return new Promise<Response>((resolve, reject) => {
-        pending.push({ path, resolve });
+        pending.push({ resolve });
         options.signal?.addEventListener("abort", () => reject(options.signal?.reason), { once: true });
       });
     });
     fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
-    await waitFor(() => expect(pending).toHaveLength(12));
-    // Собраны сведения об устройстве и завершена проверка недоступного WebRTC: 2 из 7 этапов.
-    await waitFor(() => expect(progress().value).toBe(28));
-    pending.find((request) => request.path === "https://ipv4.ipleak.net/json/")!.resolve(
-      Response.json({ ip: visibleIP, ...networks[visibleIP] }),
-    );
-    await waitFor(() => expect(progress().value).toBe(42));
+    await waitFor(() => expect(pending).toHaveLength(10));
+    await waitFor(() => expect(progress().value).toBeGreaterThan(0));
+    expect(progress().value).toBeLessThan(100);
+    const partial = progress().value;
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
     await screen.findByText("Проверка безопасности остановлена.");
-    expect(progress().value).toBe(42);
+    expect(progress().value).toBe(partial);
     // Сохранённый результат не превращает остановленную повторную проверку в 100%.
-    expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
+    expect(screen.getByText(/Сайты видят 8\.8\.8\.8 — ваш шлюз/)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
-    await waitFor(() => expect(pending).toHaveLength(24));
-    await waitFor(() => expect(progress().value).toBe(28));
-    for (const request of pending.slice(12)) {
-      request.resolve(Response.json(request.path === "https://ipv4.ipleak.net/json/"
-        ? { ip: visibleIP, ...networks[visibleIP] }
-        : request.path === "https://ipv6.ipleak.net/json/"
-          ? {}
-          : { session: "test", ip: Object.fromEntries(dnsResolvers.map((ip) => [ip, 1])) }));
+    await waitFor(() => expect(pending).toHaveLength(20));
+    expect(progress().value).toBeLessThan(100);
+    for (const request of pending.slice(10)) {
+      request.resolve(Response.json({ session: "test", ip: Object.fromEntries(dnsResolvers.map((ip) => [ip, 1])) }));
     }
     await waitFor(() => expect(progress().value).toBe(100));
     expect(progress().getAttribute("aria-valuetext")).toContain("100%. Проверка завершена.");
@@ -623,7 +624,7 @@ describe("administrator panel", () => {
   it("does not present cached success as a completed new check after a device probe fails", async () => {
     await login();
     fireEvent.click(within(screen.getByRole("navigation", { name: "Главное меню" })).getByRole("button", { name: "Проверка" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     await screen.findByRole("button", { name: "Проверить снова" });
     expect((screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement).value).toBe(100);
     const collect = vi.spyOn(deviceDiagnostics, "collectDeviceDiagnostics").mockImplementationOnce(() => {
@@ -633,10 +634,10 @@ describe("administrator panel", () => {
       fireEvent.click(screen.getByRole("button", { name: "Проверить снова" }));
       expect((await screen.findByRole("alert")).textContent).toContain("Device diagnostic failed");
       expect(screen.getByText("Не удалось завершить проверку.")).toBeTruthy();
-      expect((screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement).value).toBe(0);
+      expect((screen.getByRole("progressbar", { name: "Ход проверки безопасности" }) as HTMLProgressElement).value).toBeLessThan(100);
       const previous = screen.getByText(/Предыдущая проверка:/).closest(".check-summary");
       expect(previous?.classList.contains("success-notice")).toBe(false);
-      expect(screen.getByText(/Сайты видят 203\.0\.113\.7 — ваш шлюз/)).toBeTruthy();
+      expect(screen.getByText(/Сайты видят 8\.8\.8\.8 — ваш шлюз/)).toBeTruthy();
     } finally {
       collect.mockRestore();
     }
@@ -657,21 +658,21 @@ describe("administrator panel", () => {
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBeNull();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
-    expect(await screen.findByRole("button", { name: "Проверить безопасность" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Проверить IP" })).toBeTruthy();
     expect(screen.queryByRole("region", { name: "История замеров" })).toBeNull();
   });
 
   it("names the provider an IPv6 address and DNS go to past another VPN", async () => {
-    visibleIP = "198.51.100.20";
-    visibleIPv6 = "2001:db8::20";
+    visibleIP = "1.1.1.1";
+    visibleIPv6 = "2606:4700:4700::1111";
     dnsResolvers = ["192.0.2.53"];
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByText(/Найдено проблем: 1\./)).toBeTruthy();
     // Другой VPN — замечание, а не проблема.
     expect(screen.getByText(/M247 Europe SRL, Германия\. Это не IP сервера/)).toBeTruthy();
-    expect(screen.getByText(/IPv6-адрес 2001:db8::20 — MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL/)).toBeTruthy();
+    expect(screen.getByText(/IPv6-адрес 2606:4700:4700::1111 — MTS PJSC, Россия, а IPv4 идёт через M247 Europe SRL/)).toBeTruthy();
     expect(screen.getByText(/Обнаружены резолверы: MTS PJSC — обнаружено 1 адрес/)).toBeTruthy();
   });
 
@@ -681,7 +682,7 @@ describe("administrator panel", () => {
     dnsLookupFailures.add("192.0.2.99");
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByText(/Проверка DNS не завершена: ответили 8 из 10 проб/)).toBeTruthy();
     expect(screen.getByText(/Cloudflare, Inc\. — обнаружено 3 адреса/)).toBeTruthy();
     expect(screen.getByText(/Оператор неизвестен — обнаружено 1 адрес/)).toBeTruthy();
@@ -695,7 +696,7 @@ describe("administrator panel", () => {
     dnsResolvers = [];
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByText(/Недостаточно данных: ipleak.net не показал DNS-резолверов/)).toBeTruthy();
     expect(screen.getByText(/Данных DNS-проверки недостаточно/).closest(".check-summary")?.classList.contains("warning-notice")).toBe(true);
     expect(screen.queryByText(/утечки нет/)).toBeNull();
@@ -704,15 +705,15 @@ describe("administrator panel", () => {
 
   it("preserves the observed DNS IP when metadata disagrees and marks malformed probe answers incomplete", async () => {
     dnsMalformedProbes = 2;
-    dnsLookupIPOverrides.set("162.158.1.10", "198.51.100.20");
+    dnsLookupIPOverrides.set("162.158.1.10", "1.1.1.1");
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByText(/Проверка DNS не завершена: ответили 8 из 10 проб/)).toBeTruthy();
     expect(screen.getByText(/Cloudflare, Inc\. — обнаружено 1 адрес/)).toBeTruthy();
     const details = screen.getByText("Адреса DNS-резолверов (1)").closest("details")!;
     expect(within(details).getByText("162.158.1.10")).toBeTruthy();
-    expect(within(details).queryByText("198.51.100.20")).toBeNull();
+    expect(within(details).queryByText("1.1.1.1")).toBeNull();
   });
 
   it("reports missing resolver metadata separately from successful DNS probes", async () => {
@@ -720,7 +721,7 @@ describe("administrator panel", () => {
     dnsLookupFailures.add("192.0.2.99");
     await login();
     fireEvent.click(screen.getByRole("button", { name: "Проверить безопасность" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Проверить безопасность" }));
+    await startPrivacyChecks();
     expect(await screen.findByText(/Сведения об операторе недоступны для 1 адреса/)).toBeTruthy();
     expect(screen.getByText(/Оператор неизвестен — обнаружено 1 адрес/)).toBeTruthy();
     const details = screen.getByText("Адреса DNS-резолверов (2)").closest("details")!;

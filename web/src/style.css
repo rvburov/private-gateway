@@ -1287,6 +1287,24 @@ details[open] > summary {
 .check-run > .notice {
   grid-column: 1 / -1;
 }
+.privacy-ip-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: end;
+  gap: 12px;
+  grid-column: 1 / -1;
+}
+.privacy-ip-hint {
+  grid-column: 1 / -1;
+}
+@media (max-width: 700px) {
+  .privacy-ip-form {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .privacy-ip-form .ip-lookup-field {
+    grid-column: 1 / -1;
+  }
+}
 .check-columns {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { collectDeviceDiagnostics, type DeviceDiagnostics } from "./deviceDiagnostics";
 import { CheckList, type CheckResult } from "./CheckResults";
@@ -8,8 +8,7 @@ import { HelpTip } from "./HelpTip";
 import { Icon } from "./icons";
 import { ErrorNotice } from "./ui";
 import { IPReputation } from "./IPReputation";
-import { IPLookupManual, type ManualIPLookupState } from "./IPLookupManual";
-import type { IPLookupResult } from "./ipLookup";
+import { isValidPublicIP, samePublicIP, type IPLookupResult } from "./ipLookup";
 import { lookupIP } from "./ipLookupClient";
 import { manualIPDiagnosticReport } from "./ipLookupText";
 
@@ -45,7 +44,16 @@ export interface CheckRun {
   device: DeviceDiagnostics;
   checkedAt: number;
   ipLookups?: IPLookupResult[];
+  targetIP?: string;
 }
+
+interface AddressCheckRun {
+  targetIP: string;
+  ipLookup: IPLookupResult;
+  checkedAt: number;
+}
+
+type PrivacyCheckRun = CheckRun | AddressCheckRun;
 
 // Внешние сервисы проверки. ipleak.net сообщает адрес и сеть по IPv4 и по IPv6, узнаёт сеть
 // любого адреса и видит, какие DNS-серверы спрашивают у него уникальные имена его поддоменов.
@@ -511,10 +519,16 @@ async function exitNetwork(url: string, signal: AbortSignal) {
   try {
     const data = await outside<Lookup>(url, signal);
     const ip = text(data.ip);
-    return ip ? network(data, ip) : null;
+    return ip && isValidPublicIP(ip) ? network(data, ip) : null;
   } catch {
     return null;
   }
+}
+
+async function browserExits(signal: AbortSignal) {
+  const exits = await Promise.all([exitNetwork(ipv4Service, signal), exitNetwork(ipv6Service, signal)]);
+  signal.throwIfAborted();
+  return exits;
 }
 
 async function lookup(ip: string, signal: AbortSignal): Promise<Network> {
@@ -598,7 +612,7 @@ function webrtcAddresses(signal: AbortSignal, timeout = 4_000): Promise<{ public
   });
 }
 
-async function browserFacts(signal: AbortSignal, step: (label: string) => void): Promise<BrowserFacts> {
+async function browserFacts(signal: AbortSignal, step: (label: string) => void, exits: (Network | null)[]): Promise<BrowserFacts> {
   const probe = async <T,>(promise: Promise<T>): Promise<T> => {
     const value = await promise;
     signal.throwIfAborted();
@@ -606,8 +620,8 @@ async function browserFacts(signal: AbortSignal, step: (label: string) => void):
     return value;
   };
   const [ipv4, ipv6, webrtc, dns] = await Promise.all([
-    probe(exitNetwork(ipv4Service, signal)),
-    probe(exitNetwork(ipv6Service, signal)),
+    probe(Promise.resolve(exits[0])),
+    probe(Promise.resolve(exits[1])),
     probe(webrtcAddresses(signal)),
     probe(dnsServers(signal)),
   ]);
@@ -647,8 +661,23 @@ async function browserFacts(signal: AbortSignal, step: (label: string) => void):
   };
 }
 
-async function runChecks(token: string, nodeHost: string | undefined, signal: AbortSignal, onProgress: (stage: DiagnosticStage) => void): Promise<CheckRun> {
+async function runChecks(token: string, nodeHost: string | undefined, targetIP: string, requireCurrent: boolean,
+  signal: AbortSignal, onProgress: (stage: DiagnosticStage) => void): Promise<PrivacyCheckRun> {
   signal.throwIfAborted();
+  onProgress({ label: "Определяем текущее подключение…", percent: 5 });
+  const exits = await browserExits(signal);
+  const isCurrent = exits.some((exit) => exit && samePublicIP(exit.ip, targetIP));
+  if (!isCurrent) {
+    if (requireCurrent) {
+      throw new Error(exits.some(Boolean)
+        ? `IP подключения изменился. Адрес ${targetIP} больше не является текущим. Нажмите «Мой IP» и повторите проверку.`
+        : "Не удалось подтвердить текущий IP браузера. Нажмите «Мой IP» и повторите проверку или введите адрес вручную для справки об IP.");
+    }
+    onProgress({ label: `Запрашиваем сведения об IP ${targetIP}…`, percent: 40 });
+    const ipLookup = await lookupIP(token, targetIP, signal);
+    signal.throwIfAborted();
+    return { targetIP, ipLookup, checkedAt: Date.now() };
+  }
   let completed = 0;
   const step = (label: string) => {
     signal.throwIfAborted();
@@ -657,14 +686,21 @@ async function runChecks(token: string, nodeHost: string | undefined, signal: Ab
   };
   const device = collectDeviceDiagnostics();
   step("Проверяем IP, DNS и WebRTC…");
-  const facts = await browserFacts(signal, step);
+  const facts = await browserFacts(signal, step, exits);
   signal.throwIfAborted();
   onProgress({ label: "Уточняем сведения об IP…", percent: 85 });
   const measuredIPs = [...new Set([facts.ipv4?.ip, facts.ipv6?.ip].filter((ip): ip is string => !!ip))];
   const ipLookups = await Promise.all(measuredIPs.map((ip) => lookupIP(token, ip, signal)));
+  onProgress({ label: "Сверяем IP подключения…", percent: 95 });
+  const finalExits = await browserExits(signal);
+  if (!exits.every((exit, index) => exit
+    ? !!finalExits[index] && samePublicIP(exit.ip, finalExits[index]!.ip)
+    : !finalExits[index])) {
+    throw new Error("IP подключения изменился во время проверки или не подтвердился повторно. Результаты не сохранены. Нажмите «Мой IP» и повторите проверку.");
+  }
   signal.throwIfAborted();
   const serverIP = nodeHost && isIPAddress(nodeHost) ? nodeHost : null;
-  const result = { browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, ipLookups, checkedAt: Date.now() };
+  const result = { targetIP, browser: browserVerdicts(facts, serverIP), browserFacts: facts, device, ipLookups, checkedAt: Date.now() };
   step("Проверка завершена.");
   return result;
 }
@@ -676,6 +712,7 @@ export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string, m
     version: 1,
     exportedAt: new Date().toISOString(),
     checkedAt: new Date(result.checkedAt).toISOString(),
+    targetIP: result.targetIP ?? result.browserFacts.ipv4?.ip ?? result.browserFacts.ipv6?.ip ?? null,
     panelOrigin,
     browser: result.browser,
     browserFacts: result.browserFacts,
@@ -687,18 +724,59 @@ export function privacyDiagnosticReport(result: CheckRun, panelOrigin: string, m
 
 export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }) {
   const client = useQueryClient();
-  const [manual, setManual] = useState<ManualIPLookupState>({ data: undefined, checkedAt: 0, busy: false });
+  const inputID = useId();
+  const [input, setInput] = useState("");
+  const inputEdited = useRef(false);
+  const inputRevision = useRef(0);
+  const detection = useRef<AbortController | null>(null);
+  const [detecting, setDetecting] = useState(true);
+  const [detectionError, setDetectionError] = useState<Error | null>(null);
+  const [validationError, setValidationError] = useState<Error | null>(null);
+  const submitted = useRef({ targetIP: "", requireCurrent: false });
   const [stopped, setStopped] = useState(false);
   const [progress, setProgress] = useState<DiagnosticStage>({ label: "Начинаем проверку…", percent: 0 });
-  const run = useQuery({
+  const run = useQuery<PrivacyCheckRun>({
     queryKey: ["privacy-checks"],
-    queryFn: ({ signal }) => runChecks(token, nodeHost, signal, setProgress),
+    queryFn: ({ signal }) => runChecks(token, nodeHost, submitted.current.targetIP, submitted.current.requireCurrent, signal, setProgress),
     enabled: false,
     retry: false,
     staleTime: Infinity,
     gcTime: 30 * 60_000,
   });
-  const result = run.data;
+  const detect = async (replace: boolean) => {
+    detection.current?.abort();
+    const controller = new AbortController();
+    const revision = inputRevision.current;
+    detection.current = controller;
+    setDetecting(true);
+    setDetectionError(null);
+    try {
+      const exits = await browserExits(controller.signal);
+      const ip = exits.find(Boolean)?.ip;
+      if (!ip) throw new Error("Не удалось определить IP браузера. Введите внешний адрес вручную или нажмите «Мой IP», чтобы повторить.");
+      if (revision === inputRevision.current && (replace || !inputEdited.current)) {
+        inputEdited.current = false;
+        setInput(ip);
+        setValidationError(null);
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setDetectionError(error as Error);
+    } finally {
+      if (!controller.signal.aborted) setDetecting(false);
+    }
+  };
+  useEffect(() => {
+    void detect(false);
+    return () => detection.current?.abort();
+  }, []);
+  // Результат относится к неизменному адресу запуска. При редактировании поля
+  // прежние карточки и отчёт скрываются, даже если старый запрос уже завершился.
+  const data = run.data;
+  const resultIP = data && (data.targetIP ?? ("browserFacts" in data ? data.browserFacts.ipv4?.ip ?? data.browserFacts.ipv6?.ip : null));
+  const selected = resultIP && samePublicIP(resultIP, input.trim()) ? data : undefined;
+  const result = selected && "browserFacts" in selected ? selected : undefined;
+  const addressResult = selected && "ipLookup" in selected ? selected : undefined;
+  const currentAttempt = samePublicIP(submitted.current.targetIP, input.trim());
   const problems = result?.browser.filter((check) => check.status === "fail").length ?? 0;
   const warnings = result?.browser.filter((check) => check.status === "warn").length ?? 0;
   const dnsIncomplete = result?.browser.some((check) => check.id === "dns" && check.status === "skip") ?? false;
@@ -711,33 +789,61 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
             <h2>Проверить безопасность</h2>
             <HelpTip label="О проверке безопасности">
               <p>Проверяем IP, DNS, IPv6, WebRTC, часовой пояс и сведения об устройстве, доступные сайтам. Скорость и состояние VPS — в разделе «Сервер».</p>
-              <p>Проверка запускается только по кнопке на этом устройстве. Браузер обращается к ipleak.net (AirVPN) и STUN-серверам Google и Cloudflare. Они увидят внешний IP; токен входа и VPN-профиль им не передаются.</p>
+              <p>Браузер обращается к ipleak.net (AirVPN) при открытии страницы, чтобы подставить текущий IP. Полная проверка запускается по кнопке и также использует STUN-серверы Google и Cloudflare. Внешние сервисы увидят IP; токен входа и VPN-профиль им не передаются.</p>
               <p>DNS-результат показывает резолверы этого браузера, но не доказывает маршрут DNS-запросов и не описывает все программы устройства.</p>
               <p>Измеренные IPv4 и IPv6 передаются через API панели в IP2Location.io для справки о сети и репутации. Ключ сервиса хранится на сервере.</p>
+              <p>Можно ввести любой публичный IPv4 или IPv6. Для чужого адреса запрашиваются только сведения об IP: DNS, WebRTC и параметры чужого браузера по адресу определить нельзя.</p>
               <p>Процент показывает завершённые этапы, а не оставшееся время. 100% означает, что проверка закончена; её результат смотрите ниже.</p>
             </HelpTip>
           </div>
-          <p>IP, DNS, WebRTC и данные браузера.</p>
+          <p>Проверьте текущий IP или введите другой адрес.</p>
         </div>
-        <div className="check-run-actions">
+        <form className="privacy-ip-form" onSubmit={(event) => {
+          event.preventDefault();
+          if (run.isFetching) return;
+          const targetIP = input.trim();
+          if (!isValidPublicIP(targetIP)) {
+            setValidationError(new Error("Введите корректный внешний IPv4 или IPv6 без порта и ссылки. Локальные и служебные адреса не проверяются."));
+            return;
+          }
+          detection.current?.abort();
+          setDetecting(false);
+          submitted.current = { targetIP, requireCurrent: !inputEdited.current };
+          setValidationError(null);
+          setDetectionError(null);
+          setStopped(false);
+          setProgress({ label: "Начинаем проверку…", percent: 0 });
+          void run.refetch();
+        }}>
+          <div className="ip-lookup-field">
+            <label htmlFor={inputID}>IP-адрес</label>
+            <input id={inputID} type="text" value={input} onChange={(event) => {
+              inputEdited.current = true;
+              inputRevision.current++;
+              setInput(event.target.value);
+              setValidationError(null);
+            }} placeholder={detecting ? "Определяем ваш IP…" : "Введите IPv4 или IPv6"}
+            autoComplete="off" spellCheck={false} maxLength={64} disabled={run.isFetching}
+            aria-invalid={!!validationError} />
+          </div>
+          <button type="button" className="button secondary-button" disabled={run.isFetching || detecting}
+            onClick={() => { void detect(true); }}>Мой IP</button>
           {run.isFetching ? (
-            <button className="button" onClick={() => {
+            <button type="button" className="button" onClick={() => {
               void client.cancelQueries({ queryKey: ["privacy-checks"] });
               setStopped(true);
             }}>
               <Icon name="close" size={18} />Остановить
             </button>
           ) : (
-            <button className="button primary" onClick={() => {
-              setStopped(false);
-              setProgress({ label: "Начинаем проверку…", percent: 0 });
-              void run.refetch();
-            }}>
+            <button type="submit" className="button primary">
               <Icon name="shield" size={18} />
-              {result ? "Проверить снова" : "Проверить безопасность"}
+              {selected ? "Проверить снова" : "Проверить IP"}
             </button>
           )}
-        </div>
+        </form>
+        {detecting && <p className="hint privacy-ip-hint" role="status">Определяем текущий IP браузера…</p>}
+        <ErrorNotice error={validationError || detectionError} />
         {result && (
           <div
             className={`notice check-summary ${previousResult ? "" : problems ? "error" : warnings || dnsIncomplete ? "warning-notice" : "success-notice"}`}
@@ -758,9 +864,10 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
             </span>
           </div>
         )}
-        <ErrorNotice error={run.error} />
-        <DiagnosticProgress stage={progress} busy={run.isFetching} stopped={stopped} failed={run.isError}
-          complete={!!result} label="Ход проверки безопасности" stoppedLabel="Проверка безопасности остановлена." />
+        <ErrorNotice error={currentAttempt ? run.error : null} />
+        {addressResult && <p className="notice check-summary" role="status">{previousResult && "Предыдущая проверка: "}Проверен IP {addressResult.targetIP}. Это справка об адресе, а не проверка текущего подключения. Проверено в {new Date(addressResult.checkedAt).toLocaleTimeString("ru-RU", { timeStyle: "short" })}.</p>}
+        <DiagnosticProgress stage={progress} busy={run.isFetching} stopped={currentAttempt && stopped} failed={currentAttempt && run.isError}
+          complete={!!selected} label="Ход проверки безопасности" stoppedLabel="Проверка безопасности остановлена." />
       </section>
       <section className="card">
         <div className="card-heading">
@@ -770,7 +877,11 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
           </div>
           <Icon name="browser" size={23} />
         </div>
-        {result ? <CheckList checks={result.browser} /> : <div className="loading">{run.isFetching ? "Проверяем…" : "Нажмите «Проверить безопасность»."}</div>}
+        {result ? <CheckList checks={result.browser} /> : addressResult ? <CheckList checks={[
+          { id: "exit", title: "Выход в интернет", status: "skip", detail: "Введённый IP не подтверждён как текущее подключение браузера. Сведения об адресе показаны ниже." },
+          ...["DNS", "IPv6", "WebRTC", "Часовой пояс"].map((title) => ({ id: title, title, status: "skip" as const,
+            detail: "Относится к текущему браузеру. По чужому IP эта проверка недоступна. Нажмите «Мой IP» и запустите проверку." })),
+        ]} /> : <div className="loading">{run.isFetching ? "Проверяем…" : "Укажите IP и нажмите «Проверить IP»."}</div>}
         {result?.browserFacts.dns && result.browserFacts.dns.length > 0 && (
           <details className="check-fingerprint">
             <summary>Адреса DNS-резолверов ({result.browserFacts.dns.length})</summary>
@@ -807,14 +918,15 @@ export function Checks({ token, nodeHost }: { token: string; nodeHost?: string }
       {result && !result.ipLookups?.length && (
         <IPReputation result={null} description="Текущий выход браузера не определён. Повторите проверку безопасности." />
       )}
-      <IPLookupManual token={token} scope="privacy" busy={run.isFetching} onStateChange={setManual} />
-      {(result || manual.data) && <DiagnosticReportDownload
+      {addressResult && <IPReputation result={addressResult.ipLookup} title="IP и репутация"
+        description={`Проверяемый IP: ${addressResult.targetIP}. Сведения относятся только к этому адресу.`} />}
+      {selected && <DiagnosticReportDownload
         kind="privacy"
         report={() => result
-          ? privacyDiagnosticReport(result, window.location.origin, manual.data)
-          : manualIPDiagnosticReport("privacy", manual.data!, manual.checkedAt, window.location.origin)}
-        checkedAt={result?.checkedAt ?? manual.checkedAt}
-        busy={run.isFetching || manual.busy}
+          ? privacyDiagnosticReport(result, window.location.origin)
+          : manualIPDiagnosticReport("privacy", addressResult!.ipLookup, addressResult!.checkedAt, window.location.origin)}
+        checkedAt={selected.checkedAt}
+        busy={run.isFetching}
       />}
       <section className="card">
         <div className="card-heading">

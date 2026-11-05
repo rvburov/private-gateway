@@ -183,12 +183,11 @@ func (s *ipLookupService) lookup(ctx context.Context, ip netip.Addr) ipLookupRes
 	if decoder.Decode(&raw) != nil || decoder.Decode(&struct{}{}) != io.EOF || raw == nil || raw["error"] != nil {
 		return result
 	}
-	if address, present := raw["ip"]; present && address != nil {
-		text, ok := address.(string)
-		seen, public := ipLookupAddress(text)
-		if !ok || !public || seen != ip {
-			return result
-		}
+	// Без подтверждённого адреса нельзя приписать метаданные запрошенному IP.
+	address, ok := raw["ip"].(string)
+	seen, public := ipLookupAddress(address)
+	if !ok || !public || seen != ip {
+		return result
 	}
 	data, values, complete := normalizeIPLookupObject(raw, ipLookupFields, s.key)
 	// Один повторённый IP без других сведений не считается успешным обогащением.
