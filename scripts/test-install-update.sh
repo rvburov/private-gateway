@@ -526,7 +526,7 @@ path = Path(sys.argv[1])
 content = ('GATEWAY_PROXY_ENABLED=1\nGATEWAY_PROXY_HOST=127.0.0.1\n'
            'GATEWAY_PROXY_PORT=9\nGATEWAY_PROXY_AUTH=none\n'
            'GATEWAY_PROXY_USERNAME_B64=\nGATEWAY_PROXY_PASSWORD_B64=\n'
-           'GATEWAY_PROXY_EXPECTED_IP=203.0.113.10\n')
+           'GATEWAY_PROXY_EXPECTED_IP=8.8.8.8\n')
 with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
     output.write(content)
 PY

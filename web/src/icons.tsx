@@ -24,9 +24,11 @@ export type IconName =
   | "info"
   | "minus"
   | "bell"
-  | "download";
+  | "download"
+  | "edit";
 
 const icons: Record<IconName, ReactNode> = {
+  edit: <><path d="m15 4 5 5M4 20l5-1L20 8a3.5 3.5 0 0 0-5-5L4 14l-1 7Z" /></>,
   bell: <><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" /></>,
   download: <path d="M12 3v12m-5-5 5 5 5-5M4 16v5h16v-5" />,
   grid: (

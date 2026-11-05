@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -11,6 +12,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { toDataURL } from "qrcode";
 import App from "./App";
 import * as deviceDiagnostics from "./deviceDiagnostics";
+import type { Device, ProfileExit } from "./api";
 
 vi.mock("qrcode", () => ({
   toDataURL: vi.fn().mockResolvedValue("data:image/png;base64,cXJjb2Rl"),
@@ -32,6 +34,12 @@ let appliedRevision = 1;
 let interruptApply = false;
 let profileRequests = 0;
 let proxyAvailable = false;
+let deviceName = "Phone";
+let preferredExit: ProfileExit = "server";
+let extraDevices: Device[] = [];
+let devicePatchFailure: { status: number; error: string } | null = null;
+let expectedServerIP: string | undefined = "8.8.8.8";
+let expectedProxyIP: string | undefined = "1.1.1.1";
 let queryClient: QueryClient;
 let fetchMock: ReturnType<typeof vi.fn>;
 let adminSetup = true;
@@ -60,6 +68,11 @@ const networks: Record<string, { as_number: number; isp_name: string; country_co
   "192.0.2.53": { as_number: 8359, isp_name: "MTS PJSC", country_code: "RU", time_zone: "Europe/Moscow" },
 };
 
+function currentDevice(): Device {
+  return { id: "d1", name: deviceName, node_id: "n1", created_at: "2026-01-01T00:00:00Z",
+    revoked_at: revoked ? "2026-01-02T00:00:00Z" : null, preferred_exit: preferredExit };
+}
+
 beforeEach(() => {
   window.history.replaceState(null, "", "/");
   window.localStorage.clear();
@@ -71,6 +84,12 @@ beforeEach(() => {
   interruptApply = false;
   profileRequests = 0;
   proxyAvailable = false;
+  deviceName = "Phone";
+  preferredExit = "server";
+  extraDevices = [];
+  devicePatchFailure = null;
+  expectedServerIP = "8.8.8.8";
+  expectedProxyIP = "1.1.1.1";
   subscriptionPath = "/sub/sensitive-subscription-token-1";
   rotations = 0;
   adminSetup = true;
@@ -199,20 +218,14 @@ beforeEach(() => {
             public_key: "public",
             short_id: "abcd",
             proxy_available: proxyAvailable,
+            expected_server_ip: expectedServerIP,
+            expected_proxy_ip: expectedProxyIP,
           },
         ],
       });
     if (path === "/api/v1/devices")
       return Response.json({
-        devices: deleted ? [] : [
-          {
-            id: "d1",
-            name: "Phone",
-            node_id: "n1",
-            created_at: "2026-01-01T00:00:00Z",
-            revoked_at: revoked ? "2026-01-02T00:00:00Z" : null,
-          },
-        ],
+        devices: [...(deleted ? [] : [currentDevice()]), ...extraDevices],
       });
     if (path === "/api/v1/devices/traffic")
       return Response.json({ devices: { d1: { uplink_bytes: 2048, downlink_bytes: 1048576 } }, period: "since_xray_restart" });
@@ -231,12 +244,34 @@ beforeEach(() => {
       });
     if (path === "/api/v1/browser")
       return Response.json({ running: browserRunning, url: browserRunning ? "https://gateway.example/browser/vnc.html" : "" });
-    if (path.startsWith("/api/v1/devices/d1/profile")) {
+    const deviceProfile = path.match(/^\/api\/v1\/devices\/([^/]+)\/profile(?:\?exit=(server|proxy))?$/);
+    if (deviceProfile) {
       profileRequests++;
-      if (path.endsWith("?exit=proxy"))
-        return Response.json({ uri: proxyURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML,
-          subscription_path: subscriptionPath.replace("/sub/", "/sub/proxy/") });
-      return Response.json({ uri: profileURI, sing_box_json: profileJSON, mihomo_yaml: profileYAML, subscription_path: subscriptionPath });
+      const id = deviceProfile[1];
+      const proxy = deviceProfile[2] === "proxy";
+      if (proxy && !proxyAvailable) return Response.json({ error: "proxy exit is not available" }, { status: 503 });
+      const tokenPath = id === "d1" ? subscriptionPath : `/sub/sensitive-subscription-token-${id}`;
+      return Response.json({ uri: id === "d1" ? (proxy ? proxyURI : profileURI)
+        : (proxy ? proxyURI : profileURI).replace("-credential", `-credential-${id}`),
+        sing_box_json: profileJSON, mihomo_yaml: profileYAML,
+        subscription_path: proxy ? tokenPath.replace("/sub/", "/sub/proxy/") : tokenPath,
+        expected_exit_ip: proxy ? expectedProxyIP : expectedServerIP });
+    }
+    const changedDevice = path.match(/^\/api\/v1\/devices\/([^/]+)$/);
+    if (changedDevice && options.method === "PATCH") {
+      if (devicePatchFailure) return Response.json({ error: devicePatchFailure.error }, { status: devicePatchFailure.status });
+      const input = JSON.parse(options.body as string) as { name?: string; preferred_exit?: ProfileExit };
+      if (input.preferred_exit === "proxy" && !proxyAvailable)
+        return Response.json({ error: "proxy exit is not available" }, { status: 503 });
+      if (changedDevice[1] === "d1") {
+        deviceName = input.name ?? deviceName;
+        preferredExit = input.preferred_exit ?? preferredExit;
+        return Response.json(currentDevice());
+      }
+      const device = extraDevices.find((item) => item.id === changedDevice[1]);
+      if (!device) return Response.json({ error: "not found" }, { status: 404 });
+      Object.assign(device, input);
+      return Response.json(device);
     }
     if (path.startsWith("/api/v1/devices/d1/subscription") && options.method === "POST") {
       rotations++;
@@ -275,7 +310,7 @@ afterEach(async () => {
 });
 
 async function login() {
-  render(
+  const view = render(
     <QueryClientProvider client={queryClient}>
       <App />
     </QueryClientProvider>,
@@ -286,7 +321,16 @@ async function login() {
   fireEvent.change(await screen.findByLabelText("Код аутентификации"), { target: { value: "123456" } });
   fireEvent.click(screen.getByRole("button", { name: "Открыть панель" }));
   await screen.findByText("Ваш приватный шлюз");
-  await screen.findByText("Phone");
+  await screen.findByText(deviceName);
+  return view;
+}
+
+function rowForDevice(name: string) {
+  return within(screen.getByText(name, { selector: "strong" }).closest("li")!);
+}
+
+function openDevices() {
+  fireEvent.click(within(screen.getByRole("navigation", { name: "Нижнее меню" })).getByRole("button", { name: "Устройства" }));
 }
 
 async function startPrivacyChecks() {
@@ -920,6 +964,233 @@ describe("administrator panel", () => {
     fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "server" } });
     await screen.findByDisplayValue(profileURI);
     expect(profileRequests).toBe(3);
+  });
+
+  it("remembers each device exit after reopening and remounting without caching profile credentials", async () => {
+    proxyAvailable = true;
+    extraDevices = [{ id: "d2", node_id: "n1", name: "Laptop", preferred_exit: "server",
+      created_at: "2026-01-02T00:00:00Z", revoked_at: null }];
+    const view = await login();
+    openDevices();
+    expect(rowForDevice("Phone").getByText("8.8.8.8")).toBeTruthy();
+    expect(rowForDevice("Laptop").getByText("8.8.8.8")).toBeTruthy();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink());
+    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    expect(preferredExit).toBe("proxy");
+    expect(extraDevices[0].preferred_exit).toBe("server");
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
+    expect(rowForDevice("Phone").getByText("1.1.1.1")).toBeTruthy();
+    expect(rowForDevice("Laptop").getByText("8.8.8.8")).toBeTruthy();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
+    fireEvent.click(rowForDevice("Laptop").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(`${window.location.origin}/sub/sensitive-subscription-token-d2`);
+    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
+    const cached = JSON.stringify(queryClient.getQueryCache().getAll().map((query) => query.state.data));
+    expect(cached).not.toMatch(/sensitive-(device|proxy)-credential|sensitive-subscription-token/);
+    expect(JSON.stringify(window.localStorage)).not.toMatch(/sensitive-|preferred_exit/);
+    view.unmount();
+    await queryClient.cancelQueries();
+    queryClient.clear();
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
+    await login();
+    openDevices();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
+    expect(extraDevices[0].preferred_exit).toBe("server");
+  });
+
+  it("uses the freshly saved device preference when it changed in another browser", async () => {
+    proxyAvailable = true;
+    await login();
+    expect(rowForDevice("Phone").getByText("8.8.8.8")).toBeTruthy();
+    preferredExit = "proxy";
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
+    expect(fetchMock.mock.calls.filter(([path]) => path.includes("/devices/d1/profile")).map(([path]) => path))
+      .toEqual(["/api/v1/devices/d1/profile?exit=proxy"]);
+  });
+
+  it("refreshes proxy availability when opening a profile after an external configuration apply", async () => {
+    await login();
+    expect(queryClient.getQueryData<{ nodes: Array<{ proxy_available: boolean }> }>(["nodes"])?.nodes[0].proxy_available).toBe(false);
+    proxyAvailable = true;
+    revision = 2;
+    appliedRevision = 2;
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink());
+    expect((screen.getByRole("option", { name: "IP прокси — 1.1.1.1" }) as HTMLOptionElement).disabled).toBe(false);
+    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    expect(preferredExit).toBe("proxy");
+  });
+
+  it("does not overwrite a saved exit with a late background device response", async () => {
+    proxyAvailable = true;
+    await login();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink());
+    const old = currentDevice();
+    const respond = fetchMock.getMockImplementation() as (path: string, options?: RequestInit) => Promise<Response>;
+    let late!: (response: Response) => void;
+    let signal: AbortSignal | undefined;
+    fetchMock.mockImplementation((path: string, options: RequestInit = {}) => {
+      if (path === "/api/v1/devices") {
+        signal = options.signal as AbortSignal;
+        return new Promise<Response>((resolve) => { late = resolve; });
+      }
+      return respond(path, options);
+    });
+    act(() => { void queryClient.refetchQueries({ queryKey: ["devices"] }); });
+    await waitFor(() => expect(late).toBeDefined());
+    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    await waitFor(() => expect(signal?.aborted).toBe(true));
+    await act(async () => { late(Response.json({ devices: [old] })); });
+    await waitFor(() => expect(queryClient.getQueryData<{ devices: Device[] }>(["devices"])?.devices[0].preferred_exit).toBe("proxy"));
+    expect(rowForDevice("Phone").getByText("1.1.1.1")).toBeTruthy();
+    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
+  });
+
+  it("does not substitute a direct profile when the saved proxy exit is unavailable", async () => {
+    preferredExit = "proxy";
+    await login();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByText(/Сохранённый выход через прокси недоступен/);
+    expect(preferredExit).toBe("proxy");
+    expect(screen.queryByRole("dialog", { name: /Профиль:/ })).toBeNull();
+    expect(screen.queryByDisplayValue(profileURI)).toBeNull();
+    expect(fetchMock.mock.calls.filter(([path]) => path.includes("/devices/d1/profile")).map(([path]) => path))
+      .toEqual(["/api/v1/devices/d1/profile?exit=proxy"]);
+  });
+
+  it("switches an unavailable saved proxy to the server only after explicit recovery selection", async () => {
+    preferredExit = "proxy";
+    await login();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByText(/Сохранённый выход через прокси недоступен/);
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(0);
+    expect(fetchMock.mock.calls.filter(([path]) => path.includes("/devices/d1/profile")).map(([path]) => path))
+      .toEqual(["/api/v1/devices/d1/profile?exit=proxy"]);
+    expect(preferredExit).toBe("proxy");
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать IP сервера" }));
+    await screen.findByDisplayValue(subscriptionLink());
+    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
+    expect(preferredExit).toBe("server");
+    expect(rowForDevice("Phone").getByText("8.8.8.8")).toBeTruthy();
+    const recovery = fetchMock.mock.calls.filter(([path, options]) => path.includes("/devices/d1/profile") ||
+      path === "/api/v1/devices/d1" && options?.method === "PATCH");
+    expect(recovery.map(([path, options]) => [options?.method ?? "GET", new URL(path, window.location.origin).searchParams.get("exit") ??
+      (options?.method === "PATCH" ? JSON.parse(options.body as string).preferred_exit : "server")]))
+      .toEqual([["GET", "proxy"], ["GET", "server"], ["PATCH", "server"]]);
+    expect(screen.queryByText(/Сохранённый выход через прокси недоступен/)).toBeNull();
+  });
+
+  it.each(["profile", "preference"])("does not publish a server profile if explicit recovery fails at %s", async (failure) => {
+    preferredExit = "proxy";
+    const respond = fetchMock.getMockImplementation() as (path: string, options?: RequestInit) => Promise<Response>;
+    if (failure === "profile") fetchMock.mockImplementation((path: string, options: RequestInit = {}) => {
+      const url = new URL(path, window.location.origin);
+      if (url.pathname === "/api/v1/devices/d1/profile" && url.searchParams.get("exit") !== "proxy")
+        return Promise.resolve(Response.json({ error: "Server profile unavailable" }, { status: 503 }));
+      return respond(path, options);
+    });
+    else devicePatchFailure = { status: 503, error: "Preference could not be saved" };
+    await login();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByText(/Сохранённый выход через прокси недоступен/);
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(0);
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать IP сервера" }));
+    await screen.findByText(failure === "profile" ? "Server profile unavailable" : "Preference could not be saved");
+    expect(preferredExit).toBe("proxy");
+    expect(screen.queryByRole("dialog", { name: /Профиль:/ })).toBeNull();
+    expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
+    expect(screen.queryByDisplayValue(profileURI)).toBeNull();
+    expect(rowForDevice("Phone").getByText("1.1.1.1")).toBeTruthy();
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(failure === "profile" ? 0 : 1);
+  });
+
+  it("shows an unknown proxy exit address honestly in both the device row and its profile", async () => {
+    proxyAvailable = true;
+    preferredExit = "proxy";
+    expectedProxyIP = undefined;
+    await login();
+    expect(rowForDevice("Phone").getByText("IP не указан")).toBeTruthy();
+    expect(rowForDevice("Phone").queryByText("8.8.8.8")).toBeNull();
+    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
+    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    const expected = within(screen.getByRole("region", { name: "Ожидаемый выходной IP" }));
+    expect(expected.getByText("IP не указан")).toBeTruthy();
+    expect(expected.queryByText("8.8.8.8")).toBeNull();
+  });
+
+  it("renames a device without rotating its subscription or changing its selected exit", async () => {
+    proxyAvailable = true;
+    preferredExit = "proxy";
+    await login();
+    openDevices();
+    const oldPath = subscriptionPath;
+    fireEvent.click(screen.getByRole("button", { name: "Переименовать устройство Phone" }));
+    const rename = within(await screen.findByRole("dialog", { name: "Переименовать устройство" }));
+    expect((rename.getByLabelText("Новое название") as HTMLInputElement).value).toBe("Phone");
+    fireEvent.change(rename.getByLabelText("Новое название"), { target: { value: "  Мой телефон  " } });
+    fireEvent.click(rename.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Переименовать устройство" })).toBeNull());
+    expect(rowForDevice("Мой телефон").getByText("1.1.1.1")).toBeTruthy();
+    expect(rowForDevice("Мой телефон").getByText("d1")).toBeTruthy();
+    expect(preferredExit).toBe("proxy");
+    expect(subscriptionPath).toBe(oldPath);
+    expect(rotations).toBe(0);
+    expect(revision).toBe(appliedRevision);
+    const changes = fetchMock.mock.calls.filter(([path, options]) => path === "/api/v1/devices/d1" && options.method === "PATCH");
+    expect(changes).toHaveLength(1);
+    expect(JSON.parse(changes[0][1].body as string)).toEqual({ name: "Мой телефон" });
+    fireEvent.click(rowForDevice("Мой телефон").getByRole("button", { name: "Профиль" }));
+    await screen.findByRole("dialog", { name: "Профиль: Мой телефон" });
+    expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value)
+      .toBe(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "uri" } });
+    expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(proxyURI);
+  });
+
+  it("cancels renaming without a request and validates invalid names before saving", async () => {
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Переименовать устройство Phone" }));
+    let rename = within(await screen.findByRole("dialog", { name: "Переименовать устройство" }));
+    fireEvent.change(rename.getByLabelText("Новое название"), { target: { value: "Не сохранять" } });
+    fireEvent.click(rename.getByRole("button", { name: "Отмена" }));
+    expect(deviceName).toBe("Phone");
+    fireEvent.click(screen.getByRole("button", { name: "Переименовать устройство Phone" }));
+    rename = within(await screen.findByRole("dialog", { name: "Переименовать устройство" }));
+    fireEvent.change(rename.getByLabelText("Новое название"), { target: { value: "   " } });
+    expect((rename.getByRole("button", { name: "Сохранить" }) as HTMLButtonElement).disabled).toBe(true);
+    for (const name of ["A".repeat(65), "Телефон/дом", "<script>"]) {
+      fireEvent.change(rename.getByLabelText("Новое название"), { target: { value: name } });
+      fireEvent.click(rename.getByRole("button", { name: "Сохранить" }));
+      await rename.findByRole("alert");
+    }
+    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(0);
+    expect(deviceName).toBe("Phone");
+  });
+
+  it("keeps the original device name and shows a duplicate-name error when saving is rejected", async () => {
+    devicePatchFailure = { status: 409, error: "active device with this name already exists" };
+    await login();
+    fireEvent.click(screen.getByRole("button", { name: "Переименовать устройство Phone" }));
+    const rename = within(await screen.findByRole("dialog", { name: "Переименовать устройство" }));
+    fireEvent.change(rename.getByLabelText("Новое название"), { target: { value: "Другое устройство" } });
+    fireEvent.click(rename.getByRole("button", { name: "Сохранить" }));
+    await rename.findByText("Активное устройство с таким названием уже существует.");
+    expect(deviceName).toBe("Phone");
+    expect(rowForDevice("Phone")).toBeTruthy();
+    expect(screen.queryByText("Другое устройство", { selector: "strong" })).toBeNull();
+    expect((rename.getByRole("button", { name: "Сохранить" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("replaces the subscription link only after confirmation", async () => {

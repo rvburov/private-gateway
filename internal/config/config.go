@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -78,6 +79,16 @@ func Load() (Config, error) {
 		return c, errors.New("GATEWAY_REALITY_PRIVATE_KEY must be an X25519 private key")
 	}
 	c.Node = model.Node{ID: storage.LocalNodeID, Name: "local", Host: value("GATEWAY_HOST", "vpn.example.com"), Port: vpnPort, ServerName: value("GATEWAY_SERVER_NAME", "www.cloudflare.com"), PublicKey: publicKey, ShortID: os.Getenv("GATEWAY_SHORT_ID")}
+	if raw := os.Getenv("GATEWAY_SERVER_EXPECTED_IP"); raw != "" {
+		var valid bool
+		c.Node.ExpectedServerIP, valid = publicExpectedIP(raw)
+		if !valid {
+			return c, errors.New("GATEWAY_SERVER_EXPECTED_IP must be a public IPv4 or IPv6 address")
+		}
+	} else {
+		// Адрес из настройки узла — ожидание, а не результат сетевого измерения.
+		c.Node.ExpectedServerIP, _ = publicExpectedIP(c.Node.Host)
+	}
 	settings := xray.Settings{PrivateKey: privateKey, Listen: value("GATEWAY_XRAY_LISTEN", "0.0.0.0"), Port: xrayPort, StatsPort: statsPort, ServerName: c.Node.ServerName, Target: value("GATEWAY_REALITY_TARGET", "www.cloudflare.com:443"), ShortID: c.Node.ShortID}
 	switch value("GATEWAY_XHTTP_ENABLED", "0") {
 	case "0":
@@ -118,6 +129,13 @@ func Load() (Config, error) {
 			return c, errors.New("SOCKS5 proxy settings are incomplete or invalid")
 		}
 		c.Node.ProxyAvailable = true
+		if raw := os.Getenv("GATEWAY_PROXY_EXPECTED_IP"); raw != "" {
+			var valid bool
+			c.Node.ExpectedProxyIP, valid = publicExpectedIP(raw)
+			if !valid {
+				return c, errors.New("GATEWAY_PROXY_EXPECTED_IP must be a public IPv4 or IPv6 address")
+			}
+		}
 	default:
 		return c, errors.New("GATEWAY_PROXY_ENABLED must be 0 or 1")
 	}
@@ -163,4 +181,34 @@ func integer(name string, fallback int) (int, error) {
 		return n, nil
 	}
 	return fallback, nil
+}
+
+// Ожидаемый выход — только внешний адрес. DNS-имя или адрес входа в прокси его не доказывает.
+// Диапазоны исключений совпадают с проверкой публичных адресов в API справки об IP.
+func publicExpectedIP(raw string) (string, bool) {
+	ip, err := netip.ParseAddr(raw)
+	if err != nil || ip.Zone() != "" {
+		return "", false
+	}
+	ip = ip.Unmap()
+	if !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() ||
+		ip.Is6() && !netip.MustParsePrefix("2000::/3").Contains(ip) {
+		return "", false
+	}
+	for _, prefix := range expectedIPExcluded {
+		if prefix.Contains(ip) {
+			return "", false
+		}
+	}
+	return ip.String(), true
+}
+
+var expectedIPExcluded = []netip.Prefix{
+	netip.MustParsePrefix("0.0.0.0/8"), netip.MustParsePrefix("100.64.0.0/10"),
+	netip.MustParsePrefix("192.0.0.0/24"), netip.MustParsePrefix("192.0.2.0/24"),
+	netip.MustParsePrefix("192.88.99.0/24"), netip.MustParsePrefix("198.18.0.0/15"),
+	netip.MustParsePrefix("198.51.100.0/24"), netip.MustParsePrefix("203.0.113.0/24"),
+	netip.MustParsePrefix("240.0.0.0/4"), netip.MustParsePrefix("2001::/23"),
+	netip.MustParsePrefix("2001:db8::/32"), netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("3fff::/20"),
 }

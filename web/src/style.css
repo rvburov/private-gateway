@@ -961,10 +961,10 @@ details[open] > summary {
   text-transform: uppercase;
 }
 .device-list {
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.1fr) auto minmax(0, 1.2fr) auto;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, .7fr) minmax(0, 1.4fr) minmax(0, 1.1fr) auto minmax(0, 1.1fr) auto;
 }
 .device-list.no-traffic {
-  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 1.1fr) auto auto;
+  grid-template-columns: minmax(0, 1.8fr) minmax(0, .7fr) minmax(0, 1.4fr) minmax(0, 1.1fr) auto auto;
 }
 .audit-list {
   grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.6fr) minmax(0, 1fr);
@@ -989,6 +989,64 @@ details[open] > summary {
 }
 .device-name strong {
   overflow-wrap: anywhere;
+}
+.device-name-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+}
+.device-name-heading strong {
+  min-width: 0;
+}
+.device-rename {
+  flex: none;
+}
+.device-exit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.profile-exit-summary {
+  margin: 16px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface-2);
+  overflow-wrap: anywhere;
+}
+.profile-exit-summary .hint {
+  margin-top: 6px;
+}
+/* Дополнительный столбец выхода остаётся читаемым при открытом боковом меню. */
+@media (min-width: 961px) and (max-width: 1250px) {
+  .device-list {
+    display: block;
+  }
+  .device-list .item-head {
+    display: none;
+  }
+  .device-list > .item-row:not(.item-head) {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px 16px;
+  }
+  .device-list .cell-main {
+    grid-column: 1;
+  }
+  .device-list .cell-badge {
+    grid-column: 2;
+    grid-row: 1;
+    align-self: start;
+  }
+  .device-list .cell-meta,
+  .device-list .row-actions {
+    grid-column: 1 / -1;
+  }
+  .device-list .cell-label {
+    display: inline;
+    color: var(--fg-3);
+  }
 }
 .small-icon {
   width: 36px;

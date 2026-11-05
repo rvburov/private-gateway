@@ -54,7 +54,8 @@ def stop(process):
 class VPNSmokeTest(unittest.TestCase):
     def exported_checks(self, public_port=8443, internal_port=443, configured_internal=443,
                         profile_port=None, xhttp=False, xhttp_path=None, xhttp_flow=None,
-                        proxy=False, proxy_route=True, proxy_available=True):
+                        proxy=False, proxy_route=True, proxy_available=True,
+                        expected_ip=None, profile_expected_ip=None, configured_expected_ip="", requested_expected_ip=""):
         credential = "00000000-0000-4000-8000-000000000000"
         public_key, short_id, server_name = "public-key", "0123456789abcdef", "reality.example"
         profile = (f"vless://{credential}@vpn.example:{profile_port or public_port}?"
@@ -104,6 +105,8 @@ class VPNSmokeTest(unittest.TestCase):
                                                           "realitySettings": {"privateKey": "xhttp-private-key",
                                                                               "shortIds": [sid],
                                                                               "serverNames": ["example.com"]}}})
+        responses["/nodes"]["nodes"][0]["expected_proxy_ip" if proxy else "expected_server_ip"] = expected_ip
+        responses["/devices/test-device/profile?exit=" + ("proxy" if proxy else "server")]["expected_exit_ip"] = profile_expected_ip
         opener = mock.Mock()
         def open_response(request, timeout):
             path = request.full_url.removeprefix("http://127.0.0.1:8080/api/v1")
@@ -128,6 +131,9 @@ class VPNSmokeTest(unittest.TestCase):
                                                "GATEWAY_XRAY_PORT": str(configured_internal),
                                                "GATEWAY_SMOKE_TRANSPORT": "xhttp" if xhttp else "tcp",
                                                "GATEWAY_SMOKE_EXIT": "proxy" if proxy else "server",
+                                               "GATEWAY_SERVER_EXPECTED_IP": configured_expected_ip if not proxy else "",
+                                               "GATEWAY_PROXY_EXPECTED_IP": configured_expected_ip if proxy else "",
+                                               "GATEWAY_SMOKE_EXPECTED_IP": requested_expected_ip,
                                                "GATEWAY_XHTTP_PORT": "8444",
                                                "GATEWAY_XHTTP_PRIVATE_KEY": "xhttp-private-key"}), \
                  contextlib.redirect_stdout(output):
@@ -150,6 +156,36 @@ class VPNSmokeTest(unittest.TestCase):
         self.assertTrue(all(self.exported_checks(proxy=True).values()))
         self.assertFalse(self.exported_checks(proxy=True, proxy_route=False)["proxy_route"])
         self.assertFalse(self.exported_checks(proxy=True, proxy_available=False)["proxy_available"])
+
+    def test_expected_exit_ip_is_published_for_the_selected_profile(self):
+        for proxy in (False, True):
+            with self.subTest(proxy=proxy):
+                self.assertTrue(all(self.exported_checks(proxy=proxy, expected_ip="8.8.8.8",
+                    profile_expected_ip="8.8.8.8", configured_expected_ip="8.8.8.8").values()))
+                self.assertFalse(self.exported_checks(proxy=proxy, expected_ip="8.8.8.8",
+                    profile_expected_ip="1.1.1.1")["profile_expected_ip"])
+                self.assertFalse(self.exported_checks(proxy=proxy,
+                    configured_expected_ip="8.8.8.8")["configured_expected_ip"])
+                self.assertFalse(self.exported_checks(proxy=proxy,
+                    requested_expected_ip="8.8.8.8")["requested_expected_ip"])
+        self.assertTrue(all(self.exported_checks(proxy=True, expected_ip="2606:4700:4700::1111",
+            profile_expected_ip="2606:4700:4700:0:0:0:0:1111", requested_expected_ip="2606:4700:4700::1111").values()))
+
+    def test_mapped_expected_ip_does_not_reject_the_same_observed_ipv4(self):
+        profile = ("vless://00000000-0000-4000-8000-000000000000@vpn.example:8443?"
+                   "encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&"
+                   "sni=reality.example&fp=chrome&pbk=public-key&sid=0123456789abcdef&spx=%2F")
+        output = io.StringIO()
+        with mock.patch.object(smoke, "XRAY") as binary, \
+             mock.patch.object(smoke, "get_profile", return_value=profile) as exported, \
+             mock.patch.object(smoke, "free_port", return_value=19000), \
+             mock.patch.object(smoke, "run_client", return_value="8.8.8.8"), \
+             mock.patch("sys.argv", ["vpn-smoke.py", "--exit", "proxy", "--expected-ip", "::ffff:8.8.8.8"]), \
+             contextlib.redirect_stdout(output):
+            binary.is_file.return_value = True
+            smoke.main()
+        exported.assert_called_once_with("tcp", "proxy", "8.8.8.8")
+        self.assertIn("observed IP 8.8.8.8", output.getvalue())
 
     def test_client_uses_public_profile_port_or_explicit_published_ingress(self):
         profile = ("vless://00000000-0000-4000-8000-000000000000@vpn.example:8443?"

@@ -34,6 +34,7 @@ type Device struct {
 	RevokedAt              pgtype.Timestamptz
 	SubscriptionGeneration int64
 	SubscriptionHash       []byte
+	PreferredExit          string
 }
 
 type Node struct {

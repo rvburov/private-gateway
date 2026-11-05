@@ -1,7 +1,8 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   browserURLForPanel,
+  APIError,
   request,
   type AuditEvent,
   type BrowserStatus,
@@ -18,6 +19,7 @@ import { ConnectionNotice, connectionState } from "./ConnectionStatus";
 import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
+import { exitName, expectedExitIP, preferredExit } from "./deviceExit";
 import { Shell, type Page } from "./Shell";
 import { useTheme } from "./theme";
 import { actionLabel, bytes, date, Empty, ErrorNotice, Modal } from "./ui";
@@ -70,9 +72,15 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
   const [adding, setAdding] = useState(false);
   const [revoking, setRevoking] = useState<Device | null>(null);
   const [deleting, setDeleting] = useState<Device | null>(null);
+  const [renaming, setRenaming] = useState<Device | null>(null);
+  const [renamedName, setRenamedName] = useState("");
+  const [renameError, setRenameError] = useState<Error | null>(null);
   const [profile, setProfile] = useState<RevealedProfile | null>(null);
   const [profilePending, setProfilePending] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<unknown>(null);
+  const [unavailableProxyDeviceID, setUnavailableProxyDeviceID] = useState<string | null>(null);
+  const revealController = useRef<AbortController | null>(null);
+  useEffect(() => () => revealController.current?.abort(), []);
   const [name, setName] = useState("");
   const [nodeID, setNodeID] = useState("");
   const [notice, setNotice] = useState("");
@@ -105,6 +113,15 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
     queryKey: ["nodes"],
     queryFn: ({ signal }) => request<{ nodes: Node[] }>(token, "/nodes", { signal }),
   });
+  const lastRevision = useRef<string | null>(null);
+  useEffect(() => {
+    if (!status.data) return;
+    const revision = `${status.data.node_id}:${status.data.desired_revision}:${status.data.applied_revision}:${status.data.xray_configured}`;
+    if (lastRevision.current !== null && lastRevision.current !== revision) {
+      void queryClient.invalidateQueries({ queryKey: ["nodes"] });
+    }
+    lastRevision.current = revision;
+  }, [queryClient, status.data?.node_id, status.data?.desired_revision, status.data?.applied_revision, status.data?.xray_configured]);
   const audit = useQuery({
     queryKey: ["audit"],
     queryFn: ({ signal }) => request<{ events: AuditEvent[] }>(token, "/audit", { signal }),
@@ -118,6 +135,30 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
   async function refresh() {
     await queryClient.invalidateQueries();
   }
+  async function rememberDevice(device: Device) {
+    // Ответ фонового обновления, начатого до сохранения, не должен вернуть
+    // прежнее название или выбор выхода поверх подтверждённых метаданных.
+    await queryClient.cancelQueries({ queryKey: ["devices"] });
+    queryClient.setQueryData<{ devices: Device[] }>(["devices"], (current) => current && ({
+      ...current, devices: current.devices.map((item) => item.id === device.id ? device : item),
+    }));
+  }
+  const rename = useMutation({
+    mutationFn: async ({ device, name }: { device: Device; name: string }) => {
+      const updated = await request<Device>(token, `/devices/${encodeURIComponent(device.id)}`, {
+        method: "PATCH", body: JSON.stringify({ name }),
+      });
+      if (updated.id !== device.id) throw new Error("Не удалось подтвердить переименование устройства. Обновите список и повторите.");
+      return updated;
+    },
+    onSuccess: async (device) => {
+      await rememberDevice(device);
+      setProfile((current) => current?.device.id === device.id ? { ...current, device } : current);
+      setRenaming(null);
+      setNotice("Название устройства сохранено.");
+      await queryClient.invalidateQueries({ queryKey: ["audit"] });
+    },
+  });
   const create = useMutation({
     mutationFn: () =>
       request<Device>(token, "/devices", {
@@ -177,22 +218,66 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       await refresh();
     },
   });
-  async function reveal(device: Device) {
+  async function reveal(device: Device, chooseServer = false) {
+    revealController.current?.abort();
+    const controller = new AbortController();
+    revealController.current = controller;
     setProfileError(null);
+    setUnavailableProxyDeviceID(null);
     setProfilePending(device.id);
+    let requestedExit = chooseServer ? "server" : preferredExit(device);
+    let requestedProfile = false;
     try {
+      // Выбор мог измениться в другом браузере, а готовность — после применения Xray.
+      const [freshDevices] = await Promise.all([
+        devices.refetch({ throwOnError: true }), nodes.refetch({ throwOnError: true }),
+      ]);
+      controller.signal.throwIfAborted();
+      const current = freshDevices.data?.devices.find((item) => item.id === device.id);
+      if (!current) throw new Error("Устройство больше не доступно. Обновите список.");
+      const exit = chooseServer ? "server" : preferredExit(current);
+      requestedExit = exit;
+      requestedProfile = true;
       const result = await request<ProfileExport>(
         token,
-        `/devices/${encodeURIComponent(device.id)}/profile`,
+        `/devices/${encodeURIComponent(current.id)}/profile${exit === "proxy" ? "?exit=proxy" : ""}`,
+        { signal: controller.signal },
       );
-      setProfile({ ...result, device, exit: "server" });
+      controller.signal.throwIfAborted();
+      let selectedDevice = current;
+      if (chooseServer) {
+        // Смена сохранённого выхода выполняется только после явного действия
+        // пользователя и получения соответствующего профиля, без автоподмены.
+        selectedDevice = await request<Device>(token, `/devices/${encodeURIComponent(current.id)}`, {
+          method: "PATCH", body: JSON.stringify({ preferred_exit: "server" }), signal: controller.signal,
+        });
+        controller.signal.throwIfAborted();
+        if (selectedDevice.id !== current.id || selectedDevice.preferred_exit !== "server") {
+          throw new Error("Не удалось подтвердить сохранение выбранного выхода. Обновите список устройств и повторите.");
+        }
+        await rememberDevice(selectedDevice);
+        controller.signal.throwIfAborted();
+        void queryClient.invalidateQueries({ queryKey: ["audit"] });
+      }
+      setProfile({ ...result, device: selectedDevice, exit });
     } catch (err) {
-      setProfileError(err);
+      if (!controller.signal.aborted) {
+        const proxyUnavailable = requestedProfile && requestedExit === "proxy" && err instanceof APIError && err.status === 503;
+        if (proxyUnavailable) setUnavailableProxyDeviceID(device.id);
+        setProfileError(proxyUnavailable
+          ? new Error("Сохранённый выход через прокси недоступен. Проверьте настройку прокси и применение конфигурации. Прямой профиль не подставлялся.")
+          : err);
+      }
     } finally {
-      setProfilePending(null);
+      if (revealController.current === controller) {
+        if (!controller.signal.aborted) setProfilePending(null);
+        revealController.current = null;
+      }
     }
   }
   function navigate(next: Page) {
+    revealController.current?.abort();
+    setProfilePending(null);
     setPage(next);
     const destination = new URL(window.location.href);
     if (next === "notifications") destination.searchParams.set("page", "notifications");
@@ -200,6 +285,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
     window.history.replaceState(null, "", destination.pathname + destination.search + destination.hash);
     setNotice("");
     setProfileError(null);
+    setUnavailableProxyDeviceID(null);
   }
   function startAdding() {
     create.reset();
@@ -226,25 +312,46 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       <li className="item-row item-head" aria-hidden="true">
         <span>Устройство</span>
         <span>Сервер</span>
+        <span>Выход / ожидаемый IP</span>
         <span>Создано</span>
         <span>Доступ</span>
         {showTraffic && <span>Трафик ↑ / ↓</span>}
         <span />
       </li>
-      {items.map((device) => (
+      {items.map((device) => {
+        const node = nodeList.find((item) => item.id === device.node_id);
+        const exit = preferredExit(device);
+        return (
         <li key={device.id} className="item-row">
           <div className="cell cell-main device-name">
             <span className="small-icon">
               <Icon name="devices" size={18} />
             </span>
             <div>
-              <strong>{device.name}</strong>
+              <div className="device-name-heading">
+                <strong>{device.name}</strong>
+                <button className="icon-button device-rename" aria-label={`Переименовать устройство ${device.name}`} title="Переименовать"
+                  onClick={() => {
+                    rename.reset();
+                    setRenameError(null);
+                    setRenamedName(device.name);
+                    setRenaming(device);
+                  }}>
+                  <Icon name="edit" size={15} />
+                </button>
+              </div>
               <span className="mono secondary small">{device.id.slice(0, 8)}</span>
             </div>
           </div>
           <div className="cell cell-meta small">
             <span className="cell-label">Сервер: </span>
-            <span>{nodeList.find((node) => node.id === device.node_id)?.name || device.node_id}</span>
+            <span>{node?.name || device.node_id}</span>
+          </div>
+          <div className="cell cell-meta small device-exit">
+            <span><span className="cell-label">Выход: </span>{exitName(exit)}</span>
+            <span className="mono secondary" title="Ожидаемый IP профиля, не измерение текущего подключения устройства">
+              {expectedExitIP(node, exit) ?? "IP не указан"}
+            </span>
           </div>
           <div className="cell cell-meta small secondary">
             <span className="cell-label">Создано: </span>
@@ -304,7 +411,8 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
             )}
           </div>
         </li>
-      ))}
+        );
+      })}
     </ul>
   );
 
@@ -338,6 +446,18 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       <ConnectionNotice state={connection} error={connectionError} checking={status.isFetching}
         onRetry={() => void refresh()} onSignIn={onSignIn} />
       {connection === "ok" && <ErrorNotice error={devices.error || nodes.error || profileError} />}
+      {connection === "ok" && unavailableProxyDeviceID && (
+        <div className="button-group">
+          <button className="button secondary-button" disabled={profilePending !== null} onClick={() => {
+            const device = list.find((item) => item.id === unavailableProxyDeviceID);
+            if (device) void reveal(device, true);
+            else {
+              setUnavailableProxyDeviceID(null);
+              setProfileError(new Error("Устройство больше не доступно. Обновите список."));
+            }
+          }}>Выбрать IP сервера</button>
+        </div>
+      )}
       {page === "overview" && (
         <>
           <div className="stats-grid">
@@ -540,6 +660,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
               <p>
                 Профили выдаются отдельно и содержат секрет доступа. Трафик ↑ / ↓ считается с последнего
                 запуска Xray; после применения конфигурации счётчики обнуляются.
+                Выходной IP — ожидаемый адрес профиля; фактический адрес проверяется на самом устройстве.
               </p>
             </div>
             <span className="badge neutral">
@@ -778,12 +899,49 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
           </div>
         </Modal>
       )}
+      {renaming && (
+        <Modal title="Переименовать устройство" onClose={() => !rename.isPending && setRenaming(null)}>
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            const value = renamedName.trim();
+            if (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$/u.test(value)) {
+              setRenameError(new Error("Введите название от 1 до 64 символов: буквы, цифры, пробел, точка, дефис или подчёркивание. Первый символ — буква или цифра."));
+              return;
+            }
+            setRenameError(null);
+            rename.mutate({ device: renaming, name: value });
+          }}>
+            <p className="modal-description">Название в панели и выдаваемом профиле изменится. Ключи доступа и ссылка-подписка сохранятся.</p>
+            <label htmlFor="device-rename-name">Новое название</label>
+            <input id="device-rename-name" value={renamedName} maxLength={128} required autoFocus
+              disabled={rename.isPending} onChange={(event) => {
+                setRenamedName(event.target.value);
+                setRenameError(null);
+                rename.reset();
+              }} />
+            <ErrorNotice error={renameError || (rename.error instanceof APIError && rename.error.status === 409
+              ? new Error("Активное устройство с таким названием уже существует.") : rename.error)} />
+            <div className="modal-actions">
+              <button type="button" className="button secondary-button" onClick={() => setRenaming(null)} disabled={rename.isPending}>Отмена</button>
+              <button type="submit" className="button primary" disabled={rename.isPending || !renamedName.trim()}>
+                {rename.isPending ? "Сохраняем…" : "Сохранить"}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
       {profile && (
         <ProfileDialog
           token={token}
           profile={profile}
+          node={nodeList.find((node) => node.id === profile.device.node_id)}
           proxyAvailable={nodeList.find((node) => node.id === profile.device.node_id)?.proxy_available === true}
-          onChange={setProfile}
+          onChange={async (updated) => {
+            // Ротация ссылки не возвращает свежие метаданные устройства.
+            if (updated.device !== profile.device) await rememberDevice(updated.device);
+            setProfile((current) => current?.device.id === updated.device.id ? updated : current);
+            await queryClient.invalidateQueries({ queryKey: ["audit"] });
+          }}
           onClose={() => setProfile(null)}
         />
       )}

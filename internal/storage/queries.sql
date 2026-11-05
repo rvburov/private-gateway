@@ -25,6 +25,9 @@ SELECT * FROM devices ORDER BY created_at, id;
 -- name: GetDevice :one
 SELECT * FROM devices WHERE id=$1;
 
+-- name: UpdateDeviceMetadata :one
+UPDATE devices SET name=$2, preferred_exit=$3 WHERE id=$1 RETURNING *;
+
 -- name: RevokeDevice :one
 UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING *;
 

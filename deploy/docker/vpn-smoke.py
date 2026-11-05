@@ -28,6 +28,7 @@ XRAY = Path("/opt/private-gateway-docker/current/bin/xray")
 SERVER_CONFIG = Path("/var/lib/private-gateway-docker/xray/xray.json")
 EXPORT = """
 import hashlib
+import ipaddress
 import json
 import os
 import urllib.request
@@ -52,6 +53,18 @@ profile = profiles.get("xhttp_uri" if transport == "xhttp" else "uri")
 if not profile:
     raise SystemExit(3)
 node = next(item for item in get("/nodes")["nodes"] if item["id"] == device["node_id"])
+def canonical_ip(value):
+    if not value:
+        return ""
+    try:
+        address = ipaddress.ip_address(value)
+        return str(address.ipv4_mapped or address) if address.version == 6 else str(address)
+    except (TypeError, ValueError):
+        return None
+expected_ip = canonical_ip(node.get("expected_proxy_ip" if exit == "proxy" else "expected_server_ip"))
+profile_expected_ip = canonical_ip(profiles.get("expected_exit_ip"))
+configured_expected_ip = os.environ.get("GATEWAY_PROXY_EXPECTED_IP" if exit == "proxy" else "GATEWAY_SERVER_EXPECTED_IP", "")
+requested_expected_ip = os.environ.get("GATEWAY_SMOKE_EXPECTED_IP", "")
 uri = urlsplit(profile)
 query = parse_qs(uri.query)
 with open("/state/xray.json", "rb") as source:
@@ -74,6 +87,9 @@ else:
     private_key = os.environ["GATEWAY_REALITY_PRIVATE_KEY"]
 reality = inbound["streamSettings"]["realitySettings"]
 checks = {
+    "profile_expected_ip": expected_ip is not None and profile_expected_ip == expected_ip,
+    "configured_expected_ip": not configured_expected_ip or expected_ip == canonical_ip(configured_expected_ip),
+    "requested_expected_ip": not requested_expected_ip or profile_expected_ip == canonical_ip(requested_expected_ip),
     "profile_client": any(client["id"].lower() == (uri.username or "").lower() and
                           client.get("flow", "") == expected_flow
                           for client in inbound["settings"]["clients"]),
@@ -113,11 +129,17 @@ class SmokeError(Exception):
     pass
 
 
-def get_profile(transport="tcp", exit="server"):
+def canonical_ip(value):
+    address = ipaddress.ip_address(value)
+    return str(address.ipv4_mapped or address) if address.version == 6 else str(address)
+
+
+def get_profile(transport="tcp", exit="server", expected_ip=None):
     try:
         result = subprocess.run(
             ["docker", "exec", "-e", "GATEWAY_SMOKE_TRANSPORT=" + transport,
              "-e", "GATEWAY_SMOKE_EXIT=" + exit,
+             "-e", "GATEWAY_SMOKE_EXPECTED_IP=" + (expected_ip or ""),
              "private-gateway-api-1", "python3", "-c", EXPORT],
             capture_output=True, text=True, timeout=12, check=False,
         )
@@ -233,7 +255,7 @@ def probe_socks(port, target, destination=None, timeout=10, check_ip=False):
                         raise SmokeError("external IP service returned an error")
                     raw = response.read(128).strip().decode("ascii")
                     try:
-                        return str(ipaddress.ip_address(raw))
+                        return canonical_ip(raw)
                     except ValueError as error:
                         raise SmokeError("external IP service returned an invalid address") from error
                 if not tls.recv(128).startswith(b"HTTP/"):
@@ -411,12 +433,12 @@ def main():
         if args.exit != "proxy":
             parser.error("--expected-ip requires --exit proxy")
         try:
-            args.expected_ip = str(ipaddress.ip_address(args.expected_ip))
+            args.expected_ip = canonical_ip(args.expected_ip)
         except ValueError:
             parser.error("--expected-ip must be an IP address")
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
-    profile = get_profile(args.transport, args.exit)
+    profile = get_profile(args.transport, args.exit, args.expected_ip)
     if args.isolated:
         check_reality_public_key(profile, args.transport)
     port = free_port()

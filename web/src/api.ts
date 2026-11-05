@@ -7,6 +7,8 @@ export interface Node {
   public_key: string;
   short_id: string;
   proxy_available?: boolean;
+  expected_server_ip?: string;
+  expected_proxy_ip?: string;
 }
 
 export type ProfileExit = "server" | "proxy";
@@ -15,6 +17,7 @@ export interface Device {
   id: string;
   node_id: string;
   name: string;
+  preferred_exit?: ProfileExit;
   created_at: string;
   revoked_at: string | null;
 }
@@ -25,6 +28,7 @@ export interface TrafficUsage {
 }
 
 export interface ProfileExport {
+  expected_exit_ip?: string;
   port?: number;
   uri: string;
   xhttp_uri?: string;

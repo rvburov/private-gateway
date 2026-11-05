@@ -26,6 +26,8 @@ export function actionLabel(action: string) {
     "device.created": "Устройство добавлено",
     "device.revoke": "Доступ отозван",
     "device.delete": "Устройство удалено",
+    "device.rename": "Устройство переименовано",
+    "device.exit": "Выход профиля изменён",
     "device.revoked": "Доступ отозван",
     "device.profile": "Профиль выдан",
     "device.export": "Профиль выдан",

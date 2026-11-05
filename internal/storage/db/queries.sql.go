@@ -12,7 +12,7 @@ import (
 )
 
 const activeClients = `-- name: ActiveClients :many
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Device, error) {
@@ -33,6 +33,7 @@ func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Devi
 			&i.RevokedAt,
 			&i.SubscriptionGeneration,
 			&i.SubscriptionHash,
+			&i.PreferredExit,
 		); err != nil {
 			return nil, err
 		}
@@ -55,7 +56,7 @@ func (q *Queries) AdvanceRevision(ctx context.Context, id pgtype.UUID) error {
 
 const advanceSubscription = `-- name: AdvanceSubscription :one
 UPDATE devices SET subscription_generation=subscription_generation+1, subscription_hash=NULL
-WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash
+WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 func (q *Queries) AdvanceSubscription(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -70,6 +71,7 @@ func (q *Queries) AdvanceSubscription(ctx context.Context, id pgtype.UUID) (Devi
 		&i.RevokedAt,
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
+		&i.PreferredExit,
 	)
 	return i, err
 }
@@ -134,7 +136,7 @@ func (q *Queries) EnableAdministratorTOTP(ctx context.Context, arg EnableAdminis
 }
 
 const getActiveDeviceBySubscription = `-- name: GetActiveDeviceBySubscription :one
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices WHERE subscription_hash=$1 AND revoked_at IS NULL
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices WHERE subscription_hash=$1 AND revoked_at IS NULL
 `
 
 func (q *Queries) GetActiveDeviceBySubscription(ctx context.Context, subscriptionHash []byte) (Device, error) {
@@ -149,6 +151,7 @@ func (q *Queries) GetActiveDeviceBySubscription(ctx context.Context, subscriptio
 		&i.RevokedAt,
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
+		&i.PreferredExit,
 	)
 	return i, err
 }
@@ -173,7 +176,7 @@ func (q *Queries) GetAdministrator(ctx context.Context) (AdministratorCredential
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices WHERE id=$1
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices WHERE id=$1
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -188,6 +191,7 @@ func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 		&i.RevokedAt,
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
+		&i.PreferredExit,
 	)
 	return i, err
 }
@@ -245,7 +249,7 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 }
 
 const insertDevice = `-- name: InsertDevice :one
-INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash
+INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 type InsertDeviceParams struct {
@@ -272,6 +276,7 @@ func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Dev
 		&i.RevokedAt,
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
+		&i.PreferredExit,
 	)
 	return i, err
 }
@@ -306,7 +311,7 @@ func (q *Queries) ListAudit(ctx context.Context) ([]AuditEvent, error) {
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash FROM devices ORDER BY created_at, id
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices ORDER BY created_at, id
 `
 
 func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
@@ -327,6 +332,7 @@ func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
 			&i.RevokedAt,
 			&i.SubscriptionGeneration,
 			&i.SubscriptionHash,
+			&i.PreferredExit,
 		); err != nil {
 			return nil, err
 		}
@@ -412,7 +418,7 @@ func (q *Queries) RestoreAdministrator(ctx context.Context, arg RestoreAdministr
 }
 
 const revokeDevice = `-- name: RevokeDevice :one
-UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash
+UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -427,6 +433,7 @@ func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, err
 		&i.RevokedAt,
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
+		&i.PreferredExit,
 	)
 	return i, err
 }
@@ -462,6 +469,33 @@ type SetSubscriptionHashParams struct {
 func (q *Queries) SetSubscriptionHash(ctx context.Context, arg SetSubscriptionHashParams) error {
 	_, err := q.db.Exec(ctx, setSubscriptionHash, arg.ID, arg.SubscriptionHash)
 	return err
+}
+
+const updateDeviceMetadata = `-- name: UpdateDeviceMetadata :one
+UPDATE devices SET name=$2, preferred_exit=$3 WHERE id=$1 RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
+`
+
+type UpdateDeviceMetadataParams struct {
+	ID            pgtype.UUID
+	Name          string
+	PreferredExit string
+}
+
+func (q *Queries) UpdateDeviceMetadata(ctx context.Context, arg UpdateDeviceMetadataParams) (Device, error) {
+	row := q.db.QueryRow(ctx, updateDeviceMetadata, arg.ID, arg.Name, arg.PreferredExit)
+	var i Device
+	err := row.Scan(
+		&i.ID,
+		&i.NodeID,
+		&i.Name,
+		&i.CredentialCiphertext,
+		&i.CreatedAt,
+		&i.RevokedAt,
+		&i.SubscriptionGeneration,
+		&i.SubscriptionHash,
+		&i.PreferredExit,
+	)
+	return i, err
 }
 
 const upsertNode = `-- name: UpsertNode :exec

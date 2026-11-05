@@ -23,23 +23,24 @@ import (
 const LocalNodeID = "00000000-0000-4000-8000-000000000001"
 
 var (
-	ErrNotFound      = errors.New("not found")
-	ErrConflict      = errors.New("active device with this name already exists")
-	ErrRevoked       = errors.New("device is revoked")
-	ErrNotRevoked    = errors.New("revoke the device before deleting it")
-	ErrPendingConfig = errors.New("apply the pending Xray configuration before deleting the device")
-	ErrInvalid       = errors.New("invalid device name or node ID")
-	ErrStaleConfig   = errors.New("node settings changed; restart this API process")
+	ErrNotFound         = errors.New("not found")
+	ErrConflict         = errors.New("active device with this name already exists")
+	ErrRevoked          = errors.New("device is revoked")
+	ErrNotRevoked       = errors.New("revoke the device before deleting it")
+	ErrPendingConfig    = errors.New("apply the pending Xray configuration before deleting the device")
+	ErrInvalid          = errors.New("invalid device name or node ID")
+	ErrStaleConfig      = errors.New("node settings changed; restart this API process")
 	ErrProxyUnavailable = errors.New("proxy exit is not available")
-	validName        = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
+	validName           = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
 )
 
 type Store struct {
-	pool       *pgxpool.Pool
-	queries    *db.Queries
-	cipher     *secure.Cipher
-	configHash atomic.Value
+	pool         *pgxpool.Pool
+	queries      *db.Queries
+	cipher       *secure.Cipher
+	configHash   atomic.Value
 	proxyEnabled atomic.Bool
+	publicNode   atomic.Pointer[model.Node]
 }
 
 func Open(ctx context.Context, dsn string, cipher *secure.Cipher) (*Store, error) {
@@ -106,6 +107,8 @@ func (s *Store) EnsureNode(ctx context.Context, node model.Node) error {
 	if err == nil {
 		s.configHash.Store(node.ConfigHash)
 		s.proxyEnabled.Store(node.ProxyAvailable)
+		configured := node
+		s.publicNode.Store(&configured)
 	}
 	return err
 }
@@ -120,12 +123,23 @@ func (s *Store) Nodes(ctx context.Context) ([]model.Node, error) {
 		if err != nil {
 			return nil, err
 		}
+		node = s.withExpectedIPs(node, r.ConfigHash)
 		expected, initialized := s.configHash.Load().(string)
 		node.ProxyAvailable = s.proxyEnabled.Load() && initialized && r.ConfigHash == expected &&
 			r.Revision == r.AppliedRevision
 		out = append(out, node)
 	}
 	return out, nil
+}
+
+// Ожидаемые адреса принадлежат настройкам запущенного API, а не адресу входа в SOCKS5.
+func (s *Store) withExpectedIPs(node model.Node, configHash string) model.Node {
+	configured := s.publicNode.Load()
+	if configured != nil && configured.ID == node.ID && configured.ConfigHash == configHash {
+		node.ExpectedServerIP = configured.ExpectedServerIP
+		node.ExpectedProxyIP = configured.ExpectedProxyIP
+	}
+	return node
 }
 func (s *Store) Devices(ctx context.Context) ([]model.Device, error) {
 	rows, err := s.queries.ListDevices(ctx)
@@ -183,6 +197,77 @@ func (s *Store) Create(ctx context.Context, name, nodeID string) (model.Device, 
 	})
 	return result, err
 }
+
+// UpdateDevice меняет только метаданные: доступ, подписка и конфигурация Xray остаются прежними.
+func (s *Store) UpdateDevice(ctx context.Context, deviceID string, name, preferredExit *string) (model.Device, error) {
+	if _, err := uuid.Parse(deviceID); err != nil {
+		return model.Device{}, ErrNotFound
+	}
+	if name == nil && preferredExit == nil {
+		return model.Device{}, ErrInvalid
+	}
+	var normalizedName string
+	if name != nil {
+		normalizedName = strings.TrimSpace(*name)
+		if !validName.MatchString(normalizedName) {
+			return model.Device{}, ErrInvalid
+		}
+	}
+	if preferredExit != nil && *preferredExit != "server" && *preferredExit != "proxy" {
+		return model.Device{}, ErrInvalid
+	}
+	var result model.Device
+	err := s.transaction(ctx, func(q *db.Queries) error {
+		row, err := q.GetDevice(ctx, uid(deviceID))
+		if err != nil {
+			return err
+		}
+		updatedName, updatedExit := row.Name, row.PreferredExit
+		if name != nil {
+			updatedName = normalizedName
+		}
+		if preferredExit != nil {
+			if row.RevokedAt.Valid {
+				return ErrRevoked
+			}
+			if *preferredExit == "proxy" {
+				node, err := q.GetNode(ctx, row.NodeID)
+				if err != nil {
+					return err
+				}
+				if err := s.checkConfigHash(node.ConfigHash); err != nil {
+					return err
+				}
+				if !s.proxyEnabled.Load() || node.Revision != node.AppliedRevision {
+					return ErrProxyUnavailable
+				}
+			}
+			updatedExit = *preferredExit
+		}
+		if updatedName == row.Name && updatedExit == row.PreferredExit {
+			result = deviceModel(row)
+			return nil
+		}
+		updated, err := q.UpdateDeviceMetadata(ctx, db.UpdateDeviceMetadataParams{ID: row.ID, Name: updatedName, PreferredExit: updatedExit})
+		if err != nil {
+			return err
+		}
+		if updatedName != row.Name {
+			if err = q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.rename", DeviceID: row.ID}); err != nil {
+				return err
+			}
+		}
+		if updatedExit != row.PreferredExit {
+			if err = q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.exit", DeviceID: row.ID}); err != nil {
+				return err
+			}
+		}
+		result = deviceModel(updated)
+		return nil
+	})
+	return result, err
+}
+
 func (s *Store) Revoke(ctx context.Context, deviceID string) (model.Device, error) {
 	if _, err := uuid.Parse(deviceID); err != nil {
 		return model.Device{}, ErrNotFound
@@ -281,6 +366,7 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 		if err != nil {
 			return err
 		}
+		clientNode = s.withExpectedIPs(clientNode, node.ConfigHash)
 		profileName := row.Name
 		if exit == "proxy" {
 			profileName += " · IP прокси"
@@ -289,6 +375,10 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 		result.Port = clientNode.Port
 		if err != nil {
 			return err
+		}
+		result.ExpectedExitIP = clientNode.ExpectedServerIP
+		if exit == "proxy" {
+			result.ExpectedExitIP = clientNode.ExpectedProxyIP
 		}
 		// Ссылка вычисляется заново при каждой выдаче; после показа хранится только её хеш.
 		token := s.cipher.SubscriptionToken(id(row.ID), row.SubscriptionGeneration)
@@ -437,6 +527,7 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 	if err != nil {
 		return model.Profile{}, "", err
 	}
+	clientNode = s.withExpectedIPs(clientNode, node.ConfigHash)
 	// Публичная подписка не должна рекламировать новый вход до успешного
 	// применения текущей ревизии. Закрытый Export остаётся доступен для подготовки.
 	if node.Revision != node.AppliedRevision {
@@ -450,6 +541,10 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 	profile.Port = clientNode.Port
 	if err != nil {
 		return model.Profile{}, "", err
+	}
+	profile.ExpectedExitIP = clientNode.ExpectedServerIP
+	if exit == "proxy" {
+		profile.ExpectedExitIP = clientNode.ExpectedProxyIP
 	}
 	return profile, profileName, nil
 }
@@ -539,7 +634,7 @@ func uid(value string) pgtype.UUID {
 }
 func id(value pgtype.UUID) string { return uuid.UUID(value.Bytes).String() }
 func deviceModel(d db.Device) model.Device {
-	result := model.Device{ID: id(d.ID), NodeID: id(d.NodeID), Name: d.Name, CreatedAt: d.CreatedAt.Time}
+	result := model.Device{ID: id(d.ID), NodeID: id(d.NodeID), Name: d.Name, PreferredExit: d.PreferredExit, CreatedAt: d.CreatedAt.Time}
 	if d.RevokedAt.Valid {
 		result.RevokedAt = &d.RevokedAt.Time
 	}

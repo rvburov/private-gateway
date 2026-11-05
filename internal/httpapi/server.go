@@ -106,6 +106,7 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Get("/devices", s.devices)
 			r.Get("/devices/traffic", s.deviceTraffic)
 			r.Post("/devices", s.create)
+			r.Patch("/devices/{id}", s.updateDevice)
 			r.Get("/devices/{id}/profile", s.export)
 			r.Post("/devices/{id}/subscription", s.rotateSubscription)
 			r.Post("/devices/{id}/revoke", s.revoke)
@@ -418,7 +419,7 @@ func (s *Server) error(w http.ResponseWriter, err error) {
 		fail(w, 400, err.Error())
 	case errors.Is(err, storage.ErrConflict):
 		fail(w, 409, err.Error())
-	case errors.Is(err, storage.ErrNotRevoked), errors.Is(err, storage.ErrPendingConfig):
+	case errors.Is(err, storage.ErrNotRevoked), errors.Is(err, storage.ErrPendingConfig), errors.Is(err, storage.ErrStaleConfig):
 		fail(w, 409, err.Error())
 	case errors.Is(err, storage.ErrRevoked):
 		fail(w, 410, err.Error())

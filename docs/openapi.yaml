@@ -3,7 +3,8 @@ info:
   title: Private Gateway API
   version: 0.1.0
   description: >-
-    Один локальный узел Xray. Изменения устройств ждут применения через config/apply.
+    Один локальный узел Xray. Создание и отзыв устройств ждут применения через
+    config/apply; переименование и сохранение выбранного выхода меняют только метаданные.
     Профили содержат секреты: их нельзя кешировать, журналировать и передавать.
     Публичный доступ по Bearer требует временного сеанса после проверки пароля и
     подтверждения аутентификатора. Пока администратор не настроен, публичного доступа
@@ -218,6 +219,51 @@ paths:
   /api/v1/devices/{id}:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
+    patch:
+      operationId: updateDevice
+      description: >-
+        Атомарно изменить название и/или сохранённый выбор выдаваемого профиля.
+        Пустое тело, null, нестроковые и неизвестные поля отклоняются. Выбор proxy
+        разрешён только при настроенном SOCKS5 и применённой конфигурации; при
+        отказе не сохраняется ни одно поле запроса. Переименование отозванного
+        устройства допустимо, изменение его выхода — нет. Операция не меняет UUID,
+        ключ, секрет подписки, трафик и ревизию Xray и не переключает уже
+        импортированное VPN-подключение.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              minProperties: 1
+              properties:
+                name:
+                  type: string
+                  minLength: 1
+                  maxLength: 64
+                  description: Крайние пробелы удаляются; далее буквы, цифры, пробелы, точки, подчёркивания и дефисы, начало с буквы или цифры. Имена активных устройств уникальны в пределах узла.
+                preferred_exit:
+                  type: string
+                  enum: [server, proxy]
+                  description: Сохранённый выбор профиля этого устройства; не измеренный маршрут текущего подключения
+      responses:
+        '200': {$ref: '#/components/responses/Device'}
+        '400': {$ref: '#/components/responses/Error'}
+        '401': {$ref: '#/components/responses/Error'}
+        '404': {$ref: '#/components/responses/Error'}
+        '409':
+          description: Имя занято другим активным устройством или параметры узла не соответствуют конфигурации текущего процесса
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error]
+                properties:
+                  error: {type: string}
+        '410': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
     delete:
       operationId: deleteRevokedDevice
       description: >-
@@ -247,6 +293,8 @@ paths:
         По умолчанию выдаёт прежний прямой профиль. exit=proxy выдаёт отдельный
         VLESS-идентификатор с выходом через SOCKS5 только после настройки и
         применения конфигурации. Все форматы выбираются независимо от выхода.
+        GET сам по себе не сохраняет предпочтение; панель явно передаёт выбранный
+        exit и сохраняет его через PATCH устройства только после получения профиля.
       responses:
         '200':
           description: Секретная ссылка VLESS и конфигурации клиентов sing-box и Mihomo, Cache-Control no-store
@@ -263,6 +311,7 @@ paths:
                   sing_box_json: {type: string, description: Полная конфигурация sing-box в JSON}
                   mihomo_yaml: {type: string, description: Полная конфигурация Mihomo в YAML}
                   subscription_path: {type: string, description: 'Для прямого выхода /sub/{token}, для прокси /sub/proxy/{token}; токен секретный, HTTPS-адрес панели в production содержит :8443'}
+                  expected_exit_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IPv4 или IPv6 выбранного выхода из настроек узла; не адрес входа прокси и не результат измерения устройства. При неизвестном IP поле отсутствует.'}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
@@ -1154,6 +1203,8 @@ components:
         public_key: {type: string}
         short_id: {type: string}
         proxy_available: {type: boolean, description: 'true только когда SOCKS5 настроен и конфигурация применена; не является проверкой доступности прокси в сети'}
+        expected_server_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IP прямого выхода: явная серверная настройка либо публичный IP-литерал host. Домен не разрешается в предположительный выходной IP.'}
+        expected_proxy_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IP из GATEWAY_PROXY_EXPECTED_IP при включённом прокси. Адрес подключения SOCKS5 вместо него не подставляется.'}
         xhttp:
           type: object
           description: Необязательные параметры дополнительного входа XHTTP; закрытый ключ сюда не входит
@@ -1166,11 +1217,12 @@ components:
             mode: {type: string, enum: [auto]}
     Device:
       type: object
-      required: [id, node_id, name, created_at, revoked_at]
+      required: [id, node_id, name, preferred_exit, created_at, revoked_at]
       properties:
         id: {type: string, format: uuid}
         node_id: {type: string, format: uuid}
         name: {type: string}
+        preferred_exit: {type: string, enum: [server, proxy], default: server, description: 'Сохранённый на сервере выбор выдаваемого профиля этого устройства; не подтверждение подключения. Старые устройства получают server.'}
         created_at: {type: string, format: date-time}
         revoked_at: {type: [string, 'null'], format: date-time}
     AuditEvent:

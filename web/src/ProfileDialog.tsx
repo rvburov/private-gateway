@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { request, type Device, type ProfileExit, type ProfileExport } from "./api";
+import { APIError, request, type Device, type Node, type ProfileExit, type ProfileExport } from "./api";
+import { expectedExitIP } from "./deviceExit";
 import { Icon } from "./icons";
 import { ErrorNotice, Modal, ProfileQRCode } from "./ui";
 
@@ -10,14 +11,16 @@ export type RevealedProfile = ProfileExport & { device: Device; exit: ProfileExi
 export function ProfileDialog({
   token,
   profile,
+  node,
   proxyAvailable,
   onChange,
   onClose,
 }: {
   token: string;
   profile: RevealedProfile;
+  node?: Pick<Node, "expected_server_ip" | "expected_proxy_ip">;
   proxyAvailable: boolean;
-  onChange: (profile: RevealedProfile) => void;
+  onChange: (profile: RevealedProfile) => void | Promise<void>;
   onClose: () => void;
 }) {
   const [format, setFormat] = useState<ProfileFormat>("subscription");
@@ -39,6 +42,12 @@ export function ProfileDialog({
   const text = activeFormat === "subscription" ? subscriptionLink
     : activeFormat === "xhttp_uri" ? profile.xhttp_uri ?? "" : profile[activeFormat];
   const linkFormat = activeFormat === "subscription" || activeFormat === "uri" || activeFormat === "xhttp_uri";
+  // Выбранный адрес относится к тому же ответу, что ссылка и QR: более позднее
+  // обновление узла не должно подменить только подпись уже полученного профиля.
+  const optionIP = (exit: ProfileExit) => exit === profile.exit
+    ? profile.expected_exit_ip?.trim() || expectedExitIP(node, exit)
+    : expectedExitIP(node, exit);
+  const expectedIP = optionIP(profile.exit);
 
   async function switchExit(exit: ProfileExit) {
     if (exit === profile.exit || switching || rotating) return;
@@ -55,9 +64,17 @@ export function ProfileDialog({
         `/devices/${encodeURIComponent(profile.device.id)}/profile?exit=${exit}`,
         { signal: controller.signal },
       );
-      if (!controller.signal.aborted) onChange({ ...result, device: profile.device, exit });
+      controller.signal.throwIfAborted();
+      const saved = await request<Device>(token, `/devices/${encodeURIComponent(profile.device.id)}`, {
+        method: "PATCH", body: JSON.stringify({ preferred_exit: exit }), signal: controller.signal,
+      });
+      controller.signal.throwIfAborted();
+      if (saved.id !== profile.device.id || saved.preferred_exit !== exit) {
+        throw new Error("Не удалось подтвердить сохранение выбранного выхода. Обновите список устройств и повторите.");
+      }
+      await onChange({ ...result, device: saved, exit });
     } catch (err) {
-      if (!controller.signal.aborted) setError(exit === "proxy"
+      if (!controller.signal.aborted) setError(exit === "proxy" && err instanceof APIError && err.status === 503
         ? new Error("Профиль через прокси недоступен. Проверьте настройку прокси, применение конфигурации и связь с сервером.")
         : err);
     } finally {
@@ -75,7 +92,7 @@ export function ProfileDialog({
         `/devices/${encodeURIComponent(profile.device.id)}/subscription${profile.exit === "proxy" ? "?exit=proxy" : ""}`,
         { method: "POST" },
       );
-      onChange({ ...profile, subscription_path: result.subscription_path });
+      await onChange({ ...profile, subscription_path: result.subscription_path });
       setConfirmRotate(false);
       setRotated(true);
       setCopied(false);
@@ -135,19 +152,19 @@ export function ProfileDialog({
         disabled={switching || rotating}
         onChange={(event) => void switchExit(event.target.value as ProfileExit)}
       >
-        <option value="server">IP сервера</option>
-        <option value="proxy" disabled={!proxyAvailable}>IP прокси</option>
+        <option value="server">IP сервера — {optionIP("server") ?? "IP не указан"}</option>
+        <option value="proxy" disabled={!proxyAvailable}>IP прокси — {optionIP("proxy") ?? "IP не указан"}</option>
       </select>
       {proxyAvailable
         ? <p className="profile-format-help">Каждый выход имеет свою подписку. Подключение выбирают в приложении VPN.</p>
         : <p className="profile-format-help">Прокси ещё не настроен или конфигурация не применена. Профиль через IP сервера доступен.</p>}
-      {switching && <p role="status">Получаем профиль выбранного выхода…</p>}
+      {switching && <p role="status">Получаем профиль и сохраняем выбранный выход…</p>}
       <label htmlFor="profile-format">Формат профиля</label>
       <select
         id="profile-format"
         className="profile-format-picker"
         value={activeFormat}
-        disabled={switching}
+        disabled={switching || rotating}
         onChange={(event) => {
           setFormat(event.target.value as ProfileFormat);
           setCopied(false);
@@ -161,6 +178,12 @@ export function ProfileDialog({
         <option value="mihomo_yaml">Mihomo (YAML-файл)</option>
       </select>
       <ProfileParameters format={activeFormat} profile={profile} />
+      {!switching && (
+        <section className="profile-exit-summary" aria-label="Ожидаемый выходной IP">
+          <p>Ожидаемый выходной IP: <strong className="mono">{expectedIP ?? "IP не указан"}</strong></p>
+          <p className="hint">Адрес выбранного профиля из настроек сервера. Фактическое подключение проверяется в разделе «Проверка» на нужном устройстве.</p>
+        </section>
+      )}
       <label htmlFor="profile-content">
         {activeFormat === "subscription"
           ? "Ссылка-подписка"
