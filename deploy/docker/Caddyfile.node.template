@@ -1,0 +1,25 @@
+{
+    auto_https disable_redirects
+    # Не сохранять секретный путь XHTTP в журналах ошибок Caddy.
+    log default {
+        format filter {
+            wrap json
+            fields {
+                request>uri delete
+            }
+        }
+    }
+}
+
+https://__H3_DOMAIN__:__H3_PORT__ {
+    tls {
+        issuer acme {
+            disable_tlsalpn_challenge
+        }
+    }
+    @xhttp path __H3_PATH__ __H3_PATH__/*
+    handle @xhttp {
+        reverse_proxy xray-xhttp:__H3_INTERNAL_PORT__
+    }
+    respond 404
+}

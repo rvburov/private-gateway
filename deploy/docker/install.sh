@@ -122,8 +122,15 @@ env_file=/etc/private-gateway-docker/stack.env
 compose_file="$release/docker/compose.yml"
 compose() {
   local files=(--file "$compose_file")
-  if [[ -f $release/docker/compose.xhttp.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+  if [[ -f $release/docker/compose.xhttp.yml ]] &&
+      { grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file" || grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; }; then
     files+=(--file "$release/docker/compose.xhttp.yml")
+  fi
+  if [[ -f $release/docker/compose.xhttp-legacy.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(--file "$release/docker/compose.xhttp-legacy.yml")
+  fi
+  if [[ -f $release/docker/compose.xhttp-h3.yml ]] && grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; then
+    files+=(--file "$release/docker/compose.xhttp-h3.yml")
   fi
   docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
@@ -183,7 +190,7 @@ install -d -m 0700 /etc/private-gateway-docker /var/lib/private-gateway-docker
 install -d -o 10001 -g 10001 -m 0700 /var/lib/private-gateway-docker/xray
 install -d -m 0755 "$release"
 tar --extract --gzip --file "$archive" --directory "$release" --no-same-owner --no-same-permissions
-chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
+chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/gateway-node "$release"/bin/xray
 # Теги по содержимому: образ сохраняет свой тег, а update.sh — его контейнер, пока не изменятся его файлы.
 image_tags=$(python3 "$release/docker/image-tags.py" "$release")
 
@@ -212,6 +219,8 @@ values = {
     'GATEWAY_SHORT_ID': keys['short_id'],
     'GATEWAY_XHTTP_ENABLED': '0',
     'GATEWAY_XHTTP_PORT': '8444',
+    'GATEWAY_XHTTP_H3_ENABLED': '0',
+    'GATEWAY_XHTTP_H3_PORT': '8444',
     'BROWSER_WORKER_TOKEN': secrets.token_hex(32),
     'GATEWAY_HOST': host,
     'PANEL_DOMAIN': domain,
@@ -236,21 +245,8 @@ compose build api
 compose build xray
 compose build browser
 
-python3 - "$release/docker/Caddyfile.template" /etc/private-gateway-docker/Caddyfile "$domain" <<'PY'
-from pathlib import Path
-import re
-import sys
-
-source, destination = map(Path, sys.argv[1:3])
-domain = sys.argv[3]
-if not re.fullmatch(r'[A-Za-z0-9.-]+', domain):
-    raise SystemExit('Panel domain is invalid.')
-text = source.read_text().replace('__PANEL_DOMAIN__', domain)
-if '__' in text:
-    raise SystemExit('Caddyfile template contains an unresolved placeholder.')
-destination.write_text(text)
-destination.chmod(0o600)
-PY
+python3 "$release/docker/render-caddy.py" "$release/docker/Caddyfile.template" \
+  /etc/private-gateway-docker/Caddyfile "$env_file"
 # Для имени под собственным центром сертификации Caddy (.localhost, .internal) проверка создаёт этот центр в /data.
 docker run --rm --network none --read-only --tmpfs /data --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
   -v /etc/private-gateway-docker/Caddyfile:/etc/caddy/Caddyfile:ro \

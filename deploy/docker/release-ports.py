@@ -41,18 +41,26 @@ def release_ports(config):
         if result["xhttp"] in {80, 443, 8443, result["panel"], result["vpn"], result["fallback"], result["xray"],
                                valid_port(environment.get("GATEWAY_XRAY_STATS_PORT", 10085), "stats")}:
             raise ValueError("The XHTTP port must differ from existing service ports")
+    h3_enabled = str(environment.get("GATEWAY_XHTTP_H3_ENABLED", "0"))
+    if h3_enabled not in ("0", "1"):
+        raise ValueError("H3 enabled must be 0 or 1")
+    if h3_enabled == "1":
+        result["h3"] = valid_port(environment.get("GATEWAY_XHTTP_H3_PORT", 8444), "H3")
+        if result["h3"] in {80, 443, 8443, result["panel"], result["vpn"], result["fallback"]}:
+            raise ValueError("The H3 UDP port must differ from existing public service ports")
     published = {}
     for name, service in services.items():
         for mapping in service.get("ports", []):
-            if mapping.get("protocol", "tcp") != "tcp":
-                continue
+            protocol = mapping.get("protocol", "tcp")
+            if protocol not in ("tcp", "udp"):
+                raise ValueError("Unexpected published port protocol")
             port = valid_port(mapping["published"], "published")
-            published.setdefault(port, []).append((name, valid_port(mapping["target"], "target")))
+            published.setdefault((port, protocol), []).append((name, valid_port(mapping["target"], "target")))
     for name, owners in (("panel", {"edge", "caddy"}), ("vpn", {"edge", "xray"}), ("fallback", {"edge"})):
         port = result[name]
         if not port:
             continue
-        mappings = published.get(port, [])
+        mappings = published.get((port, "tcp"), [])
         if len(mappings) != 1 or mappings[0][0] not in owners:
             raise ValueError(f"The public {name} port must have exactly one valid owner")
         owner, target = mappings[0]
@@ -60,14 +68,17 @@ def release_ports(config):
         # До HAProxy Caddy принимал панель на8443; в общей TLS-схеме он слушает443.
         if target != expected:
             raise ValueError(f"The public {name} port forwards to an unexpected internal port")
-    if "xhttp" in result and published.get(result["xhttp"]) != [("xray", result["xhttp"])]:
+    if "xhttp" in result and published.get((result["xhttp"], "tcp")) not in (
+            [("xray", result["xhttp"])], [("xray-xhttp", result["xhttp"])],):
         raise ValueError("The public XHTTP port must forward only to its Xray TCP listener")
+    if "h3" in result and published.get((result["h3"], "udp")) != [("caddy", result["h3"])]:
+        raise ValueError("The public H3 UDP port must forward only to Caddy")
     return result
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--field", choices=("panel", "vpn", "fallback", "xray", "xhttp"))
+    parser.add_argument("--field", choices=("panel", "vpn", "fallback", "xray", "xhttp", "h3"))
     args = parser.parse_args()
     try:
         ports = release_ports(json.load(sys.stdin))

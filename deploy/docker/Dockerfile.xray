@@ -6,5 +6,5 @@ COPY --chmod=0555 docker/xray-worker.py /usr/local/bin/xray-worker.py
 USER 10001:10001
 EXPOSE 443
 HEALTHCHECK --interval=10s --timeout=3s --retries=6 \
-  CMD ["python3", "-c", "from pathlib import Path; assert Path('/state/xray.status.json').is_file()"]
+  CMD ["python3", "-c", "import os; from pathlib import Path; name = 'xhttp' if os.getenv('XRAY_TRANSPORT') == 'xhttp' else 'xray'; assert (Path('/state') / (name + '.status.json')).is_file()"]
 ENTRYPOINT ["python3", "/usr/local/bin/xray-worker.py"]

@@ -1,9 +1,5 @@
 #!/usr/bin/env python3
-"""Подготовить параметры SOCKS5 в закрытом файле без вывода учётных данных.
-
-Скрипт пишет отдельный proxy.pending.env для следующего выпуска. Работающий
-stack.env и конфигурацию Xray он не меняет. Логин и пароль читаются скрыто.
-"""
+"""Старый серверный режим выхода через SOCKS5 больше не поддерживается."""
 
 import argparse
 import base64
@@ -150,31 +146,10 @@ def main():
     parser.add_argument("--port", required=True, type=int, help="Порт из параметров SOCKS5")
     parser.add_argument("--no-auth", action="store_true", help="Прокси разрешает подключение по IP без пароля")
     parser.add_argument("--expected-ip", default="", help="Ожидаемый внешний IP для проверки после выкладки")
-    args = parser.parse_args()
-    if os.geteuid() != 0:
-        raise ConfigurationError("run this command with sudo")
-    if not sys.stdin.isatty() or not sys.stderr.isatty():
-        raise ConfigurationError("a private interactive terminal is required")
-    if not valid_host(args.host) or not 1 <= args.port <= 65535:
-        raise ConfigurationError("SOCKS5 address or port is invalid")
-    require_private_file(ENV)
-    try:
-        require_private_file(PENDING)
-    except FileNotFoundError:
-        pass
-    with LOCK.open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise ConfigurationError("another Docker deployment is running") from error
-        username = password = ""
-        if not args.no_auth:
-            with warnings.catch_warnings():
-                warnings.simplefilter("error", getpass.GetPassWarning)
-                username = getpass.getpass("Логин SOCKS5: ")
-                password = getpass.getpass("Пароль SOCKS5: ")
-        print(configure(args.host, args.port, username, password,
-                        no_auth=args.no_auth, expected_ip=args.expected_ip))
+    parser.parse_args()
+    # Сохраняем старое имя команды для явного отказа. Учётные данные провайдера
+    # и файл ожидающих настроек остаются нетронутыми для владельца.
+    raise ConfigurationError("server-side proxy exit is unavailable; configure the entry proxy on the client")
 
 
 if __name__ == "__main__":

@@ -9,8 +9,12 @@ import sys
 import time
 
 
-config = pathlib.Path("/state/xray.json")
-status = pathlib.Path("/state/xray.status.json")
+transport = sys.argv[1] if len(sys.argv) == 2 else "tcp"
+if transport not in ("tcp", "xhttp"):
+    raise SystemExit("unknown Xray transport")
+stem = "xray" if transport == "tcp" else "xhttp"
+config = pathlib.Path("/state") / (stem + ".json")
+status = pathlib.Path("/state") / (stem + ".status.json")
 with config.open("rb") as source:
     content = source.read()
     modified = os.fstat(source.fileno()).st_mtime_ns

@@ -15,9 +15,10 @@ import (
 )
 
 type Cipher struct {
-	aead         cipher.AEAD
-	subscription []byte
-	proxyClient  []byte
+	aead              cipher.AEAD
+	subscription      []byte
+	chainSubscription []byte
+	proxyClient       []byte
 }
 
 func New(encodedKey string) (*Cipher, error) {
@@ -42,7 +43,11 @@ func New(encodedKey string) (*Cipher, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Cipher{aead: aead, subscription: subscription, proxyClient: proxyClient}, nil
+	chainSubscription, err := hkdf.Key(sha256.New, key, nil, "private-gateway chain subscription link v1", 32)
+	if err != nil {
+		return nil, err
+	}
+	return &Cipher{aead: aead, subscription: subscription, chainSubscription: chainSubscription, proxyClient: proxyClient}, nil
 }
 
 func (c *Cipher) Encrypt(value, recordID string) ([]byte, error) {
@@ -70,6 +75,14 @@ func (c *Cipher) Decrypt(value []byte, recordID string) (string, error) {
 // поколение того же устройства даёт новую ссылку, никак не связанную с прежней.
 func (c *Cipher) SubscriptionToken(deviceID string, generation int64) string {
 	mac := hmac.New(sha256.New, c.subscription)
+	mac.Write([]byte(strings.ToLower(deviceID) + "/" + strconv.FormatInt(generation, 10)))
+	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+// ChainSubscriptionToken имеет отдельный ключ: обычная подписка никогда не
+// открывает пароль входного SOCKS5.
+func (c *Cipher) ChainSubscriptionToken(deviceID string, generation int64) string {
+	mac := hmac.New(sha256.New, c.chainSubscription)
 	mac.Write([]byte(strings.ToLower(deviceID) + "/" + strconv.FormatInt(generation, 10)))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 }

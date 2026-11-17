@@ -5,11 +5,9 @@ import (
 	"errors"
 	"html/template"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"regexp"
-	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -20,7 +18,6 @@ import (
 var (
 	// Токен — 32 байта в base64url без выравнивания; ничего другого не ищется.
 	subscriptionToken = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
-	requestHost       = regexp.MustCompile(`^[A-Za-z0-9.-]+(:[0-9]{1,5})?$`)
 	subscriptionPage  = template.Must(template.New("subscription").Parse(subscriptionHTML))
 )
 
@@ -32,7 +29,8 @@ func (s *Server) subscription(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) proxySubscription(w http.ResponseWriter, r *http.Request) {
-	s.serveSubscription(w, r, "proxy")
+	w.Header().Set("X-Robots-Tag", "noindex, nofollow, noarchive")
+	fail(w, http.StatusGone, "server proxy exit has been removed")
 }
 
 func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, exit string) {
@@ -56,15 +54,11 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, exit 
 		return
 	}
 	profile, name, err := s.store.SubscriptionForExit(r.Context(), token, exit)
-	if errors.Is(err, storage.ErrNotFound) {
+	if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrChainUnavailable) || errors.Is(err, storage.ErrRevoked) {
 		fail(w, 404, "not found")
 		return
 	}
 	if err != nil {
-		if errors.Is(err, storage.ErrProxyUnavailable) {
-			fail(w, 503, err.Error())
-			return
-		}
 		slog.Error("subscription lookup failed")
 		fail(w, 500, "operation failed")
 		return
@@ -73,7 +67,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, exit 
 	w.Header().Set("Profile-Update-Interval", "24")
 	switch format {
 	case "html":
-		s.subscriptionPage(w, r, token, name, profile.Port, exit)
+		s.subscriptionPage(w, token, name, exit)
 	case "uri":
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte(profile.URI + "\n"))
@@ -97,7 +91,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, exit 
 // Xray содержит XHTTP первым, а TCP — запасным. Наличие двух записей не включает
 // автоматическое переключение клиента и не подтверждает поддержку его версии.
 func subscriptionURIs(profile model.Profile, r *http.Request) string {
-	if profile.XHTTPURI == "" || legacySubscriptionClient(r.UserAgent()) {
+	if (profile.XHTTPURI == "" && profile.H3URI == "") || legacySubscriptionClient(r.UserAgent()) {
 		return profile.URI + "\n"
 	}
 	tcpURI := profile.URI
@@ -105,7 +99,15 @@ func subscriptionURIs(profile model.Profile, r *http.Request) string {
 		parsed.Fragment += " · TCP Vision"
 		tcpURI = parsed.String()
 	}
-	return profile.XHTTPURI + "\n" + tcpURI + "\n"
+	var list strings.Builder
+	if profile.H3URI != "" {
+		list.WriteString(profile.H3URI + "\n")
+	}
+	if profile.XHTTPURI != "" {
+		list.WriteString(profile.XHTTPURI + "\n")
+	}
+	list.WriteString(tcpURI + "\n")
+	return list.String()
 }
 
 func legacySubscriptionClient(agent string) bool {
@@ -153,28 +155,16 @@ func attachment(name, extension string) string {
 }
 
 // subscriptionPage помогает импортировать ссылку тому, кто открыл её в браузере телефона.
-func (s *Server) subscriptionPage(w http.ResponseWriter, r *http.Request, token, name string, port int, exit string) {
-	if !requestHost.MatchString(r.Host) {
-		fail(w, 400, "invalid host")
-		return
-	}
-	scheme := "https"
-	if r.TLS == nil && r.Header.Get("X-Forwarded-Proto") == "" {
-		scheme = "http"
-	}
-	host := r.Host
-	if port != 0 {
-		hostname := r.Host
-		if h, _, err := net.SplitHostPort(r.Host); err == nil {
-			hostname = h
-		}
-		host = net.JoinHostPort(hostname, strconv.Itoa(port))
-	}
+func (s *Server) subscriptionPage(w http.ResponseWriter, token, name, exit string) {
 	path := storage.SubscriptionPathPrefix + token
 	if exit == "proxy" {
 		path = storage.ProxySubscriptionPathPrefix + token
 	}
-	link := scheme + "://" + host + path
+	link := s.absoluteSubscription(path)
+	if link == "" {
+		fail(w, 503, "canonical panel URL is unavailable")
+		return
+	}
 	mihomoLink, _ := url.Parse(link)
 	query := mihomoLink.Query()
 	query.Set("format", "mihomo")

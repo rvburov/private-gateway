@@ -9,7 +9,7 @@ type NavItem = { page: Page; label: string; short: string; icon: IconName };
 const items: Record<Page, NavItem> = {
   overview: { page: "overview", label: "Обзор", short: "Обзор", icon: "grid" },
   devices: { page: "devices", label: "Устройства", short: "Устройства", icon: "devices" },
-  nodes: { page: "nodes", label: "Сервер", short: "Сервер", icon: "server" },
+  nodes: { page: "nodes", label: "Серверы", short: "Серверы", icon: "server" },
   audit: { page: "audit", label: "Журнал действий", short: "Журнал", icon: "history" },
   guide: { page: "guide", label: "Инструкции", short: "Инструкции", icon: "book" },
   checks: { page: "checks", label: "Проверка", short: "Проверка", icon: "shield" },

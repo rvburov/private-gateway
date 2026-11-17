@@ -47,8 +47,7 @@ if not active:
     raise SystemExit(2)
 device = active[0]
 transport = os.environ.get("GATEWAY_SMOKE_TRANSPORT", "tcp")
-exit = os.environ.get("GATEWAY_SMOKE_EXIT", "server")
-profiles = get("/devices/" + device["id"] + "/profile?exit=" + exit)
+profiles = get("/devices/" + device["id"] + "/profile")
 profile = profiles.get("xhttp_uri" if transport == "xhttp" else "uri")
 if not profile:
     raise SystemExit(3)
@@ -61,17 +60,18 @@ def canonical_ip(value):
         return str(address.ipv4_mapped or address) if address.version == 6 else str(address)
     except (TypeError, ValueError):
         return None
-expected_ip = canonical_ip(node.get("expected_proxy_ip" if exit == "proxy" else "expected_server_ip"))
+expected_ip = canonical_ip(node.get("expected_server_ip"))
 profile_expected_ip = canonical_ip(profiles.get("expected_exit_ip"))
-configured_expected_ip = os.environ.get("GATEWAY_PROXY_EXPECTED_IP" if exit == "proxy" else "GATEWAY_SERVER_EXPECTED_IP", "")
+configured_expected_ip = os.environ.get("GATEWAY_SERVER_EXPECTED_IP", "")
 requested_expected_ip = os.environ.get("GATEWAY_SMOKE_EXPECTED_IP", "")
 uri = urlsplit(profile)
 query = parse_qs(uri.query)
-with open("/state/xray.json", "rb") as source:
+stem = "xhttp" if transport == "xhttp" else "xray"
+with open("/state/" + stem + ".json", "rb") as source:
     content = source.read()
     modified = os.fstat(source.fileno()).st_mtime_ns
 config = json.loads(content)
-with open("/state/xray.status.json") as source:
+with open("/state/" + stem + ".status.json") as source:
     status = json.load(source)
 if transport == "xhttp":
     inbound = next(item for item in config["inbounds"] if item.get("tag") == "vless-xhttp-reality")
@@ -107,14 +107,6 @@ checks = {
                      status.get("sha256") == hashlib.sha256(content).hexdigest() and
                      status.get("mtime_ns") == modified,
 }
-if exit == "proxy":
-    email = (uri.username or "").lower() + "@private-gateway"
-    checks["proxy_available"] = node.get("proxy_available") is True
-    checks["proxy_fail_closed"] = bool(config.get("outbounds")) and config["outbounds"][0].get("protocol") == "blackhole"
-    checks["proxy_outbound"] = any(item.get("tag") == "proxy" and item.get("protocol") == "socks"
-                                   for item in config.get("outbounds", []))
-    checks["proxy_route"] = any(item.get("outboundTag") == "proxy" and email in item.get("user", [])
-                                for item in config.get("routing", {}).get("rules", []))
 if transport == "xhttp":
     xhttp = inbound["streamSettings"].get("xhttpSettings", {})
     checks["profile_xhttp"] = (query.get("type") == ["xhttp"] and "flow" not in query and
@@ -135,6 +127,8 @@ def canonical_ip(value):
 
 
 def get_profile(transport="tcp", exit="server", expected_ip=None):
+    if exit != "server":
+        raise SmokeError("server-side proxy exit is unavailable")
     try:
         result = subprocess.run(
             ["docker", "exec", "-e", "GATEWAY_SMOKE_TRANSPORT=" + transport,
@@ -300,7 +294,8 @@ def isolated_server_config(config, port, target=None, transport="tcp"):
 def start_isolated_server(directory, port, target=None, transport="tcp"):
     process = None
     try:
-        config = isolated_server_config(json.loads(SERVER_CONFIG.read_text()), port, target, transport)
+        server_config = SERVER_CONFIG.with_name("xhttp.json") if transport == "xhttp" else SERVER_CONFIG
+        config = isolated_server_config(json.loads(server_config.read_text()), port, target, transport)
         path = Path(directory) / "server.json"
         descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "w") as output:
@@ -363,7 +358,8 @@ def isolated_result(log):
 def check_reality_public_key(profile, transport="tcp"):
     # OpenSSL получает закрытый ключ через stdin — никогда в аргументах или выводе терминала.
     try:
-        config = json.loads(SERVER_CONFIG.read_text())
+        server_config = SERVER_CONFIG.with_name("xhttp.json") if transport == "xhttp" else SERVER_CONFIG
+        config = json.loads(server_config.read_text())
         inbound = (next(item for item in config["inbounds"] if item.get("tag") == "vless-xhttp-reality")
                    if transport == "xhttp" else config["inbounds"][0])
         private_key = inbound["streamSettings"]["realitySettings"]["privateKey"]
@@ -420,22 +416,15 @@ def main():
     parser.add_argument("--transport", choices=("tcp", "xhttp"), default="tcp",
                         help="Проверить прежний TCP/Vision либо дополнительный XHTTP")
     parser.add_argument("--exit", choices=("server", "proxy"), default="server",
-                        help="Проверить прямой выход или отдельный SOCKS5-выход")
-    parser.add_argument("--expected-ip", help="Ожидаемый внешний IP SOCKS5-выхода")
+                        help="Старый proxy exit недоступен")
+    parser.add_argument("--expected-ip", help="Устаревший параметр proxy exit")
     args = parser.parse_args()
     if args.isolated_target and not args.isolated:
         parser.error("--isolated-target requires --isolated")
     if args.port is not None and (not 1 <= args.port <= 65535 or args.isolated):
         parser.error("--port requires a valid public port and cannot be combined with --isolated")
-    if args.exit == "proxy" and args.isolated:
-        parser.error("proxy exit requires the running server with its routing configuration")
-    if args.expected_ip is not None:
-        if args.exit != "proxy":
-            parser.error("--expected-ip requires --exit proxy")
-        try:
-            args.expected_ip = canonical_ip(args.expected_ip)
-        except ValueError:
-            parser.error("--expected-ip must be an IP address")
+    if args.exit != "server" or args.expected_ip is not None:
+        parser.error("server-side proxy exit is unavailable")
     if not XRAY.is_file():
         raise SmokeError("installed Xray binary is missing")
     profile = get_profile(args.transport, args.exit, args.expected_ip)

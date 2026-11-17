@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { toDataURL } from "qrcode";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
 import { browserURLForPanel, type Node } from "./api";
@@ -38,7 +38,6 @@ function Dialog({ value = initial, proxyAvailable = false, node = expectedIPs }:
 
 function subscriptionURL(path = initial.subscription_path) {
   const url = new URL(path, window.location.origin);
-  url.port = "8443";
   return url.toString();
 }
 
@@ -49,7 +48,7 @@ beforeEach(() => {
 });
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-it("uses one port for the subscription, exported formats and both QR codes", async () => {
+it("keeps the panel origin for subscriptions and VPS ports for profiles", async () => {
   const fetchMock = vi.fn();
   vi.stubGlobal("fetch", fetchMock);
   render(<Dialog />);
@@ -130,62 +129,14 @@ it("falls back to TCP if an updated profile no longer exposes XHTTP", () => {
   expect(screen.queryByRole("option", { name: /XHTTP/ })).toBeNull();
 });
 
-it("switches between separate server and proxy profiles without changing the format list", async () => {
-  const proxyPath = "/sub/proxy/test-subscription";
-  const proxyURI = "vless://proxy-test-credential@vpn.example:8443";
-  const fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
-    if (path === "/api/v1/devices/device-test" && options.method === "PATCH")
-      return Response.json({ ...initial.device, preferred_exit: JSON.parse(options.body as string).preferred_exit });
-    if (path.endsWith("/profile?exit=proxy"))
-      return Response.json({ ...xhttpProfile, uri: proxyURI, subscription_path: proxyPath, expected_exit_ip: "1.1.1.1" });
-    if (path.endsWith("/profile?exit=server"))
-      return Response.json(initial);
-    throw new Error("Unexpected request");
-  });
-  vi.stubGlobal("fetch", fetchMock);
+it("exports only the VPS and does not offer the retired exit proxy", () => {
   render(<Dialog value={xhttpProfile} proxyAvailable />);
-  expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
-  const format = screen.getByLabelText("Формат профиля") as HTMLSelectElement;
-  expect(format.options).toHaveLength(5);
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-  await waitFor(() => expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy"));
-  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL(proxyPath));
-  expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/devices/device-test/profile?exit=proxy");
-  expect(format.options).toHaveLength(5);
-  fireEvent.change(format, { target: { value: "uri" } });
-  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(proxyURI);
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "server" } });
-  await waitFor(() => expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server"));
-  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(initial.uri);
-  expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/devices/device-test/profile?exit=server");
-  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH").map(([, options]) => JSON.parse(options!.body as string)))
-    .toEqual([{ preferred_exit: "proxy" }, { preferred_exit: "server" }]);
-});
-
-it("keeps the server profile available when the proxy is not configured", () => {
-  const fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-  render(<Dialog />);
-  expect((screen.getByRole("option", { name: /^IP прокси/ }) as HTMLOptionElement).disabled).toBe(true);
-  expect(screen.getByText(/Прокси ещё не настроен или конфигурация не применена/)).toBeTruthy();
+  expect(screen.queryByLabelText("Выходной IP")).toBeNull();
+  expect(screen.queryByRole("option", { name: /IP прокси/ })).toBeNull();
   expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
-  expect(fetchMock).not.toHaveBeenCalled();
 });
 
-it("keeps the proxy exit in the subscription link after rotating both links", async () => {
-  const fetchMock = vi.fn(async (_path: string) => Response.json({ subscription_path: "/sub/proxy/test-rotated" }));
-  vi.stubGlobal("fetch", fetchMock);
-  render(<Dialog value={{ ...xhttpProfile, exit: "proxy", subscription_path: "/sub/proxy/test-subscription" }} proxyAvailable />);
-  fireEvent.click(screen.getByText("Новая ссылка"));
-  expect(screen.getByText(/Прежние ссылки для IP сервера и IP прокси/)).toBeTruthy();
-  fireEvent.click(screen.getByText("Заменить ссылку"));
-  await waitFor(() => expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value)
-    .toBe(subscriptionURL("/sub/proxy/test-rotated")));
-  expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/devices/device-test/subscription?exit=proxy");
-  expect(screen.getByText("Ссылки обоих выходов заменены: прежние больше не работают.")).toBeTruthy();
-});
-
-it("keeps port 8443 after rotating a legacy subscription link", async () => {
+it("keeps the panel origin after rotating a legacy subscription link", async () => {
   const fetchMock = vi.fn(async (path: string) => {
     if (path.endsWith("/subscription"))
       return Response.json({ subscription_path: "/sub/test-rotated" });
@@ -213,41 +164,9 @@ it("keeps the current subscription when rotation fails", async () => {
   expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
 });
 
-it("aligns the selected exit, expected IP, subscription and QR after the preference is saved", async () => {
-  const fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
-    if (path.endsWith("/profile?exit=proxy")) return Response.json({
-      ...initial, uri: "vless://proxy-credential@vpn.example:8443", subscription_path: "/sub/proxy/test-subscription",
-      expected_exit_ip: "1.1.1.1",
-    });
-    if (options.method === "PATCH") return Response.json({ ...initial.device, preferred_exit: "proxy" });
-    throw new Error(`Unexpected request: ${path}`);
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  render(<Dialog proxyAvailable />);
-  expect(screen.getByRole("option", { name: "IP сервера — 8.8.8.8" })).toBeTruthy();
-  expect(screen.getByRole("option", { name: "IP прокси — 1.1.1.1" })).toBeTruthy();
-  const expected = () => within(screen.getByRole("region", { name: "Ожидаемый выходной IP" }));
-  expect(expected().getByText("8.8.8.8")).toBeTruthy();
-  fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
-  await screen.findByRole("img", { name: "QR-код ссылки-подписки" });
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-  await waitFor(() => expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy"));
-  expect(expected().getByText("1.1.1.1")).toBeTruthy();
-  expect(expected().queryByText("8.8.8.8")).toBeNull();
-  expect(screen.queryByRole("img", { name: "QR-код ссылки-подписки" })).toBeNull();
-  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value)
-    .toBe(subscriptionURL("/sub/proxy/test-subscription"));
-  fireEvent.click(screen.getByRole("button", { name: "Показать QR-код" }));
-  await waitFor(() => expect(toDataURL).toHaveBeenLastCalledWith(subscriptionURL("/sub/proxy/test-subscription"), expect.any(Object)));
-  expect(fetchMock.mock.calls.map(([path, options]) => [path, options?.method ?? "GET"]))
-    .toEqual([["/api/v1/devices/device-test/profile?exit=proxy", "GET"], ["/api/v1/devices/device-test", "PATCH"]]);
-});
-
 it("does not guess an unknown exit IP from a proxy endpoint or a URI", () => {
   render(<Dialog node={null} value={{ ...initial, expected_exit_ip: undefined,
     uri: "vless://test-credential@9.9.9.9:8443" }} proxyAvailable />);
-  expect(screen.getByRole("option", { name: "IP сервера — IP не указан" })).toBeTruthy();
-  expect(screen.getByRole("option", { name: "IP прокси — IP не указан" })).toBeTruthy();
   const expected = within(screen.getByRole("region", { name: "Ожидаемый выходной IP" }));
   expect(expected.getByText("IP не указан")).toBeTruthy();
   expect(expected.queryByText("9.9.9.9")).toBeNull();
@@ -255,83 +174,10 @@ it("does not guess an unknown exit IP from a proxy endpoint or a URI", () => {
 
 it("uses the profile's expected address consistently when node metadata has changed", () => {
   render(<Dialog node={{ expected_server_ip: "9.9.9.9", expected_proxy_ip: "1.1.1.1" }} />);
-  expect(screen.getByRole("option", { name: "IP сервера — 8.8.8.8" })).toBeTruthy();
   expect(screen.queryByRole("option", { name: "IP сервера — 9.9.9.9" })).toBeNull();
   const expected = within(screen.getByRole("region", { name: "Ожидаемый выходной IP" }));
   expect(expected.getByText("8.8.8.8")).toBeTruthy();
   expect(expected.queryByText("9.9.9.9")).toBeNull();
-});
-
-it.each(["profile", "preference"])("retains the previous selection, IP and link if the %s request fails", async (failure) => {
-  const fetchMock = vi.fn(async (_path: string, options: RequestInit = {}) => {
-    if (failure === "profile" || options.method === "PATCH")
-      return Response.json({ error: "Unavailable" }, { status: 503 });
-    return Response.json({ ...initial, subscription_path: "/sub/proxy/uncommitted", expected_exit_ip: "1.1.1.1" });
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  render(<Dialog proxyAvailable />);
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-  await screen.findByRole("alert");
-  expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
-  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
-  const expected = within(screen.getByRole("region", { name: "Ожидаемый выходной IP" }));
-  expect(expected.getByText("8.8.8.8")).toBeTruthy();
-  expect(expected.queryByText("1.1.1.1")).toBeNull();
-  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(failure === "profile" ? 0 : 1);
-});
-
-it("keeps export actions disabled until the selected exit has been persisted", async () => {
-  let save!: (response: Response) => void;
-  const fetchMock = vi.fn(async (_path: string, options: RequestInit = {}) => {
-    if (options.method === "PATCH") return new Promise<Response>((resolve) => { save = resolve; });
-    return Response.json({ ...initial, subscription_path: "/sub/proxy/test-subscription", expected_exit_ip: "1.1.1.1" });
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  render(<Dialog proxyAvailable />);
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-  await waitFor(() => expect(save).toBeDefined());
-  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe("");
-  expect((screen.getByRole("button", { name: "Скопировать ссылку" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole("button", { name: "Показать QR-код" }) as HTMLButtonElement).disabled).toBe(true);
-  await act(async () => { save(Response.json({ ...initial.device, preferred_exit: "proxy" })); });
-  await waitFor(() => expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy"));
-  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL("/sub/proxy/test-subscription"));
-});
-
-it.each(["profile", "preference"])("aborts a late %s response when the profile is hidden", async (pendingStep) => {
-  let finish!: (response: Response) => void;
-  let signal: AbortSignal | undefined;
-  const changed = vi.fn();
-  vi.stubGlobal("fetch", vi.fn(async (_path: string, options: RequestInit = {}) => {
-    if ((pendingStep === "preference") === (options.method === "PATCH")) {
-      signal = options.signal as AbortSignal;
-      return new Promise<Response>((resolve) => { finish = resolve; });
-    }
-    return Response.json({ ...initial, expected_exit_ip: "1.1.1.1", subscription_path: "/sub/proxy/test-subscription" });
-  }));
-  const view = render(<ProfileDialog token="test-session" profile={initial} node={expectedIPs}
-    proxyAvailable onChange={changed} onClose={() => {}} />);
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-  await waitFor(() => expect(finish).toBeDefined());
-  view.unmount();
-  expect(signal?.aborted).toBe(true);
-  await act(async () => { finish(Response.json(pendingStep === "profile"
-    ? { ...initial, expected_exit_ip: "1.1.1.1", subscription_path: "/sub/proxy/test-subscription" }
-    : { ...initial.device, preferred_exit: "proxy" })); });
-  expect(changed).not.toHaveBeenCalled();
-});
-
-it.each([
-  { ...initial.device, id: "another-device", preferred_exit: "proxy" },
-  { ...initial.device, preferred_exit: "server" },
-])("rejects a preference response that does not confirm this device and selected exit", async (saved) => {
-  vi.stubGlobal("fetch", vi.fn(async (_path: string, options: RequestInit = {}) => Response.json(options.method === "PATCH"
-    ? saved : { ...initial, expected_exit_ip: "1.1.1.1", subscription_path: "/sub/proxy/unconfirmed" })));
-  render(<Dialog proxyAvailable />);
-  fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-  await screen.findByRole("alert");
-  expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
-  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionURL());
 });
 
 it("keeps noVNC on the panel origin and rejects non-web URLs", () => {
@@ -342,4 +188,18 @@ it("keeps noVNC on the panel origin and rejects non-web URLs", () => {
   expect(browserURLForPanel("https://other.example/browser/", "https://panel.example:8443"))
     .toBe("https://other.example/browser/");
   expect(browserURLForPanel("javascript:alert(1)", "https://panel.example:8443")).toBeUndefined();
+});
+
+it("keeps a remote VPS port out of the central subscription address", () => {
+  render(<Dialog value={{ ...initial, port: 9443, subscription_url: "https://panel.example:8443/sub/device-token" }} />);
+  expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe("https://panel.example:8443/sub/device-token");
+});
+
+it("offers a separate UDP profile only when the server exports H3", () => {
+  const h3 = "vless://device@vpn.example:8444?type=xhttp&security=tls&alpn=h3";
+  render(<Dialog value={{ ...initial, h3_uri: h3, h3_port: 8444 }} />);
+  fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "h3_uri" } });
+  expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(h3);
+  expect(screen.getByText("XHTTP / HTTP3 / UDP")).toBeTruthy();
+  expect(screen.getByText("TLS с проверкой сертификата")).toBeTruthy();
 });

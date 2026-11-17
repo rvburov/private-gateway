@@ -1,0 +1,5 @@
+# Прежний XHTTP/REALITY остаётся доступным по TCP до отдельного решения о миграции.
+services:
+  xray-xhttp:
+    ports:
+      - "0.0.0.0:${GATEWAY_XHTTP_PORT:-8444}:${GATEWAY_XHTTP_PORT:-8444}/tcp"

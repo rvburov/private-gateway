@@ -23,24 +23,22 @@ import (
 const LocalNodeID = "00000000-0000-4000-8000-000000000001"
 
 var (
-	ErrNotFound         = errors.New("not found")
-	ErrConflict         = errors.New("active device with this name already exists")
-	ErrRevoked          = errors.New("device is revoked")
-	ErrNotRevoked       = errors.New("revoke the device before deleting it")
-	ErrPendingConfig    = errors.New("apply the pending Xray configuration before deleting the device")
-	ErrInvalid          = errors.New("invalid device name or node ID")
-	ErrStaleConfig      = errors.New("node settings changed; restart this API process")
-	ErrProxyUnavailable = errors.New("proxy exit is not available")
-	validName           = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
+	ErrNotFound      = errors.New("not found")
+	ErrConflict      = errors.New("active device with this name already exists")
+	ErrRevoked       = errors.New("device is revoked")
+	ErrNotRevoked    = errors.New("revoke the device before deleting it")
+	ErrPendingConfig = errors.New("apply the pending Xray configuration before deleting the device")
+	ErrInvalid       = errors.New("invalid device name or node ID")
+	ErrStaleConfig   = errors.New("node settings changed; restart this API process")
+	validName        = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N} ._-]{0,63}$`)
 )
 
 type Store struct {
-	pool         *pgxpool.Pool
-	queries      *db.Queries
-	cipher       *secure.Cipher
-	configHash   atomic.Value
-	proxyEnabled atomic.Bool
-	publicNode   atomic.Pointer[model.Node]
+	pool       *pgxpool.Pool
+	queries    *db.Queries
+	cipher     *secure.Cipher
+	configHash atomic.Value
+	publicNode atomic.Pointer[model.Node]
 }
 
 func Open(ctx context.Context, dsn string, cipher *secure.Cipher) (*Store, error) {
@@ -82,6 +80,7 @@ func (s *Store) transaction(ctx context.Context, fn func(*db.Queries) error) err
 
 func (s *Store) EnsureNode(ctx context.Context, node model.Node) error {
 	var xhttpConfig []byte
+	var h3Config []byte
 	if node.XHTTP != nil {
 		var err error
 		xhttpConfig, err = json.Marshal(node.XHTTP)
@@ -89,8 +88,15 @@ func (s *Store) EnsureNode(ctx context.Context, node model.Node) error {
 			return errors.New("invalid XHTTP node settings")
 		}
 	}
+	if node.H3 != nil {
+		var err error
+		h3Config, err = json.Marshal(node.H3)
+		if err != nil {
+			return errors.New("invalid H3 node settings")
+		}
+	}
 	err := s.transaction(ctx, func(q *db.Queries) error {
-		if err := q.UpsertNode(ctx, db.UpsertNodeParams{ID: uid(node.ID), Name: node.Name, Host: node.Host, Port: int32(node.Port), ServerName: node.ServerName, PublicKey: node.PublicKey, ShortID: node.ShortID, ConfigHash: node.ConfigHash, XhttpConfig: xhttpConfig}); err != nil {
+		if err := q.UpsertNode(ctx, db.UpsertNodeParams{ID: uid(node.ID), Name: node.Name, Host: node.Host, Port: int32(node.Port), ServerName: node.ServerName, PublicKey: node.PublicKey, ShortID: node.ShortID, ConfigHash: node.ConfigHash, XhttpConfig: xhttpConfig, H3Config: h3Config}); err != nil {
 			return err
 		}
 		clients, err := q.ActiveClients(ctx, uid(node.ID))
@@ -106,7 +112,6 @@ func (s *Store) EnsureNode(ctx context.Context, node model.Node) error {
 	})
 	if err == nil {
 		s.configHash.Store(node.ConfigHash)
-		s.proxyEnabled.Store(node.ProxyAvailable)
 		configured := node
 		s.publicNode.Store(&configured)
 	}
@@ -124,9 +129,9 @@ func (s *Store) Nodes(ctx context.Context) ([]model.Node, error) {
 			return nil, err
 		}
 		node = s.withExpectedIPs(node, r.ConfigHash)
-		expected, initialized := s.configHash.Load().(string)
-		node.ProxyAvailable = s.proxyEnabled.Load() && initialized && r.ConfigHash == expected &&
-			r.Revision == r.AppliedRevision
+		// Прежний серверный proxy exit удалён. Входной SOCKS назначается
+		// отдельно и применяется клиентом до соединения с этим узлом.
+		node.ProxyAvailable = false
 		out = append(out, node)
 	}
 	return out, nil
@@ -137,7 +142,6 @@ func (s *Store) withExpectedIPs(node model.Node, configHash string) model.Node {
 	configured := s.publicNode.Load()
 	if configured != nil && configured.ID == node.ID && configured.ConfigHash == configHash {
 		node.ExpectedServerIP = configured.ExpectedServerIP
-		node.ExpectedProxyIP = configured.ExpectedProxyIP
 	}
 	return node
 }
@@ -167,15 +171,12 @@ func (s *Store) ActiveTrafficIDs(ctx context.Context) (map[string]string, error)
 			return nil, err
 		}
 		ids[strings.ToLower(credential)] = id(row.ID)
-		if s.proxyEnabled.Load() {
-			ids[s.cipher.ProxyCredential(id(row.ID))] = id(row.ID)
-		}
 	}
 	return ids, nil
 }
 func (s *Store) Create(ctx context.Context, name, nodeID string) (model.Device, error) {
 	name = strings.TrimSpace(name)
-	if !validName.MatchString(name) || nodeID != LocalNodeID {
+	if !validName.MatchString(name) || uid(nodeID).Valid == false {
 		return model.Device{}, ErrInvalid
 	}
 	deviceID := uuid.NewString()
@@ -185,6 +186,9 @@ func (s *Store) Create(ctx context.Context, name, nodeID string) (model.Device, 
 	}
 	var result model.Device
 	err = s.transaction(ctx, func(q *db.Queries) error {
+		if _, err := q.GetNode(ctx, uid(nodeID)); err != nil {
+			return err
+		}
 		row, err := q.InsertDevice(ctx, db.InsertDeviceParams{ID: uid(deviceID), NodeID: uid(nodeID), Name: name, CredentialCiphertext: ciphertext})
 		if err != nil {
 			return err
@@ -213,7 +217,7 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID string, name, preferr
 			return model.Device{}, ErrInvalid
 		}
 	}
-	if preferredExit != nil && *preferredExit != "server" && *preferredExit != "proxy" {
+	if preferredExit != nil && *preferredExit != "server" {
 		return model.Device{}, ErrInvalid
 	}
 	var result model.Device
@@ -229,18 +233,6 @@ func (s *Store) UpdateDevice(ctx context.Context, deviceID string, name, preferr
 		if preferredExit != nil {
 			if row.RevokedAt.Valid {
 				return ErrRevoked
-			}
-			if *preferredExit == "proxy" {
-				node, err := q.GetNode(ctx, row.NodeID)
-				if err != nil {
-					return err
-				}
-				if err := s.checkConfigHash(node.ConfigHash); err != nil {
-					return err
-				}
-				if !s.proxyEnabled.Load() || node.Revision != node.AppliedRevision {
-					return ErrProxyUnavailable
-				}
 			}
 			updatedExit = *preferredExit
 		}
@@ -330,7 +322,7 @@ func (s *Store) Export(ctx context.Context, deviceID string) (model.Profile, err
 // ExportForExit выдаёт профиль выбранного выхода. Прежний путь без выбора сохраняет
 // исходный UUID устройства и исходную ссылку-подписку.
 func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model.Profile, error) {
-	if exit != "server" && exit != "proxy" {
+	if exit != "server" {
 		return model.Profile{}, ErrInvalid
 	}
 	if _, err := uuid.Parse(deviceID); err != nil {
@@ -349,18 +341,17 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 		if err != nil {
 			return err
 		}
-		if err := s.checkConfigHash(node.ConfigHash); err != nil {
-			return err
+		if node.EntryProxyID.Valid {
+			return ErrChainUnavailable
 		}
-		if exit == "proxy" && (!s.proxyEnabled.Load() || node.Revision != node.AppliedRevision) {
-			return ErrProxyUnavailable
+		if node.Kind == "local" {
+			if err := s.checkConfigHash(node.ConfigHash); err != nil {
+				return err
+			}
 		}
 		credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
 		if err != nil {
 			return err
-		}
-		if exit == "proxy" {
-			credential = s.cipher.ProxyCredential(id(row.ID))
 		}
 		clientNode, err := nodeModel(node)
 		if err != nil {
@@ -368,18 +359,12 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 		}
 		clientNode = s.withExpectedIPs(clientNode, node.ConfigHash)
 		profileName := row.Name
-		if exit == "proxy" {
-			profileName += " · IP прокси"
-		}
 		result, err = xray.ClientProfiles(clientNode, credential, profileName)
 		result.Port = clientNode.Port
 		if err != nil {
 			return err
 		}
 		result.ExpectedExitIP = clientNode.ExpectedServerIP
-		if exit == "proxy" {
-			result.ExpectedExitIP = clientNode.ExpectedProxyIP
-		}
 		// Ссылка вычисляется заново при каждой выдаче; после показа хранится только её хеш.
 		token := s.cipher.SubscriptionToken(id(row.ID), row.SubscriptionGeneration)
 		if hash := secure.SubscriptionHash(token); !bytes.Equal(row.SubscriptionHash, hash) {
@@ -388,9 +373,6 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 			}
 		}
 		result.SubscriptionPath = SubscriptionPathPrefix + token
-		if exit == "proxy" {
-			result.SubscriptionPath = ProxySubscriptionPathPrefix + token
-		}
 		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.export", DeviceID: row.ID})
 	})
 	return result, err
@@ -447,7 +429,7 @@ func (s *Store) RotateSubscription(ctx context.Context, deviceID string) (string
 // RotateSubscriptionForExit меняет общий секрет обеих ссылок устройства. Суффикс
 // выхода определяет только возвращаемый URL; прежняя ссылка всегда остаётся без него.
 func (s *Store) RotateSubscriptionForExit(ctx context.Context, deviceID, exit string) (string, error) {
-	if exit != "server" && exit != "proxy" {
+	if exit != "server" {
 		return "", ErrInvalid
 	}
 	if _, err := uuid.Parse(deviceID); err != nil {
@@ -462,17 +444,12 @@ func (s *Store) RotateSubscriptionForExit(ctx context.Context, deviceID, exit st
 		if row.RevokedAt.Valid {
 			return ErrRevoked
 		}
-		if exit == "proxy" {
-			node, err := q.GetNode(ctx, row.NodeID)
-			if err != nil {
-				return err
-			}
-			if err := s.checkConfigHash(node.ConfigHash); err != nil {
-				return err
-			}
-			if !s.proxyEnabled.Load() || node.Revision != node.AppliedRevision {
-				return ErrProxyUnavailable
-			}
+		node, err := q.GetNode(ctx, row.NodeID)
+		if err != nil {
+			return err
+		}
+		if node.EntryProxyID.Valid {
+			return ErrChainUnavailable
 		}
 		if row, err = q.AdvanceSubscription(ctx, row.ID); err != nil {
 			return err
@@ -482,9 +459,6 @@ func (s *Store) RotateSubscriptionForExit(ctx context.Context, deviceID, exit st
 			return err
 		}
 		path = SubscriptionPathPrefix + token
-		if exit == "proxy" {
-			path = ProxySubscriptionPathPrefix + token
-		}
 		return q.InsertAudit(ctx, db.InsertAuditParams{Action: "device.subscription_rotate", DeviceID: row.ID})
 	})
 	return path, err
@@ -499,7 +473,7 @@ func (s *Store) Subscription(ctx context.Context, token string) (model.Profile, 
 
 // SubscriptionForExit возвращает профиль нужного выхода по той же защищённой ссылке.
 func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (model.Profile, string, error) {
-	if exit != "server" && exit != "proxy" {
+	if exit != "server" {
 		return model.Profile{}, "", ErrInvalid
 	}
 	row, err := s.queries.GetActiveDeviceBySubscription(ctx, secure.SubscriptionHash(token))
@@ -510,18 +484,22 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 	if err != nil {
 		return model.Profile{}, "", classify(err)
 	}
-	if err = s.checkConfigHash(node.ConfigHash); err != nil {
-		return model.Profile{}, "", err
+	if node.EntryProxyID.Valid {
+		return model.Profile{}, "", ErrChainUnavailable
 	}
-	if exit == "proxy" && (!s.proxyEnabled.Load() || node.Revision != node.AppliedRevision) {
-		return model.Profile{}, "", ErrProxyUnavailable
+	// У удалённого узла новые параметры TCP становятся рабочими только после ACK
+	// агента. Подписка не должна рекламировать ещё не применённый listener.
+	if node.Kind == "remote" && node.Revision != node.AppliedRevision {
+		return model.Profile{}, "", ErrChainUnavailable
+	}
+	if node.Kind == "local" {
+		if err = s.checkConfigHash(node.ConfigHash); err != nil {
+			return model.Profile{}, "", err
+		}
 	}
 	credential, err := s.cipher.Decrypt(row.CredentialCiphertext, id(row.ID))
 	if err != nil {
 		return model.Profile{}, "", err
-	}
-	if exit == "proxy" {
-		credential = s.cipher.ProxyCredential(id(row.ID))
 	}
 	clientNode, err := nodeModel(node)
 	if err != nil {
@@ -534,18 +512,12 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 		clientNode.XHTTP = nil
 	}
 	profileName := row.Name
-	if exit == "proxy" {
-		profileName += " · IP прокси"
-	}
 	profile, err := xray.ClientProfiles(clientNode, credential, profileName)
 	profile.Port = clientNode.Port
 	if err != nil {
 		return model.Profile{}, "", err
 	}
 	profile.ExpectedExitIP = clientNode.ExpectedServerIP
-	if exit == "proxy" {
-		profile.ExpectedExitIP = clientNode.ExpectedProxyIP
-	}
 	return profile, profileName, nil
 }
 
@@ -564,7 +536,7 @@ func (s *Store) Status(ctx context.Context) (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
-	counts, err := s.queries.CountDevices(ctx, uid(LocalNodeID))
+	counts, err := s.queries.CountAllDevices(ctx)
 	if err != nil {
 		return Status{}, err
 	}
@@ -609,11 +581,7 @@ func (s *Store) Configure(ctx context.Context, apply bool, operation func(contex
 			if err != nil {
 				return err
 			}
-			client := xray.Client{ID: credential, Name: row.Name}
-			if s.proxyEnabled.Load() {
-				client.ProxyID = s.cipher.ProxyCredential(id(row.ID))
-			}
-			clients = append(clients, client)
+			clients = append(clients, xray.Client{ID: credential, Name: row.Name})
 		}
 		if err = operation(ctx, clients); err != nil {
 			return err
@@ -641,10 +609,24 @@ func deviceModel(d db.Device) model.Device {
 	return result
 }
 func nodeModel(n db.Node) (model.Node, error) {
-	node := model.Node{ID: id(n.ID), Name: n.Name, Host: n.Host, Port: int(n.Port), ServerName: n.ServerName, PublicKey: n.PublicKey, ShortID: n.ShortID}
+	node := model.Node{ID: id(n.ID), Name: n.Name, Host: n.Host, Port: int(n.Port), ServerName: n.ServerName, PublicKey: n.PublicKey, ShortID: n.ShortID,
+		Kind: n.Kind, DesiredRevision: n.Revision, AppliedRevision: n.AppliedRevision, RequestedRevision: n.RequestedRevision, AgentError: n.AgentError}
+	if n.EntryProxyID.Valid {
+		value := id(n.EntryProxyID)
+		node.EntryProxyID = &value
+	}
+	if n.AgentLastSeenAt.Valid {
+		value := n.AgentLastSeenAt.Time
+		node.LastSeenAt = &value
+	}
 	if len(n.XhttpConfig) > 0 {
 		if err := json.Unmarshal(n.XhttpConfig, &node.XHTTP); err != nil {
 			return model.Node{}, errors.New("invalid stored XHTTP node settings")
+		}
+	}
+	if len(n.H3Config) > 0 {
+		if err := json.Unmarshal(n.H3Config, &node.H3); err != nil {
+			return model.Node{}, errors.New("invalid stored H3 node settings")
 		}
 	}
 	return node, nil

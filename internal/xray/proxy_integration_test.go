@@ -14,12 +14,13 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rvburov/private-gateway/internal/model"
 )
 
-// TestRealXrayTwoExits проверяет не только JSON-маршруты: два разных VLESS UUID
-// проходят через настоящий Xray, а остановка SOCKS5 не переводит прокси-профиль
-// на прямой выход. Локальный SOCKS5 fixture не получает настоящие секреты.
-func TestRealXrayTwoExits(t *testing.T) {
+// TestRealXrayClientEntryProxy проверяет реальный вход через SOCKS5 перед VPN.
+// При остановке SOCKS5 клиент не должен переходить на прямое соединение.
+func TestRealXrayClientEntryProxy(t *testing.T) {
 	binary := os.Getenv("PRIVATE_GATEWAY_REAL_XRAY_BINARY")
 	if binary == "" {
 		t.Skip("set PRIVATE_GATEWAY_REAL_XRAY_BINARY for real VLESS/REALITY traffic checks")
@@ -35,13 +36,12 @@ func TestRealXrayTwoExits(t *testing.T) {
 	settings := Settings{
 		PrivateKey: base64.RawURLEncoding.EncodeToString(private), Listen: "127.0.0.1",
 		Port: serverPort, ServerName: "reality.example", Target: target, ShortID: "0123456789abcdef",
-		Proxy: &ProxySettings{Address: "127.0.0.1", Port: proxy.port, Username: "sample-user", Password: "sample-pass"},
 	}
 	key, err := PublicKey(settings.PrivateKey)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := Render(settings, []Client{{ID: testID, ProxyID: testProxyID}})
+	data, err := RenderTCP(settings, []Client{{ID: testID}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,45 +50,40 @@ func TestRealXrayTwoExits(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = startXrayProcess(t, binary, path, serverPort)
-	directClient := startRealXrayClient(t, binary, serverPort, key, settings, testID, true)
-	proxyClient := startRealXrayClient(t, binary, serverPort, key, settings, testProxyID, true)
-	assertProxyResponse(t, directClient, origin)
-	if proxy.requests.Load() != 0 {
-		t.Fatal("direct profile unexpectedly used SOCKS5")
+	bundle := model.ChainBundle{Version: 1,
+		EntryProxy: model.ChainEntryProxy{Type: "socks5", Host: "127.0.0.1", Port: proxy.port,
+			Username: "sample-user", Password: "sample-pass"},
+		Profiles: []model.ChainProfile{{Transport: "tcp", Host: "127.0.0.1", Port: serverPort,
+			UUID: testID, Security: "reality", SNI: settings.ServerName,
+			PublicKey: key, ShortID: settings.ShortID, Fingerprint: "chrome",
+			Flow: "xtls-rprx-vision", SpiderX: "/"}},
 	}
-	assertProxyResponse(t, proxyClient, origin)
+	clientConfig, err := RenderChainClientJSON(bundle, "tcp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientPath := filepath.Join(t.TempDir(), "client.json")
+	if err := os.WriteFile(clientPath, clientConfig, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_ = startXrayProcess(t, binary, clientPath, 2080)
+	client := "127.0.0.1:2080"
+	assertProxyResponse(t, client, origin)
 	if proxy.requests.Load() == 0 {
-		t.Fatal("proxy profile did not use SOCKS5")
-	}
-	udpOrigin := startUDPEcho(t)
-	if response, err := exchangeViaSOCKSUDP(directClient, udpOrigin, []byte("direct-udp")); err != nil ||
-		string(response) != "direct-udp" || proxy.udpRequests.Load() != 0 {
-		t.Fatal("direct UDP traffic failed or used the SOCKS5 proxy")
-	}
-	if response, err := exchangeViaSOCKSUDP(proxyClient, udpOrigin, []byte("proxy-udp")); err != nil ||
-		string(response) != "proxy-udp" || proxy.udpRequests.Load() == 0 {
-		t.Fatalf("proxy UDP traffic did not return through SOCKS5: %v", err)
+		t.Fatal("entry SOCKS5 proxy was bypassed")
 	}
 	proxy.close()
-	if body, err := fetchViaSOCKS(proxyClient, origin); err == nil {
-		t.Fatalf("proxy profile fell back to direct after SOCKS5 stopped: %q", body)
-	}
-	assertProxyResponse(t, directClient, origin)
-	if _, err := exchangeViaSOCKSUDP(proxyClient, udpOrigin, []byte("closed-proxy")); err == nil {
-		t.Fatal("proxy UDP traffic fell back to direct after SOCKS5 stopped")
-	}
-	if response, err := exchangeViaSOCKSUDP(directClient, udpOrigin, []byte("direct-still-works")); err != nil ||
-		string(response) != "direct-still-works" {
-		t.Fatal("direct UDP traffic stopped when SOCKS5 stopped")
+	if body, err := fetchViaSOCKS(client, origin); err == nil {
+		t.Fatalf("VPN fell back to direct after entry SOCKS5 stopped: %q", body)
 	}
 }
 
 type socks5Fixture struct {
-	listener net.Listener
-	port     int
-	requests atomic.Int64
+	listener    net.Listener
+	port        int
+	requests    atomic.Int64
 	udpRequests atomic.Int64
-	closed   atomic.Bool
+	closed      atomic.Bool
 }
 
 func startSOCKS5Fixture(t *testing.T, username, password string) *socks5Fixture {

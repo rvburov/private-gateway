@@ -12,12 +12,14 @@ import zipfile
 
 MAX_ARCHIVE = 256 * 1024 * 1024
 MAX_EXPANDED = 1024 * 1024 * 1024
-REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
+REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/gateway-node", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
-            "docker/compose.yml", "docker/compose.xhttp.yml", "docker/Caddyfile.template", "docker/haproxy.cfg.template", "docker/Dockerfile.api",
+            "docker/compose.yml", "docker/compose.xhttp.yml", "docker/compose.xhttp-legacy.yml", "docker/compose.xhttp-h3.yml",
+            "docker/compose.node.yml", "docker/compose.node-h3.yml", "docker/Caddyfile.template", "docker/Caddyfile.node.template",
+            "docker/render-caddy.py", "docker/render-node-caddy.py", "docker/haproxy.cfg.template", "docker/Dockerfile.api", "docker/Dockerfile.node",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
-            "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/configure-xhttp.py", "docker/configure-proxy.py", "docker/install.sh",
+            "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/configure-xhttp.py", "docker/configure-proxy.py", "docker/install.sh", "docker/install-node.sh",
             "docker/update.sh", "docker/verify-release.py"}
 
 
@@ -64,7 +66,7 @@ def verify_tar(path, version, architecture="amd64"):
         files = {name: member for name, member in members.items() if member.isfile() and name != "manifest.json"}
         if set(files) != set(manifest["files"]) or not REQUIRED <= files.keys():
             raise ValueError("Release file list does not match its manifest")
-        if {name for name in files if name.startswith("bin/")} != {"bin/gateway-api", "bin/gatewayctl", "bin/xray"}:
+        if {name for name in files if name.startswith("bin/")} != {"bin/gateway-api", "bin/gatewayctl", "bin/gateway-node", "bin/xray"}:
             raise ValueError("Unexpected release executable")
         for name, member in files.items():
             digest = manifest["files"][name]

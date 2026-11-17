@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState } from "react";
-import { APIError, request, type Device, type Node, type ProfileExit, type ProfileExport } from "./api";
+import { useState } from "react";
+import { request, type Device, type Node, type ProfileExit, type ProfileExport } from "./api";
 import { expectedExitIP } from "./deviceExit";
 import { Icon } from "./icons";
 import { ErrorNotice, Modal, ProfileQRCode } from "./ui";
 
-type ProfileFormat = "subscription" | "uri" | "xhttp_uri" | "sing_box_json" | "mihomo_yaml";
+type ProfileFormat = "subscription" | "uri" | "xhttp_uri" | "h3_uri" | "sing_box_json" | "mihomo_yaml";
 export type RevealedProfile = ProfileExport & { device: Device; exit: ProfileExit };
 
 // Профиль и его ссылки живут только в состоянии компонента и никогда — в кеше запросов.
@@ -12,14 +12,13 @@ export function ProfileDialog({
   token,
   profile,
   node,
-  proxyAvailable,
   onChange,
   onClose,
 }: {
   token: string;
   profile: RevealedProfile;
   node?: Pick<Node, "expected_server_ip" | "expected_proxy_ip">;
-  proxyAvailable: boolean;
+  proxyAvailable?: boolean;
   onChange: (profile: RevealedProfile) => void | Promise<void>;
   onClose: () => void;
 }) {
@@ -30,69 +29,27 @@ export function ProfileDialog({
   const [confirmRotate, setConfirmRotate] = useState(false);
   const [rotating, setRotating] = useState(false);
   const [rotated, setRotated] = useState(false);
-  const [switching, setSwitching] = useState(false);
-  const switchController = useRef<AbortController | null>(null);
-  useEffect(() => () => switchController.current?.abort(), []);
-
-  const subscriptionURL = new URL(profile.subscription_path, window.location.origin);
-  if (profile.port) subscriptionURL.port = String(profile.port);
+  const subscriptionURL = new URL(profile.subscription_url || profile.subscription_path, window.location.origin);
   const subscriptionLink = subscriptionURL.toString();
   // После обновления профиля выключенный вход не должен оставлять пустую ссылку для копирования.
-  const activeFormat = format === "xhttp_uri" && !profile.xhttp_uri ? "uri" : format;
+  const activeFormat = (format === "xhttp_uri" && !profile.xhttp_uri) || (format === "h3_uri" && !profile.h3_uri) ? "uri" : format;
   const text = activeFormat === "subscription" ? subscriptionLink
-    : activeFormat === "xhttp_uri" ? profile.xhttp_uri ?? "" : profile[activeFormat];
-  const linkFormat = activeFormat === "subscription" || activeFormat === "uri" || activeFormat === "xhttp_uri";
+    : activeFormat === "xhttp_uri" ? profile.xhttp_uri ?? "" : activeFormat === "h3_uri" ? profile.h3_uri ?? "" : profile[activeFormat];
+  const linkFormat = activeFormat === "subscription" || activeFormat === "uri" || activeFormat === "xhttp_uri" || activeFormat === "h3_uri";
   // Выбранный адрес относится к тому же ответу, что ссылка и QR: более позднее
   // обновление узла не должно подменить только подпись уже полученного профиля.
-  const optionIP = (exit: ProfileExit) => exit === profile.exit
-    ? profile.expected_exit_ip?.trim() || expectedExitIP(node, exit)
-    : expectedExitIP(node, exit);
-  const expectedIP = optionIP(profile.exit);
-
-  async function switchExit(exit: ProfileExit) {
-    if (exit === profile.exit || switching || rotating) return;
-    const controller = new AbortController();
-    switchController.current = controller;
-    setSwitching(true);
-    setError(null);
-    setCopied(false);
-    setShowQR(false);
-    setConfirmRotate(false);
-    try {
-      const result = await request<ProfileExport>(
-        token,
-        `/devices/${encodeURIComponent(profile.device.id)}/profile?exit=${exit}`,
-        { signal: controller.signal },
-      );
-      controller.signal.throwIfAborted();
-      const saved = await request<Device>(token, `/devices/${encodeURIComponent(profile.device.id)}`, {
-        method: "PATCH", body: JSON.stringify({ preferred_exit: exit }), signal: controller.signal,
-      });
-      controller.signal.throwIfAborted();
-      if (saved.id !== profile.device.id || saved.preferred_exit !== exit) {
-        throw new Error("Не удалось подтвердить сохранение выбранного выхода. Обновите список устройств и повторите.");
-      }
-      await onChange({ ...result, device: saved, exit });
-    } catch (err) {
-      if (!controller.signal.aborted) setError(exit === "proxy" && err instanceof APIError && err.status === 503
-        ? new Error("Профиль через прокси недоступен. Проверьте настройку прокси, применение конфигурации и связь с сервером.")
-        : err);
-    } finally {
-      if (!controller.signal.aborted) setSwitching(false);
-      if (switchController.current === controller) switchController.current = null;
-    }
-  }
+  const expectedIP = profile.expected_exit_ip?.trim() || expectedExitIP(node, "server");
 
   async function rotateSubscription() {
     setRotating(true);
     setError(null);
     try {
-      const result = await request<{ subscription_path: string }>(
+      const result = await request<{ subscription_path: string; subscription_url?: string }>(
         token,
-        `/devices/${encodeURIComponent(profile.device.id)}/subscription${profile.exit === "proxy" ? "?exit=proxy" : ""}`,
+        `/devices/${encodeURIComponent(profile.device.id)}/subscription`,
         { method: "POST" },
       );
-      await onChange({ ...profile, subscription_path: result.subscription_path });
+      await onChange({ ...profile, subscription_path: result.subscription_path, subscription_url: result.subscription_url });
       setConfirmRotate(false);
       setRotated(true);
       setCopied(false);
@@ -144,27 +101,12 @@ export function ProfileDialog({
         могут использовать собственный файл конфигурации. Для нового устройства сначала примените
         конфигурацию.
       </p>
-      <label htmlFor="profile-exit">Выходной IP</label>
-      <select
-        id="profile-exit"
-        className="profile-format-picker"
-        value={profile.exit}
-        disabled={switching || rotating}
-        onChange={(event) => void switchExit(event.target.value as ProfileExit)}
-      >
-        <option value="server">IP сервера — {optionIP("server") ?? "IP не указан"}</option>
-        <option value="proxy" disabled={!proxyAvailable}>IP прокси — {optionIP("proxy") ?? "IP не указан"}</option>
-      </select>
-      {proxyAvailable
-        ? <p className="profile-format-help">Каждый выход имеет свою подписку. Подключение выбирают в приложении VPN.</p>
-        : <p className="profile-format-help">Прокси ещё не настроен или конфигурация не применена. Профиль через IP сервера доступен.</p>}
-      {switching && <p role="status">Получаем профиль и сохраняем выбранный выход…</p>}
       <label htmlFor="profile-format">Формат профиля</label>
       <select
         id="profile-format"
         className="profile-format-picker"
         value={activeFormat}
-        disabled={switching || rotating}
+        disabled={rotating}
         onChange={(event) => {
           setFormat(event.target.value as ProfileFormat);
           setCopied(false);
@@ -172,13 +114,14 @@ export function ProfileDialog({
         }}
       >
         <option value="subscription">Ссылка-подписка</option>
+        {profile.h3_uri && <option value="h3_uri">VLESS · XHTTP + TLS · HTTP/3 (UDP)</option>}
         {profile.xhttp_uri && <option value="xhttp_uri">VLESS · XHTTP + REALITY (URI и QR)</option>}
         <option value="uri">VLESS · TCP + REALITY + Vision (URI и QR)</option>
         <option value="sing_box_json">sing-box (JSON-файл)</option>
         <option value="mihomo_yaml">Mihomo (YAML-файл)</option>
       </select>
       <ProfileParameters format={activeFormat} profile={profile} />
-      {!switching && (
+      {(
         <section className="profile-exit-summary" aria-label="Ожидаемый выходной IP">
           <p>Ожидаемый выходной IP: <strong className="mono">{expectedIP ?? "IP не указан"}</strong></p>
           <p className="hint">Адрес выбранного профиля из настроек сервера. Фактическое подключение проверяется в разделе «Проверка» на нужном устройстве.</p>
@@ -194,7 +137,7 @@ export function ProfileDialog({
       <textarea
         id="profile-content"
         className="profile-uri mono"
-        value={switching ? "" : text}
+        value={text}
         readOnly
         rows={activeFormat === "subscription" ? 3 : linkFormat ? 5 : 12}
         spellCheck={false}
@@ -204,7 +147,7 @@ export function ProfileDialog({
         <button
           className="button secondary-button profile-qr-toggle"
           onClick={() => setShowQR((visible) => !visible)}
-          disabled={rotating || switching}
+          disabled={rotating}
           aria-expanded={showQR}
           aria-controls="profile-qr"
         >
@@ -223,7 +166,7 @@ export function ProfileDialog({
           failure="Не удалось создать QR-код. Скопируйте ссылку вручную."
         />
       )}
-      {showQR && (activeFormat === "uri" || activeFormat === "xhttp_uri") && <ProfileQRCode uri={text} />}
+      {showQR && (activeFormat === "uri" || activeFormat === "xhttp_uri" || activeFormat === "h3_uri") && <ProfileQRCode uri={text} />}
       {activeFormat === "subscription" && (
         <div className="subscription-help">
           <p className="profile-format-help">
@@ -232,28 +175,26 @@ export function ProfileDialog({
           </p>
           {rotated && (
             <p className="notice" role="status">
-              {proxyAvailable ? "Ссылки обоих выходов заменены: прежние больше не работают." : "Ссылка заменена: прежняя больше не работает."}
+              Ссылка заменена: прежняя больше не работает.
             </p>
           )}
           {confirmRotate ? (
             <div className="notice warning-notice subscription-rotate">
               <p>
-                {proxyAvailable
-                  ? "Прежние ссылки для IP сервера и IP прокси сразу перестанут работать: обе подписки в приложениях придётся заменить."
-                  : "Прежняя ссылка сразу перестанет работать: в приложениях, где она добавлена, подписку придётся заменить."}
+                Прежняя ссылка сразу перестанет работать: в приложениях, где она добавлена, подписку придётся заменить.
               </p>
               <div className="modal-actions">
                 <button
                   className="button secondary-button"
                   onClick={() => setConfirmRotate(false)}
-                  disabled={rotating || switching}
+                  disabled={rotating}
                 >
                   Отмена
                 </button>
                 <button
                   className="button danger"
                   onClick={() => void rotateSubscription()}
-                  disabled={rotating || switching}
+                  disabled={rotating}
                 >
                   {rotating ? "Заменяем…" : "Заменить ссылку"}
                 </button>
@@ -262,7 +203,7 @@ export function ProfileDialog({
           ) : (
             <button
               className="button secondary-button"
-              disabled={rotating || switching}
+              disabled={rotating}
               onClick={() => {
                 setConfirmRotate(true);
                 setRotated(false);
@@ -279,11 +220,11 @@ export function ProfileDialog({
           Скрыть профиль
         </button>
         {!linkFormat && (
-          <button className="button secondary-button" onClick={download} disabled={rotating || switching}>
+          <button className="button secondary-button" onClick={download} disabled={rotating}>
             Скачать файл
           </button>
         )}
-        <button className="button primary" onClick={() => void copy()} disabled={rotating || switching}>
+        <button className="button primary" onClick={() => void copy()} disabled={rotating}>
           <Icon name={copied ? "check" : "copy"} size={17} />
           {copied ? "Скопировано" : linkFormat ? "Скопировать ссылку" : "Скопировать конфигурацию"}
         </button>
@@ -293,17 +234,24 @@ export function ProfileDialog({
 }
 
 function ProfileParameters({ format, profile }: { format: ProfileFormat; profile: RevealedProfile }) {
+  const h3 = format === "h3_uri";
   const xhttp = format === "xhttp_uri";
   const subscription = format === "subscription";
   const both = subscription && Boolean(profile.xhttp_uri);
   const port = (value: number | undefined) => value ? String(value) : "Не указан";
+  if (h3) return <section className="profile-parameters" aria-label="Параметры подключения">
+    <h3>XHTTP · HTTP/3</h3><p>Трафик до VPS передаётся по QUIC/UDP с TLS. Нужен клиент с поддержкой XHTTP/HTTP3 и доступный UDP-путь.</p>
+    <dl><div><dt>Транспорт</dt><dd>XHTTP / HTTP3 / UDP</dd></div><div><dt>Защита</dt><dd>TLS с проверкой сертификата</dd></div>
+      <div><dt>Порт VPN</dt><dd>{port(profile.h3_port)}</dd></div></dl>
+    <p>Профиль выбирается в приложении. Автоматическое переключение этим форматом не включается.</p>
+  </section>;
   return (
     <section className="profile-parameters" aria-label="Параметры подключения">
-      <h3>{subscription ? "Одна подписка для выбранного выхода" : xhttp ? "XHTTP · новые соединения" : "TCP + Vision · совместимость"}</h3>
+      <h3>{subscription ? "Подписка VPS" : xhttp ? "XHTTP · новые соединения" : "TCP + Vision · совместимость"}</h3>
       <p>
         {subscription
           ? both
-            ? "Для выбранного выхода ссылка одна. Совместимые клиенты Xray могут получить XHTTP и TCP + Vision; форматы sing-box и Mihomo сохраняют TCP + Vision."
+            ? "Подписка относится к этому VPS. Совместимые клиенты Xray могут получить XHTTP и TCP + Vision; форматы sing-box и Mihomo сохраняют TCP + Vision."
             : "Подписка содержит TCP + Vision. Приложение получает подходящий формат и обновляет профиль по этой же ссылке."
           : xhttp
             ? "Повторное использование соединения может уменьшить задержку новых запросов. Скорость требует замера в вашей сети."

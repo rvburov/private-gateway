@@ -34,7 +34,7 @@ class XrayWorkerMetricsTest(unittest.TestCase):
                                                 (None, [], True)):
             with self.subTest(networks=networks, outbounds=outbounds):
                 configuration.write_text(json.dumps({"inbounds": [
-                    {"streamSettings": {"network": network}} for network in networks
+                    {"protocol": "vless", "port": 8444, "streamSettings": {"network": network}} for network in networks
                 ], "outbounds": outbounds}) if networks is not None else "invalid-test-document", encoding="utf-8")
                 child = mock.Mock()
                 child.poll.return_value = 1
@@ -42,12 +42,29 @@ class XrayWorkerMetricsTest(unittest.TestCase):
                         mock.patch.object(worker, "process", None), \
                         mock.patch.object(worker.subprocess, "Popen", return_value=child) as start:
                     self.assertFalse(worker.start_child({}))
+                if networks is None:
+                    start.assert_not_called()
+                    continue
                 options = start.call_args.kwargs
                 if suppressed:
                     self.assertEqual(options, {"stdout": worker.subprocess.DEVNULL,
                                                "stderr": worker.subprocess.DEVNULL})
                 else:
                     self.assertEqual(options, {})
+
+    def test_xhttp_worker_checks_its_own_listener(self):
+        configuration = self.root / "xhttp.json"
+        configuration.write_text(json.dumps({"inbounds": [{"protocol": "vless", "port": 8081,
+                                              "streamSettings": {"network": "xhttp"}}]}))
+        child = mock.Mock()
+        child.poll.return_value = None
+        with mock.patch.object(worker, "CONFIG", configuration), \
+                mock.patch.object(worker, "process", None), \
+                mock.patch.object(worker.subprocess, "Popen", return_value=child), \
+                mock.patch.object(worker.socket, "create_connection") as connect, \
+                mock.patch.object(worker, "write_status"):
+            self.assertTrue(worker.start_child({}))
+        self.assertEqual(connect.call_args.args[0], ("127.0.0.1", 8081))
 
     def test_v2_collects_own_namespace_and_excludes_loopback(self):
         for path, value in {

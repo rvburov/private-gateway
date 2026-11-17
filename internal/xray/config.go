@@ -32,6 +32,7 @@ type Settings struct {
 	Target     string
 	ShortID    string
 	XHTTP      *XHTTPSettings
+	H3         *H3Settings
 	Proxy      *ProxySettings
 }
 
@@ -49,6 +50,13 @@ type XHTTPSettings struct {
 	PrivateKey string
 	ShortID    string
 	Path       string
+}
+
+// H3Settings описывает внутренний HTTP-вход за Caddy. TLS и HTTP/3 завершаются
+// в Caddy; этот порт доступен только в закрытой сети Docker.
+type H3Settings struct {
+	InternalPort int
+	Path         string
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
@@ -175,6 +183,32 @@ func XHTTPProfile(node model.Node, credentialID, name string) (string, error) {
 	return u.String(), nil
 }
 
+// H3Profile выдаёт отдельный TLS/HTTP3 профиль. Его порт относится к UDP;
+// параметры REALITY и Vision в него не входят.
+func H3Profile(node model.Node, credentialID, name string) (string, error) {
+	if _, err := Profile(node, credentialID, name); err != nil {
+		return "", err
+	}
+	h3 := node.H3
+	if h3 == nil {
+		return "", errors.New("H3 is not configured")
+	}
+	if !validPort(h3.Port) || !validHost(h3.ServerName) || net.ParseIP(h3.ServerName) != nil {
+		return "", errors.New("H3 requires a valid UDP port and TLS server name")
+	}
+	if !xhttpPathPattern.MatchString(h3.Path) || (h3.Mode != "" && h3.Mode != "auto") {
+		return "", errors.New("H3 requires a valid XHTTP path and auto mode")
+	}
+	params := url.Values{
+		"encryption": {"none"}, "type": {"xhttp"}, "security": {"tls"},
+		"path": {h3.Path}, "mode": {"auto"}, "sni": {h3.ServerName}, "alpn": {"h3"},
+	}
+	u := url.URL{Scheme: "vless", User: url.User(strings.ToLower(credentialID)),
+		Host:     net.JoinHostPort(node.Host, strconv.Itoa(h3.Port)),
+		RawQuery: params.Encode(), Fragment: name + " H3"}
+	return u.String(), nil
+}
+
 // ClientProfiles строит все форматы для клиентов из одного проверенного секрета.
 // Каждый формат выдаёт только адрес профиля, доступный после входа.
 func ClientProfiles(node model.Node, credentialID, name string) (model.Profile, error) {
@@ -247,6 +281,13 @@ rules:
 		}
 		profile.XHTTPPort = node.XHTTP.Port
 	}
+	if node.H3 != nil {
+		profile.H3URI, err = H3Profile(node, credentialID, name)
+		if err != nil {
+			return model.Profile{}, err
+		}
+		profile.H3Port = node.H3.Port
+	}
 	return profile, nil
 }
 
@@ -281,10 +322,11 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 		Email string `json:"email"`
 		Flow  string `json:"flow,omitempty"`
 	}
-	accounts := make([]account, 0, len(clients)*2)
-	seen := make(map[string]bool, len(clients)*2)
-	directUsers := make([]string, 0, len(clients))
-	proxyUsers := make([]string, 0, len(clients))
+	if settings.Proxy != nil {
+		return nil, errors.New("server-side proxy exit is unavailable")
+	}
+	accounts := make([]account, 0, len(clients))
+	seen := make(map[string]bool, len(clients))
 	for _, client := range clients {
 		id := strings.ToLower(client.ID)
 		if !uuidPattern.MatchString(id) {
@@ -296,17 +338,6 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 		seen[id] = true
 		email := id + "@private-gateway"
 		accounts = append(accounts, account{ID: id, Email: email, Flow: "xtls-rprx-vision"})
-		directUsers = append(directUsers, email)
-		if settings.Proxy != nil {
-			proxyID := strings.ToLower(client.ProxyID)
-			if !uuidPattern.MatchString(proxyID) || seen[proxyID] {
-				return nil, errors.New("invalid or duplicate proxy VLESS credential")
-			}
-			seen[proxyID] = true
-			proxyEmail := proxyID + "@private-gateway"
-			accounts = append(accounts, account{ID: proxyID, Email: proxyEmail, Flow: "xtls-rprx-vision"})
-			proxyUsers = append(proxyUsers, proxyEmail)
-		}
 	}
 	config := map[string]any{
 		"log": map[string]any{"loglevel": "warning"},
@@ -323,37 +354,6 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			},
 		}},
 		"outbounds": []any{map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}}},
-	}
-	if proxy := settings.Proxy; proxy != nil {
-		if !validHost(proxy.Address) || !validPort(proxy.Port) {
-			return nil, errors.New("proxy requires a valid SOCKS5 address and port")
-		}
-		if (proxy.Username == "") != (proxy.Password == "") ||
-			len([]byte(proxy.Username)) > 255 || len([]byte(proxy.Password)) > 255 ||
-			strings.ContainsAny(proxy.Username+proxy.Password, "\x00\r\n") {
-			return nil, errors.New("proxy authentication settings are invalid")
-		}
-		proxySettings := map[string]any{"address": proxy.Address, "port": proxy.Port}
-		if proxy.Username != "" {
-			proxySettings["user"], proxySettings["pass"] = proxy.Username, proxy.Password
-		}
-		// Первый выход используется Xray при отсутствии совпадения правил. Поэтому
-		// неизвестный пользователь не должен автоматически выходить напрямую.
-		config["outbounds"] = []any{
-			map[string]any{"tag": "blocked", "protocol": "blackhole", "settings": map[string]any{}},
-			map[string]any{"tag": "direct", "protocol": "freedom", "settings": map[string]any{}},
-			map[string]any{"tag": "proxy", "protocol": "socks", "settings": proxySettings},
-		}
-		rules := make([]any, 0, 2)
-		if len(directUsers) > 0 {
-			rules = append(rules, map[string]any{"type": "field", "user": directUsers, "outboundTag": "direct"})
-		}
-		if len(proxyUsers) > 0 {
-			rules = append(rules, map[string]any{"type": "field", "user": proxyUsers, "outboundTag": "proxy"})
-		}
-		config["routing"] = map[string]any{"domainStrategy": "AsIs", "rules": rules}
-		// Ошибки ядра могут содержать параметры прокси. Журнал Xray выключен.
-		config["log"] = map[string]any{"loglevel": "none", "access": "none"}
 	}
 	if xhttp := settings.XHTTP; xhttp != nil {
 		// XHTTP использует секретный путь. Отключаем журналы ядра, чтобы runtime-
@@ -405,12 +405,7 @@ func Render(settings Settings, clients []Client) ([]byte, error) {
 			"protocol": "dokodemo-door", "settings": map[string]any{"address": "127.0.0.1"},
 		})
 		statsRule := map[string]any{"type": "field", "inboundTag": []string{"stats-api"}, "outboundTag": "stats-api"}
-		if settings.Proxy == nil {
-			config["routing"] = map[string]any{"rules": []any{statsRule}}
-		} else {
-			routing := config["routing"].(map[string]any)
-			routing["rules"] = append([]any{statsRule}, routing["rules"].([]any)...)
-		}
+		config["routing"] = map[string]any{"rules": []any{statsRule}}
 	}
 	data, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {

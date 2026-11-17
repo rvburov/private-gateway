@@ -14,12 +14,14 @@ import {
 } from "./api";
 import { Checks } from "./Checks";
 import { ServerDiagnostics } from "./ServerDiagnostics";
+import { NodesManager } from "./NodesManager";
+import { ChainProfileDialog } from "./ChainProfileDialog";
 import { Notifications, NotificationBell } from "./Notifications";
 import { ConnectionNotice, connectionState } from "./ConnectionStatus";
 import { Guide } from "./Guide";
 import { Icon } from "./icons";
 import { ProfileDialog, type RevealedProfile } from "./ProfileDialog";
-import { exitName, expectedExitIP, preferredExit } from "./deviceExit";
+import { expectedExitIP } from "./deviceExit";
 import { Shell, type Page } from "./Shell";
 import { useTheme } from "./theme";
 import { actionLabel, bytes, date, Empty, ErrorNotice, Modal } from "./ui";
@@ -30,7 +32,7 @@ const intros: Record<Page, [string, string]> = {
     "Профили устройств",
     "Отдельный профиль для каждого телефона и компьютера. Доступ можно отозвать в любой момент.",
   ],
-  nodes: ["Сервер подключения", "VLESS + REALITY, скорость и состояние сервера."],
+  nodes: ["VPN-серверы и входные прокси", "Добавляйте VPS и выбирайте, через какой прокси к ним подключаться."],
   audit: [
     "История действий",
     "Изменения доступа и конфигурации шлюза. Секреты и ссылки в журнал не попадают.",
@@ -78,7 +80,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
   const [profile, setProfile] = useState<RevealedProfile | null>(null);
   const [profilePending, setProfilePending] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<unknown>(null);
-  const [unavailableProxyDeviceID, setUnavailableProxyDeviceID] = useState<string | null>(null);
+  const [chain, setChain] = useState<{ device: Device; bundle: Record<string, unknown> } | null>(null);
   const revealController = useRef<AbortController | null>(null);
   useEffect(() => () => revealController.current?.abort(), []);
   const [name, setName] = useState("");
@@ -112,6 +114,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
   const nodes = useQuery({
     queryKey: ["nodes"],
     queryFn: ({ signal }) => request<{ nodes: Node[] }>(token, "/nodes", { signal }),
+    refetchInterval: page === "nodes" ? 10_000 : false,
   });
   const lastRevision = useRef<string | null>(null);
   useEffect(() => {
@@ -218,56 +221,34 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       await refresh();
     },
   });
-  async function reveal(device: Device, chooseServer = false) {
+  async function reveal(device: Device) {
     revealController.current?.abort();
     const controller = new AbortController();
     revealController.current = controller;
     setProfileError(null);
-    setUnavailableProxyDeviceID(null);
     setProfilePending(device.id);
-    let requestedExit = chooseServer ? "server" : preferredExit(device);
-    let requestedProfile = false;
     try {
-      // Выбор мог измениться в другом браузере, а готовность — после применения Xray.
-      const [freshDevices] = await Promise.all([
+      const [freshDevices, freshNodes] = await Promise.all([
         devices.refetch({ throwOnError: true }), nodes.refetch({ throwOnError: true }),
       ]);
       controller.signal.throwIfAborted();
       const current = freshDevices.data?.devices.find((item) => item.id === device.id);
       if (!current) throw new Error("Устройство больше не доступно. Обновите список.");
-      const exit = chooseServer ? "server" : preferredExit(current);
-      requestedExit = exit;
-      requestedProfile = true;
-      const result = await request<ProfileExport>(
-        token,
-        `/devices/${encodeURIComponent(current.id)}/profile${exit === "proxy" ? "?exit=proxy" : ""}`,
-        { signal: controller.signal },
-      );
-      controller.signal.throwIfAborted();
-      let selectedDevice = current;
-      if (chooseServer) {
-        // Смена сохранённого выхода выполняется только после явного действия
-        // пользователя и получения соответствующего профиля, без автоподмены.
-        selectedDevice = await request<Device>(token, `/devices/${encodeURIComponent(current.id)}`, {
-          method: "PATCH", body: JSON.stringify({ preferred_exit: "server" }), signal: controller.signal,
-        });
+      const node = freshNodes.data?.nodes.find((item) => item.id === current.node_id);
+      if (!node) throw new Error("VPS устройства не найден. Обновите список.");
+      if (node.entry_proxy_id) {
+        const bundle = await request<Record<string, unknown>>(token,
+          `/devices/${encodeURIComponent(current.id)}/chain`, { signal: controller.signal });
         controller.signal.throwIfAborted();
-        if (selectedDevice.id !== current.id || selectedDevice.preferred_exit !== "server") {
-          throw new Error("Не удалось подтвердить сохранение выбранного выхода. Обновите список устройств и повторите.");
-        }
-        await rememberDevice(selectedDevice);
+        setChain({ device: current, bundle });
+      } else {
+        const result = await request<ProfileExport>(token,
+          `/devices/${encodeURIComponent(current.id)}/profile`, { signal: controller.signal });
         controller.signal.throwIfAborted();
-        void queryClient.invalidateQueries({ queryKey: ["audit"] });
+        setProfile({ ...result, device: current, exit: "server" });
       }
-      setProfile({ ...result, device: selectedDevice, exit });
     } catch (err) {
-      if (!controller.signal.aborted) {
-        const proxyUnavailable = requestedProfile && requestedExit === "proxy" && err instanceof APIError && err.status === 503;
-        if (proxyUnavailable) setUnavailableProxyDeviceID(device.id);
-        setProfileError(proxyUnavailable
-          ? new Error("Сохранённый выход через прокси недоступен. Проверьте настройку прокси и применение конфигурации. Прямой профиль не подставлялся.")
-          : err);
-      }
+      if (!controller.signal.aborted) setProfileError(err);
     } finally {
       if (revealController.current === controller) {
         if (!controller.signal.aborted) setProfilePending(null);
@@ -285,7 +266,6 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
     window.history.replaceState(null, "", destination.pathname + destination.search + destination.hash);
     setNotice("");
     setProfileError(null);
-    setUnavailableProxyDeviceID(null);
   }
   function startAdding() {
     create.reset();
@@ -320,7 +300,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       </li>
       {items.map((device) => {
         const node = nodeList.find((item) => item.id === device.node_id);
-        const exit = preferredExit(device);
+        const exit = "server";
         return (
         <li key={device.id} className="item-row">
           <div className="cell cell-main device-name">
@@ -348,7 +328,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
             <span>{node?.name || device.node_id}</span>
           </div>
           <div className="cell cell-meta small device-exit">
-            <span><span className="cell-label">Выход: </span>{exitName(exit)}</span>
+            <span><span className="cell-label">Выход: </span>IP VPS</span>
             <span className="mono secondary" title="Ожидаемый IP профиля, не измерение текущего подключения устройства">
               {expectedExitIP(node, exit) ?? "IP не указан"}
             </span>
@@ -367,7 +347,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
             <div className="cell cell-meta small secondary">
               <span className="cell-label">Трафик ↑ / ↓: </span>
               <span>
-                {device.revoked_at
+                {device.revoked_at || node?.kind === "remote"
                   ? "—"
                   : usage.data
                     ? `${bytes(usage.data.devices[device.id]?.uplink_bytes ?? 0)} / ${bytes(usage.data.devices[device.id]?.downlink_bytes ?? 0)}`
@@ -403,7 +383,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
                   removeDevice.reset();
                   setDeleting(device);
                 }}
-                disabled={!!pending || status.isError || !currentStatus}
+                disabled={(node?.desired_revision !== undefined ? node.desired_revision !== node.applied_revision : !!pending) || status.isError || !currentStatus}
                 title={pending ? "Сначала примените конфигурацию Xray" : undefined}
               >
                 Удалить
@@ -446,18 +426,6 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       <ConnectionNotice state={connection} error={connectionError} checking={status.isFetching}
         onRetry={() => void refresh()} onSignIn={onSignIn} />
       {connection === "ok" && <ErrorNotice error={devices.error || nodes.error || profileError} />}
-      {connection === "ok" && unavailableProxyDeviceID && (
-        <div className="button-group">
-          <button className="button secondary-button" disabled={profilePending !== null} onClick={() => {
-            const device = list.find((item) => item.id === unavailableProxyDeviceID);
-            if (device) void reveal(device, true);
-            else {
-              setUnavailableProxyDeviceID(null);
-              setProfileError(new Error("Устройство больше не доступно. Обновите список."));
-            }
-          }}>Выбрать IP сервера</button>
-        </div>
-      )}
       {page === "overview" && (
         <>
           <div className="stats-grid">
@@ -685,66 +653,16 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
           )}
           <div className="card-footer">
             <Icon name="lock" size={15} />
-            <span>После добавления или отзыва устройства примените конфигурацию в разделе «Обзор».</span>
+            <span>После добавления или отзыва устройства примените конфигурацию нужного VPS в разделе «Серверы».</span>
           </div>
         </section>
       )}
-      {page === "nodes" && (
-        <div className="nodes-grid">
-          {nodes.isPending ? (
-            <div className="loading">Получаем параметры сервера…</div>
-          ) : nodeList.length ? (
-            nodeList.map((node) => (
-              <section className="card node-card" key={node.id}>
-                <div className="card-heading">
-                  <div className="node-title">
-                    <span className="node-icon">
-                      <Icon name="server" size={24} />
-                    </span>
-                    <div>
-                      <h2>{node.name}</h2>
-                      <span className="mono small secondary">{node.id}</span>
-                    </div>
-                  </div>
-                  <span className="badge neutral">REALITY</span>
-                </div>
-                <dl>
-                  <div>
-                    <dt>Адрес</dt>
-                    <dd className="mono">
-                      {node.host}:{node.port}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Server name</dt>
-                    <dd className="mono">{node.server_name}</dd>
-                  </div>
-                  <div>
-                    <dt>Public key</dt>
-                    <dd className="mono">{node.public_key}</dd>
-                  </div>
-                  <div>
-                    <dt>Short ID</dt>
-                    <dd className="mono">{node.short_id}</dd>
-                  </div>
-                </dl>
-                <div className="card-footer">
-                  Публичные параметры сервера. Секрет устройства выдаётся только в его профиле.
-                </div>
-              </section>
-            ))
-          ) : (
-            <section className="card">
-              <Empty icon="server" title="Сервер не настроен">
-                Задайте параметры узла в конфигурации сервера и перезапустите API.
-              </Empty>
-            </section>
-          )}
-        </div>
-      )}
-      {page === "nodes" && <ServerDiagnostics token={token} />}
+      {page === "nodes" && (nodes.isPending
+        ? <div className="loading">Получаем серверы…</div>
+        : <NodesManager token={token} nodes={nodeList} />)}
+      {page === "nodes" && <><p className="hint">Проверки ниже относятся к VPS центральной панели. Состояние удалённых VPS показано в их карточках.</p><ServerDiagnostics token={token} /></>}
       {page === "guide" && <Guide onCheck={() => navigate("checks")} />}
-      {page === "checks" && <Checks token={token} nodeHost={nodeList[0]?.host} />}
+      {page === "checks" && <Checks token={token} nodeHost={nodeList.find((node) => node.id === status.data?.node_id || node.kind === "local")?.host} />}
       {page === "notifications" && <Notifications token={token} onInstall={onInstall} />}
       {page === "audit" && (
         <section className="card">
@@ -935,7 +853,6 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
           token={token}
           profile={profile}
           node={nodeList.find((node) => node.id === profile.device.node_id)}
-          proxyAvailable={nodeList.find((node) => node.id === profile.device.node_id)?.proxy_available === true}
           onChange={async (updated) => {
             // Ротация ссылки не возвращает свежие метаданные устройства.
             if (updated.device !== profile.device) await rememberDevice(updated.device);
@@ -945,6 +862,7 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
           onClose={() => setProfile(null)}
         />
       )}
+      {chain && <ChainProfileDialog token={token} device={chain.device} bundle={chain.bundle} onClose={() => setChain(null)} />}
     </Shell>
   );
 }

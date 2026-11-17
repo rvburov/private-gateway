@@ -9,6 +9,25 @@ export interface Node {
   proxy_available?: boolean;
   expected_server_ip?: string;
   expected_proxy_ip?: string;
+  kind?: "local" | "remote";
+  entry_proxy_id?: string | null;
+  desired_revision?: number;
+  applied_revision?: number;
+  last_seen_at?: string | null;
+  agent_error?: string;
+  requested_revision?: number;
+  h3?: { port: number; server_name: string; path: string; mode: string };
+  xhttp?: { port: number; public_key: string; short_id: string; path: string; mode: string };
+}
+
+export interface EntryProxy {
+  id: string;
+  name: string;
+  host: string;
+  port: number;
+  auth_type: "none" | "password";
+  enabled: boolean;
+  supports_udp: boolean;
 }
 
 export type ProfileExit = "server" | "proxy";
@@ -33,10 +52,13 @@ export interface ProfileExport {
   uri: string;
   xhttp_uri?: string;
   xhttp_port?: number;
+  h3_uri?: string;
+  h3_port?: number;
   sing_box_json: string;
   mihomo_yaml: string;
   // /sub/ и секретный токен ссылки-подписки устройства на домене самой панели.
   subscription_path: string;
+  subscription_url?: string;
 }
 
 export interface AuditEvent {

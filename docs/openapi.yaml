@@ -3,8 +3,8 @@ info:
   title: Private Gateway API
   version: 0.1.0
   description: >-
-    Один локальный узел Xray. Создание и отзыв устройств ждут применения через
-    config/apply; переименование и сохранение выбранного выхода меняют только метаданные.
+    Центральное управление локальным и удалёнными узлами Xray. Создание и отзыв
+    устройств требуют применения на соответствующем VPS. Входные SOCKS5 используются до VPN.
     Профили содержат секреты: их нельзя кешировать, журналировать и передавать.
     Публичный доступ по Bearer требует временного сеанса после проверки пароля и
     подтверждения аутентификатора. Пока администратор не настроен, публичного доступа
@@ -175,6 +175,73 @@ paths:
                     type: array
                     items: {$ref: '#/components/schemas/Node'}
         default: {$ref: '#/components/responses/Error'}
+    post:
+      operationId: createRemoteNode
+      description: Добавить удалённый VPS. Одноразовый код регистрации показывается только
+        в ответе и действует 15 минут.
+      responses:
+        '201':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  node:
+                    $ref: '#/components/schemas/Node'
+                  join_token:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                required:
+                - node
+                - join_token
+                - expires_at
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                host:
+                  type: string
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                server_name:
+                  type: string
+                public_key:
+                  type: string
+                short_id:
+                  type: string
+                xhttp:
+                  type:
+                  - object
+                  - 'null'
+                  description: 'Параметры XHTTP REALITY: port/public_key/short_id/path/mode.
+                    В PATCH отсутствие сохраняет значение, null отключает.'
+                h3:
+                  type:
+                  - object
+                  - 'null'
+                  description: 'Параметры XHTTP HTTP3: port/server_name/path/mode. В PATCH
+                    отсутствие сохраняет значение, null отключает.'
+              required:
+              - name
+              - host
+              - port
+              - server_name
+              - public_key
+              - short_id
   /api/v1/devices:
     get:
       operationId: listDevices
@@ -223,9 +290,8 @@ paths:
       operationId: updateDevice
       description: >-
         Атомарно изменить название и/или сохранённый выбор выдаваемого профиля.
-        Пустое тело, null, нестроковые и неизвестные поля отклоняются. Выбор proxy
-        разрешён только при настроенном SOCKS5 и применённой конфигурации; при
-        отказе не сохраняется ни одно поле запроса. Переименование отозванного
+        Пустое тело, null, нестроковые и неизвестные поля отклоняются. Прежнее
+        значение proxy больше не поддерживается; выход выполняется с VPS. Переименование отозванного
         устройства допустимо, изменение его выхода — нет. Операция не меняет UUID,
         ключ, секрет подписки, трафик и ревизию Xray и не переключает уже
         импортированное VPN-подключение.
@@ -245,7 +311,7 @@ paths:
                   description: Крайние пробелы удаляются; далее буквы, цифры, пробелы, точки, подчёркивания и дефисы, начало с буквы или цифры. Имена активных устройств уникальны в пределах узла.
                 preferred_exit:
                   type: string
-                  enum: [server, proxy]
+                  enum: [server]
                   description: Сохранённый выбор профиля этого устройства; не измеренный маршрут текущего подключения
       responses:
         '200': {$ref: '#/components/responses/Device'}
@@ -290,11 +356,9 @@ paths:
     get:
       operationId: exportDevice
       description: >-
-        По умолчанию выдаёт прежний прямой профиль. exit=proxy выдаёт отдельный
-        VLESS-идентификатор с выходом через SOCKS5 только после настройки и
-        применения конфигурации. Все форматы выбираются независимо от выхода.
-        GET сам по себе не сохраняет предпочтение; панель явно передаёт выбранный
-        exit и сохраняет его через PATCH устройства только после получения профиля.
+        Выдать профиль с выходом через выбранный VPS. Прежний exit=proxy недоступен.
+        Для подключения через назначенный входной SOCKS5 используется отдельный
+        endpoint chain: обычная VLESS-ссылка не содержит настройки цепочки.
       responses:
         '200':
           description: Секретная ссылка VLESS и конфигурации клиентов sing-box и Mihomo, Cache-Control no-store
@@ -308,9 +372,12 @@ paths:
                   uri: {type: string, format: uri, description: Существующий профиль VLESS + TCP + REALITY + Vision}
                   xhttp_uri: {type: string, format: uri, description: Необязательный профиль VLESS + XHTTP + REALITY без Vision; доступен при включённом входе XHTTP}
                   xhttp_port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт необязательного входа XHTTP}
+                  h3_uri: {type: string, format: uri, description: Необязательный отдельный XHTTP TLS HTTP/3 профиль; требует UDP}
+                  h3_port: {type: integer, minimum: 1, maximum: 65535}
                   sing_box_json: {type: string, description: Полная конфигурация sing-box в JSON}
                   mihomo_yaml: {type: string, description: Полная конфигурация Mihomo в YAML}
-                  subscription_path: {type: string, description: 'Для прямого выхода /sub/{token}, для прокси /sub/proxy/{token}; токен секретный, HTTPS-адрес панели в production содержит :8443'}
+                  subscription_path: {type: string, description: 'Путь /sub/{token}; токен секретный'}
+                  subscription_url: {type: string, format: uri, description: Канонический HTTPS-адрес центральной панели; не адрес удалённого VPN-узла}
                   expected_exit_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IPv4 или IPv6 выбранного выхода из настроек узла; не адрес входа прокси и не результат измерения устройства. При неизвестном IP поле отсутствует.'}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
@@ -325,10 +392,8 @@ paths:
     post:
       operationId: rotateSubscription
       description: >-
-        Заменить общий секрет подписок активного устройства. Прежние ссылки обоих
-        выходов сразу перестают работать. Ответ возвращает путь выбранного выхода;
-        по умолчанию это прямой /sub/{token}, при exit=proxy — /sub/proxy/{token}.
-        Ротация с exit=proxy доступна только после настройки и применения прокси.
+        Заменить секрет обычной подписки активного устройства. Прежние ссылки
+        перестают работать. Подписка цепочки имеет отдельную ротацию.
       responses:
         '200':
           description: Путь новой ссылки, Cache-Control no-store
@@ -339,6 +404,7 @@ paths:
                 required: [subscription_path]
                 properties:
                   subscription_path: {type: string}
+                  subscription_url: {type: string, format: uri}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
         '410': {$ref: '#/components/responses/Error'}
@@ -382,32 +448,26 @@ paths:
         и не попадают в аудит. При включённом и успешно применённом XHTTP общий список
         base64 содержит сначала XHTTP, затем TCP/Vision. Известные legacy-клиенты
         Hiddify, sing-box, Clash/Mihomo и Stash получают совместимый TCP-профиль.
-        Форматы uri, sing-box и mihomo сохраняют прежнее содержимое. Для прокси
-        предусмотрен отдельный путь /sub/proxy/{token}; query exit не принимается.
+        Форматы uri, sing-box и mihomo сохраняют прежнее содержимое.
+        Входная цепочка имеет отдельную подписку /sub/entry/{token}.
+        При назначенном входном прокси прямая подписка отвечает 404.
+        Для удалённого VPS она также отвечает 404 до подтверждения агентом
+        текущей желаемой ревизии; новые TCP-параметры до ACK не выдаются.
+        Прежний /sub/proxy/{token} отключён; query exit не принимается.
       responses:
         '200': {description: Профиль устройства в запрошенном формате}
         '400': {$ref: '#/components/responses/Error'}
         '404': {$ref: '#/components/responses/Error'}
   /sub/proxy/{token}:
-    parameters:
-      - {name: token, in: path, required: true, schema: {type: string}}
-      - {name: format, in: query, required: false, schema: {type: string, enum: [base64, uri, sing-box, mihomo, html]}}
-      - {$ref: '#/components/parameters/ProfilePort'}
     get:
-      operationId: proxySubscription
+      operationId: retiredProxySubscription
       security: []
-      description: >-
-        Отдельная ссылка того же активного устройства с выходом через SOCKS5.
-        Использует общий секрет с прямой ссылкой, но отдельный VLESS-идентификатор.
-        Ссылка доступна после настройки и применения прокси; при недоступности
-        конфигурации возвращает 503, а не прямой профиль. Правила выбора формата
-        те же, что у /sub/{token}. Query exit не принимается. Ротация подписки
-        или отзыв устройства отключают оба пути.
+      deprecated: true
+      parameters:
+        - {name: token, in: path, required: true, schema: {type: string}}
+      description: Прежний выход через прокси удалён. Этот адрес не перенаправляет на прямой профиль.
       responses:
-        '200': {description: Прокси-профиль устройства в запрошенном формате}
-        '400': {$ref: '#/components/responses/Error'}
-        '404': {$ref: '#/components/responses/Error'}
-        '503': {$ref: '#/components/responses/Error'}
+        '410': {$ref: '#/components/responses/Error'}
   /api/v1/devices/{id}/revoke:
     parameters:
       - {$ref: '#/components/parameters/DeviceID'}
@@ -856,8 +916,498 @@ paths:
         '401': {$ref: '#/components/responses/Error'}
         '415': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    patch:
+      operationId: updateRemoteNode
+      description: Изменить публичные параметры удалённого VPS; локальный узел задаётся конфигурацией сервера.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  node:
+                    $ref: '#/components/schemas/Node'
+                required:
+                - node
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                host:
+                  type: string
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                server_name:
+                  type: string
+                public_key:
+                  type: string
+                short_id:
+                  type: string
+                xhttp:
+                  type:
+                  - object
+                  - 'null'
+                  description: 'Параметры XHTTP REALITY: port/public_key/short_id/path/mode. В PATCH отсутствие сохраняет
+                    значение, null отключает.'
+                h3:
+                  type:
+                  - object
+                  - 'null'
+                  description: 'Параметры XHTTP HTTP3: port/server_name/path/mode. В PATCH отсутствие сохраняет значение,
+                    null отключает.'
+              required:
+              - name
+              - host
+              - port
+              - server_name
+              - public_key
+              - short_id
+    delete:
+      operationId: deleteRemoteNode
+      description: Удалить удалённый VPS без устройств.
+      responses:
+        '200':
+          description: Успех
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/nodes/{id}/rotate-join:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    post:
+      operationId: rotateNodeJoin
+      description: Выдать новый одноразовый код регистрации агента. Прежние регистрационные данные отзываются.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  join_token:
+                    type: string
+                  expires_at:
+                    type: string
+                    format: date-time
+                required:
+                - join_token
+                - expires_at
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/nodes/{id}/entry-proxy:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    put:
+      operationId: assignEntryProxy
+      description: Назначить входной SOCKS5. null включает прямое подключение по явному выбору администратора.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  node:
+                    $ref: '#/components/schemas/Node'
+                required:
+                - node
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                entry_proxy_id:
+                  type:
+                  - string
+                  - 'null'
+                  format: uuid
+              required:
+              - entry_proxy_id
+  /api/v1/nodes/{id}/apply:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    post:
+      operationId: requestNodeApply
+      description: 'Локальный узел применяется синхронно (200). Удалённый возвращает 202: дождитесь applied_revision;
+        это не подтверждение клиентской цепочки.'
+      responses:
+        '202':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  node:
+                    $ref: '#/components/schemas/Node'
+                required:
+                - node
+        default:
+          $ref: '#/components/responses/Error'
+        '200':
+          description: Локальная конфигурация применена
+  /api/v1/entry-proxies:
+    get:
+      operationId: listEntryProxies
+      description: Список входных SOCKS5 без логинов и паролей.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  entry_proxies:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/EntryProxy'
+        default:
+          $ref: '#/components/responses/Error'
+    post:
+      operationId: createEntryProxy
+      description: Сохранить входной SOCKS5. Реквизиты шифруются отдельно с AAD идентификатора.
+      responses:
+        '201':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryProxy'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                host:
+                  type: string
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                auth_type:
+                  type: string
+                  enum:
+                  - none
+                  - password
+                enabled:
+                  type: boolean
+                supports_udp:
+                  type: boolean
+                username:
+                  type: string
+                  writeOnly: true
+                password:
+                  type: string
+                  format: password
+                  writeOnly: true
+              required:
+              - name
+              - host
+              - port
+              - auth_type
+              - enabled
+              - supports_udp
+  /api/v1/entry-proxies/{id}:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    patch:
+      operationId: updateEntryProxy
+      description: Изменить входной SOCKS5. Отсутствующие логин и пароль сохраняются; новые реквизиты передаются вместе.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntryProxy'
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: string
+                host:
+                  type: string
+                port:
+                  type: integer
+                  minimum: 1
+                  maximum: 65535
+                auth_type:
+                  type: string
+                  enum:
+                  - none
+                  - password
+                enabled:
+                  type: boolean
+                supports_udp:
+                  type: boolean
+                username:
+                  type: string
+                  writeOnly: true
+                password:
+                  type: string
+                  format: password
+                  writeOnly: true
+              required:
+              - name
+              - host
+              - port
+              - auth_type
+              - enabled
+              - supports_udp
+    delete:
+      operationId: deleteEntryProxy
+      description: Удалить прокси, который не назначен VPS.
+      responses:
+        '200':
+          description: Успех
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/devices/{id}/chain:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    get:
+      operationId: exportChain
+      description: Выдать секретный профиль цепочки после применения ревизии узла. Прямого fallback нет. Не кешировать.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainBundle'
+        default:
+          $ref: '#/components/responses/Error'
+  /api/v1/devices/{id}/chain-subscription:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    post:
+      operationId: rotateChainSubscription
+      description: Отозвать прежний токен подписки цепочки и выдать новый; обычная подписка имеет отдельный токен.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  subscription_path:
+                    type: string
+                  subscription_url:
+                    type: string
+                    format: uri
+                required:
+                - subscription_path
+                - subscription_url
+        default:
+          $ref: '#/components/responses/Error'
+  /sub/entry/{token}:
+    parameters:
+    - name: token
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^[A-Za-z0-9_-]{43}$
+    get:
+      operationId: fetchChainSubscription
+      description: Подписка содержит реквизиты входного SOCKS5. Токен device-scoped; недоступный/отозванный профиль
+        отвечает 404.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChainBundle'
+        default:
+          $ref: '#/components/responses/Error'
+      security: []
+  /api/v1/agent/enroll:
+    post:
+      operationId: enrollNodeAgent
+      description: Одноразовая регистрация агента; индивидуальный секрет хранится только на VPS и как хеш в панели.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  agent_token:
+                    type: string
+                required:
+                - agent_token
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                node_id:
+                  type: string
+                  format: uuid
+                join_token:
+                  type: string
+              required:
+              - node_id
+              - join_token
+      security: []
+  /api/v1/agent/nodes/{id}/desired:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    get:
+      operationId: agentDesired
+      description: Индивидуальный Bearer агента открывает только свой VPS. 204 означает отсутствие новой запрошенной
+        конфигурации.
+      responses:
+        '200':
+          description: Успех
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                properties:
+                  revision:
+                    type: integer
+                  node:
+                    $ref: '#/components/schemas/Node'
+                  clients:
+                    type: array
+                    items:
+                      type: object
+        default:
+          $ref: '#/components/responses/Error'
+        '204':
+          description: Новых изменений нет
+      security:
+      - agentAuth: []
+  /api/v1/agent/nodes/{id}/ack:
+    parameters:
+    - name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    post:
+      operationId: agentAcknowledge
+      description: 'Подтвердить конкретную запрошенную ревизию после проверки и применения. Устаревшая ревизия: 409.
+        Ошибка не продвигает applied_revision.'
+      responses:
+        '200':
+          description: Успех
+        default:
+          $ref: '#/components/responses/Error'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                revision:
+                  type: integer
+                  minimum: 1
+                error:
+                  type: string
+              required:
+              - revision
+      security:
+      - agentAuth: []
 components:
   securitySchemes:
+    agentAuth: {type: http, scheme: bearer, description: Индивидуальный токен одного VPN-агента}
     bearerAuth: {type: http, scheme: bearer}
   parameters:
     ProfileExit:
@@ -865,10 +1415,9 @@ components:
       in: query
       required: false
       description: >-
-        server (по умолчанию) выдаёт прежний прямой выход; proxy — отдельный
-        SOCKS5-выход только после применения. Неверное, пустое или повторённое
-        значение даёт 400, недоступный прокси — 503 без подмены прямым профилем.
-      schema: {type: string, enum: [server, proxy], default: server}
+        server (по умолчанию) выдаёт выход с VPS. Прежний proxy больше недоступен
+        и не подменяется прямым профилем. Неверное, пустое или повторённое значение даёт 400.
+      schema: {type: string, enum: [server], default: server}
     ProfilePort:
       name: port
       in: query
@@ -1202,9 +1751,15 @@ components:
         server_name: {type: string}
         public_key: {type: string}
         short_id: {type: string}
-        proxy_available: {type: boolean, description: 'true только когда SOCKS5 настроен и конфигурация применена; не является проверкой доступности прокси в сети'}
         expected_server_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IP прямого выхода: явная серверная настройка либо публичный IP-литерал host. Домен не разрешается в предположительный выходной IP.'}
-        expected_proxy_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IP из GATEWAY_PROXY_EXPECTED_IP при включённом прокси. Адрес подключения SOCKS5 вместо него не подставляется.'}
+        kind: {type: string, enum: [local, remote]}
+        entry_proxy_id: {type: [string, 'null'], format: uuid}
+        desired_revision: {type: integer}
+        applied_revision: {type: integer}
+        requested_revision: {type: integer}
+        last_seen_at: {type: [string, 'null'], format: date-time}
+        agent_error: {type: string, description: Обобщённый код ошибки без вывода Xray}
+        h3: {type: object, description: Параметры XHTTP TLS/HTTP3 — port/server_name/path/mode}
         xhttp:
           type: object
           description: Необязательные параметры дополнительного входа XHTTP; закрытый ключ сюда не входит
@@ -1222,7 +1777,7 @@ components:
         id: {type: string, format: uuid}
         node_id: {type: string, format: uuid}
         name: {type: string}
-        preferred_exit: {type: string, enum: [server, proxy], default: server, description: 'Сохранённый на сервере выбор выдаваемого профиля этого устройства; не подтверждение подключения. Старые устройства получают server.'}
+        preferred_exit: {type: string, enum: [server], default: server, description: 'Сохранённый на сервере выбор выдаваемого профиля этого устройства; не подтверждение подключения. Старые устройства получают server.'}
         created_at: {type: string, format: date-time}
         revoked_at: {type: [string, 'null'], format: date-time}
     AuditEvent:
@@ -1244,3 +1799,138 @@ components:
         desired_revision: {type: integer, minimum: 1}
         applied_revision: {type: integer, minimum: 0}
         xray_configured: {type: boolean, description: 'Команда перезапуска задана; это не значит, что процесс Xray работает'}
+    EntryProxy:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        host:
+          type: string
+        port:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        auth_type:
+          type: string
+          enum:
+          - none
+          - password
+        enabled:
+          type: boolean
+        supports_udp:
+          type: boolean
+      required:
+      - id
+      - name
+      - host
+      - port
+      - auth_type
+      - enabled
+      - supports_udp
+    ChainBundle:
+      type: object
+      additionalProperties: false
+      properties:
+        version:
+          type: integer
+          const: 1
+        device_id:
+          type: string
+          format: uuid
+        node_id:
+          type: string
+          format: uuid
+        entry_proxy:
+          type: object
+          additionalProperties: false
+          properties:
+            type:
+              type: string
+              const: socks5
+            host:
+              type: string
+            port:
+              type: integer
+            username:
+              type: string
+            password:
+              type: string
+              format: password
+            supports_udp:
+              type: boolean
+          required:
+          - type
+          - host
+          - port
+          - supports_udp
+        profiles:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            properties:
+              id:
+                type: string
+              name:
+                type: string
+              transport:
+                type: string
+                enum:
+                - tcp
+                - xhttp
+              host:
+                type: string
+              port:
+                type: integer
+              uuid:
+                type: string
+                format: uuid
+              security:
+                type: string
+                enum:
+                - reality
+                - tls
+              sni:
+                type: string
+              public_key:
+                type: string
+              short_id:
+                type: string
+              fingerprint:
+                type: string
+              flow:
+                type: string
+              spider_x:
+                type: string
+              path:
+                type: string
+              mode:
+                type: string
+              alpn:
+                type: array
+                items:
+                  type: string
+            required:
+            - id
+            - name
+            - transport
+            - host
+            - port
+            - uuid
+            - security
+            - sni
+        subscription_url:
+          type: string
+          format: uri
+          description: Абсолютный HTTPS адрес центральной панели, из доверенной конфигурации.
+      required:
+      - version
+      - device_id
+      - node_id
+      - entry_proxy
+      - profiles
+      - subscription_url

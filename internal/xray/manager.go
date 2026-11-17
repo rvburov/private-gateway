@@ -19,6 +19,7 @@ type Options struct {
 	ConfigPath     string
 	Binary         string
 	RestartCommand []string
+	Renderer       func(Settings, []Client) ([]byte, error)
 }
 
 type Manager struct {
@@ -30,10 +31,17 @@ func NewManager(options Options) *Manager {
 	if options.Binary == "" {
 		options.Binary = "xray"
 	}
+	if options.Renderer == nil {
+		options.Renderer = Render
+	}
 	options.RestartCommand = append([]string(nil), options.RestartCommand...)
 	if options.Settings.XHTTP != nil {
 		xhttp := *options.Settings.XHTTP
 		options.Settings.XHTTP = &xhttp
+	}
+	if options.Settings.H3 != nil {
+		h3 := *options.Settings.H3
+		options.Settings.H3 = &h3
 	}
 	if options.Settings.Proxy != nil {
 		proxy := *options.Settings.Proxy
@@ -101,7 +109,7 @@ func (m *Manager) stage(ctx context.Context, clients []Client) (string, error) {
 	if strings.TrimSpace(m.options.ConfigPath) == "" {
 		return "", errors.New("Xray configuration path is required")
 	}
-	data, err := Render(m.options.Settings, clients)
+	data, err := m.options.Renderer(m.options.Settings, clients)
 	if err != nil {
 		return "", err
 	}
@@ -128,7 +136,7 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 	// вызывающего.
 	cmd.WaitDelay = time.Second
 	var output limitedOutput
-	if m.options.Settings.XHTTP != nil || m.options.Settings.Proxy != nil {
+	if m.options.Settings.XHTTP != nil || m.options.Settings.H3 != nil || m.options.Settings.Proxy != nil {
 		// Ошибка ядра может содержать не только известный путь, но и адрес после DNS.
 		// Для нового входа вывод полностью отбрасывается, а не фильтруется по шаблону.
 		cmd.Stdout, cmd.Stderr = io.Discard, io.Discard
@@ -136,7 +144,7 @@ func (m *Manager) run(ctx context.Context, action, binary string, args []string,
 		cmd.Stdout, cmd.Stderr = &output, &output
 	}
 	if err := cmd.Run(); err != nil {
-		if m.options.Settings.XHTTP != nil || m.options.Settings.Proxy != nil {
+		if m.options.Settings.XHTTP != nil || m.options.Settings.H3 != nil || m.options.Settings.Proxy != nil {
 			if errors.Is(commandCtx.Err(), context.DeadlineExceeded) {
 				return errors.New(action + ": timed out")
 			}

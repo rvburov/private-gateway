@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  act,
   cleanup,
   fireEvent,
   render,
@@ -34,6 +33,8 @@ let appliedRevision = 1;
 let interruptApply = false;
 let profileRequests = 0;
 let proxyAvailable = false;
+let entryProxyID: string | null = null;
+let chainFails = false;
 let deviceName = "Phone";
 let preferredExit: ProfileExit = "server";
 let extraDevices: Device[] = [];
@@ -84,6 +85,8 @@ beforeEach(() => {
   interruptApply = false;
   profileRequests = 0;
   proxyAvailable = false;
+  entryProxyID = null;
+  chainFails = false;
   deviceName = "Phone";
   preferredExit = "server";
   extraDevices = [];
@@ -117,6 +120,7 @@ beforeEach(() => {
     this.removeAttribute("open");
   };
   fetchMock = vi.fn(async (path: string, options: RequestInit = {}) => {
+    if (path === "/api/v1/entry-proxies") return Response.json({ entry_proxies: [] });
     if (path === "/api/v1/notifications") return Response.json({ items: [], unread: 0 });
     if (path === "/api/v1/notifications/preferences") return Response.json({ server: true, devices: true, configuration: true });
     if (path === "/api/v1/notifications/push-subscriptions") return Response.json({ items: [] });
@@ -218,6 +222,7 @@ beforeEach(() => {
             public_key: "public",
             short_id: "abcd",
             proxy_available: proxyAvailable,
+            entry_proxy_id: entryProxyID,
             expected_server_ip: expectedServerIP,
             expected_proxy_ip: expectedProxyIP,
           },
@@ -227,6 +232,11 @@ beforeEach(() => {
       return Response.json({
         devices: [...(deleted ? [] : [currentDevice()]), ...extraDevices],
       });
+    if (path === "/api/v1/devices/d1/chain") return chainFails
+      ? Response.json({ error: "entry proxy unavailable" }, { status: 503 })
+      : Response.json({ version: 1, node_id: "n1", entry_proxy: { type: "socks5", host: "entry.example", port: 1080,
+        username: "entry-user", password: "sensitive-entry-password", supports_udp: false },
+        profiles: [{ id: "n1:tcp", name: "US VPS", uuid: "sensitive-device-credential" }] });
     if (path === "/api/v1/devices/traffic")
       return Response.json({ devices: { d1: { uplink_bytes: 2048, downlink_bytes: 1048576 } }, period: "since_xray_restart" });
     if (path === "/api/v1/checks")
@@ -475,9 +485,9 @@ describe("administrator panel", () => {
     expect(within(tabs).getByRole("button", { name: "Устройства" }).getAttribute("aria-current")).toBe("page");
     fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
     const sheet = screen.getByRole("dialog", { name: "Ещё" });
-    fireEvent.click(within(sheet).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(sheet).getByRole("button", { name: "Серверы" }));
     expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
-    expect(await screen.findByText("Сервер подключения")).toBeTruthy();
+    expect(await screen.findByText("VPN-серверы и входные прокси")).toBeTruthy();
     expect(screen.getByText("8.8.8.8:443")).toBeTruthy();
     fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Ещё" })).getByRole("button", { name: "Журнал действий" }));
@@ -530,20 +540,20 @@ describe("administrator panel", () => {
     }
 
     // Возврат обновляет только текущий IP для поля, но не запускает диагностику повторно.
-    const requests = asked().filter((path) => path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/").length;
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    const requests = asked().filter((path) => path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/" && path !== "/api/v1/entry-proxies").length;
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     expect(await screen.findByRole("button", { name: "Проверить подключение" })).toBeTruthy();
     fireEvent.click(within(menu).getByRole("button", { name: "Проверка" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(screen.getByText(/Сайты видят 8\.8\.8\.8 — ваш шлюз/)).toBeTruthy();
-    expect(asked().filter((path) => path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/").length).toBe(requests);
+    expect(asked().filter((path) => path !== "https://ipv4.ipleak.net/json/" && path !== "https://ipv6.ipleak.net/json/" && path !== "/api/v1/entry-proxies").length).toBe(requests);
   });
 
   it("runs server diagnostics separately and retains both cached results", async () => {
     const collect = vi.spyOn(deviceDiagnostics, "collectDeviceDiagnostics");
     await login();
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     expect(await screen.findByRole("button", { name: "Проверить подключение" })).toBeTruthy();
     expect(fetchMock.mock.calls.some(([path]) => String(path).startsWith("/api/v1/checks") || String(path).startsWith("https://"))).toBe(false);
     fireEvent.change(screen.getByLabelText("Как подключены сейчас"), { target: { value: "wifi-vpn" } });
@@ -576,7 +586,7 @@ describe("administrator panel", () => {
     expect(fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/checks")).length).toBe(serverRequests);
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBe(stored);
     expect(collect).toHaveBeenCalledOnce();
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
     expect(screen.getByText("VLESS-трафик через сервер")).toBeTruthy();
     expect(fetchMock.mock.calls.filter(([path]) => String(path).startsWith("/api/v1/checks")).length).toBe(serverRequests);
@@ -590,7 +600,7 @@ describe("administrator panel", () => {
     await screen.findByRole("button", { name: "Проверить снова" });
     const privateRequests = fetchMock.mock.calls.filter(([path]) => String(path).includes("ipleak.net") && !String(path).includes("ipv4.ipleak.net") && !String(path).includes("ipv6.ipleak.net")).length;
     performanceBlocked = true;
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     fireEvent.click(await screen.findByRole("button", { name: "Проверить подключение" }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([path]) => String(path).includes("/checks/performance/ping"))).toBe(true));
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
@@ -607,7 +617,7 @@ describe("administrator panel", () => {
   it("stops privacy checks without changing an existing speed history", async () => {
     await login();
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     fireEvent.click(await screen.findByRole("button", { name: "Проверить подключение" }));
     await screen.findByRole("button", { name: "Проверить снова" });
     const stored = window.localStorage.getItem("private-gateway-performance-v1");
@@ -619,7 +629,7 @@ describe("administrator panel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Остановить" }));
     expect(await screen.findByText("Проверка безопасности остановлена.")).toBeTruthy();
     expect(window.localStorage.getItem("private-gateway-performance-v1")).toBe(stored);
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
   });
 
@@ -691,7 +701,7 @@ describe("administrator panel", () => {
     performanceUnavailable = true;
     await login();
     const menu = screen.getByRole("navigation", { name: "Главное меню" });
-    fireEvent.click(within(menu).getByRole("button", { name: "Сервер" }));
+    fireEvent.click(within(menu).getByRole("button", { name: "Серверы" }));
     fireEvent.change(await screen.findByLabelText("Как подключены сейчас"), { target: { value: "wifi-vpn" } });
     fireEvent.click(screen.getByRole("button", { name: "Проверить подключение" }));
     expect(await screen.findByRole("button", { name: "Проверить снова" })).toBeTruthy();
@@ -947,192 +957,37 @@ describe("administrator panel", () => {
     expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
   });
 
-  it("fetches the proxy profile only after selection and keeps it out of the query cache", async () => {
-    proxyAvailable = true;
+  it("exports an assigned entry chain without requesting or caching a direct profile", async () => {
+    entryProxyID = "entry-1";
     await login();
-    fireEvent.click(screen.getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink());
-    expect(profileRequests).toBe(1);
-    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    expect(profileRequests).toBe(2);
-    fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "uri" } });
-    expect(screen.getByDisplayValue(proxyURI)).toBeTruthy();
-    const cached = JSON.stringify(queryClient.getQueryCache().getAll().map((item) => item.state.data));
-    expect(cached).not.toContain("sensitive-proxy-credential");
-    expect(cached).not.toContain("sensitive-subscription-token");
-    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "server" } });
-    await screen.findByDisplayValue(profileURI);
-    expect(profileRequests).toBe(3);
-  });
-
-  it("remembers each device exit after reopening and remounting without caching profile credentials", async () => {
-    proxyAvailable = true;
-    extraDevices = [{ id: "d2", node_id: "n1", name: "Laptop", preferred_exit: "server",
-      created_at: "2026-01-02T00:00:00Z", revoked_at: null }];
-    const view = await login();
-    openDevices();
-    expect(rowForDevice("Phone").getByText("8.8.8.8")).toBeTruthy();
-    expect(rowForDevice("Laptop").getByText("8.8.8.8")).toBeTruthy();
     fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink());
-    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    expect(preferredExit).toBe("proxy");
-    expect(extraDevices[0].preferred_exit).toBe("server");
+    await screen.findByRole("dialog", { name: "Профиль VPS: Phone" });
+    expect((screen.getByLabelText("Профиль с входным прокси") as HTMLTextAreaElement).value).toContain("sensitive-entry-password");
+    expect(fetchMock.mock.calls.some(([path]) => path.includes("/profile"))).toBe(false);
+    expect(JSON.stringify(queryClient.getQueryCache().getAll().map((query) => query.state.data))).not.toContain("sensitive-entry-password");
+    expect(JSON.stringify(window.localStorage)).not.toContain("sensitive-entry-password");
     fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
-    expect(rowForDevice("Phone").getByText("1.1.1.1")).toBeTruthy();
-    expect(rowForDevice("Laptop").getByText("8.8.8.8")).toBeTruthy();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
-    fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
-    fireEvent.click(rowForDevice("Laptop").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(`${window.location.origin}/sub/sensitive-subscription-token-d2`);
-    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
-    const cached = JSON.stringify(queryClient.getQueryCache().getAll().map((query) => query.state.data));
-    expect(cached).not.toMatch(/sensitive-(device|proxy)-credential|sensitive-subscription-token/);
-    expect(JSON.stringify(window.localStorage)).not.toMatch(/sensitive-|preferred_exit/);
-    view.unmount();
-    await queryClient.cancelQueries();
-    queryClient.clear();
-    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
-    await login();
-    openDevices();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
-    expect(extraDevices[0].preferred_exit).toBe("server");
+    expect(screen.queryByLabelText("Профиль с входным прокси")).toBeNull();
   });
 
-  it("uses the freshly saved device preference when it changed in another browser", async () => {
-    proxyAvailable = true;
+  it("does not fall back to a direct profile if the entry chain is unavailable", async () => {
+    entryProxyID = "entry-1"; chainFails = true;
     await login();
-    expect(rowForDevice("Phone").getByText("8.8.8.8")).toBeTruthy();
-    preferredExit = "proxy";
     fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
-    expect(fetchMock.mock.calls.filter(([path]) => path.includes("/devices/d1/profile")).map(([path]) => path))
-      .toEqual(["/api/v1/devices/d1/profile?exit=proxy"]);
+    await screen.findByText("entry proxy unavailable");
+    expect(fetchMock.mock.calls.some(([path]) => path.includes("/profile"))).toBe(false);
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("refreshes proxy availability when opening a profile after an external configuration apply", async () => {
+  it("refreshes the proxy assignment before exporting a profile", async () => {
     await login();
-    expect(queryClient.getQueryData<{ nodes: Array<{ proxy_available: boolean }> }>(["nodes"])?.nodes[0].proxy_available).toBe(false);
-    proxyAvailable = true;
-    revision = 2;
-    appliedRevision = 2;
+    entryProxyID = "entry-1";
     fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink());
-    expect((screen.getByRole("option", { name: "IP прокси — 1.1.1.1" }) as HTMLOptionElement).disabled).toBe(false);
-    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    expect(preferredExit).toBe("proxy");
-  });
-
-  it("does not overwrite a saved exit with a late background device response", async () => {
-    proxyAvailable = true;
-    await login();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink());
-    const old = currentDevice();
-    const respond = fetchMock.getMockImplementation() as (path: string, options?: RequestInit) => Promise<Response>;
-    let late!: (response: Response) => void;
-    let signal: AbortSignal | undefined;
-    fetchMock.mockImplementation((path: string, options: RequestInit = {}) => {
-      if (path === "/api/v1/devices") {
-        signal = options.signal as AbortSignal;
-        return new Promise<Response>((resolve) => { late = resolve; });
-      }
-      return respond(path, options);
-    });
-    act(() => { void queryClient.refetchQueries({ queryKey: ["devices"] }); });
-    await waitFor(() => expect(late).toBeDefined());
-    fireEvent.change(screen.getByLabelText("Выходной IP"), { target: { value: "proxy" } });
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    await waitFor(() => expect(signal?.aborted).toBe(true));
-    await act(async () => { late(Response.json({ devices: [old] })); });
-    await waitFor(() => expect(queryClient.getQueryData<{ devices: Device[] }>(["devices"])?.devices[0].preferred_exit).toBe("proxy"));
-    expect(rowForDevice("Phone").getByText("1.1.1.1")).toBeTruthy();
-    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("proxy");
-  });
-
-  it("does not substitute a direct profile when the saved proxy exit is unavailable", async () => {
-    preferredExit = "proxy";
-    await login();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByText(/Сохранённый выход через прокси недоступен/);
-    expect(preferredExit).toBe("proxy");
-    expect(screen.queryByRole("dialog", { name: /Профиль:/ })).toBeNull();
-    expect(screen.queryByDisplayValue(profileURI)).toBeNull();
-    expect(fetchMock.mock.calls.filter(([path]) => path.includes("/devices/d1/profile")).map(([path]) => path))
-      .toEqual(["/api/v1/devices/d1/profile?exit=proxy"]);
-  });
-
-  it("switches an unavailable saved proxy to the server only after explicit recovery selection", async () => {
-    preferredExit = "proxy";
-    await login();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByText(/Сохранённый выход через прокси недоступен/);
-    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(0);
-    expect(fetchMock.mock.calls.filter(([path]) => path.includes("/devices/d1/profile")).map(([path]) => path))
-      .toEqual(["/api/v1/devices/d1/profile?exit=proxy"]);
-    expect(preferredExit).toBe("proxy");
-    fireEvent.click(screen.getByRole("button", { name: "Выбрать IP сервера" }));
-    await screen.findByDisplayValue(subscriptionLink());
-    expect((screen.getByLabelText("Выходной IP") as HTMLSelectElement).value).toBe("server");
-    expect(preferredExit).toBe("server");
-    expect(rowForDevice("Phone").getByText("8.8.8.8")).toBeTruthy();
-    const recovery = fetchMock.mock.calls.filter(([path, options]) => path.includes("/devices/d1/profile") ||
-      path === "/api/v1/devices/d1" && options?.method === "PATCH");
-    expect(recovery.map(([path, options]) => [options?.method ?? "GET", new URL(path, window.location.origin).searchParams.get("exit") ??
-      (options?.method === "PATCH" ? JSON.parse(options.body as string).preferred_exit : "server")]))
-      .toEqual([["GET", "proxy"], ["GET", "server"], ["PATCH", "server"]]);
-    expect(screen.queryByText(/Сохранённый выход через прокси недоступен/)).toBeNull();
-  });
-
-  it.each(["profile", "preference"])("does not publish a server profile if explicit recovery fails at %s", async (failure) => {
-    preferredExit = "proxy";
-    const respond = fetchMock.getMockImplementation() as (path: string, options?: RequestInit) => Promise<Response>;
-    if (failure === "profile") fetchMock.mockImplementation((path: string, options: RequestInit = {}) => {
-      const url = new URL(path, window.location.origin);
-      if (url.pathname === "/api/v1/devices/d1/profile" && url.searchParams.get("exit") !== "proxy")
-        return Promise.resolve(Response.json({ error: "Server profile unavailable" }, { status: 503 }));
-      return respond(path, options);
-    });
-    else devicePatchFailure = { status: 503, error: "Preference could not be saved" };
-    await login();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByText(/Сохранённый выход через прокси недоступен/);
-    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: "Выбрать IP сервера" }));
-    await screen.findByText(failure === "profile" ? "Server profile unavailable" : "Preference could not be saved");
-    expect(preferredExit).toBe("proxy");
-    expect(screen.queryByRole("dialog", { name: /Профиль:/ })).toBeNull();
-    expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
-    expect(screen.queryByDisplayValue(profileURI)).toBeNull();
-    expect(rowForDevice("Phone").getByText("1.1.1.1")).toBeTruthy();
-    expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PATCH")).toHaveLength(failure === "profile" ? 0 : 1);
-  });
-
-  it("shows an unknown proxy exit address honestly in both the device row and its profile", async () => {
-    proxyAvailable = true;
-    preferredExit = "proxy";
-    expectedProxyIP = undefined;
-    await login();
-    expect(rowForDevice("Phone").getByText("IP не указан")).toBeTruthy();
-    expect(rowForDevice("Phone").queryByText("8.8.8.8")).toBeNull();
-    fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByDisplayValue(subscriptionLink().replace("/sub/", "/sub/proxy/"));
-    const expected = within(screen.getByRole("region", { name: "Ожидаемый выходной IP" }));
-    expect(expected.getByText("IP не указан")).toBeTruthy();
-    expect(expected.queryByText("8.8.8.8")).toBeNull();
+    await screen.findByRole("dialog", { name: "Профиль VPS: Phone" });
+    expect(fetchMock.mock.calls.some(([path]) => path.includes("/profile"))).toBe(false);
   });
 
   it("renames a device without rotating its subscription or changing its selected exit", async () => {
-    proxyAvailable = true;
-    preferredExit = "proxy";
     await login();
     openDevices();
     const oldPath = subscriptionPath;
@@ -1142,9 +997,9 @@ describe("administrator panel", () => {
     fireEvent.change(rename.getByLabelText("Новое название"), { target: { value: "  Мой телефон  " } });
     fireEvent.click(rename.getByRole("button", { name: "Сохранить" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Переименовать устройство" })).toBeNull());
-    expect(rowForDevice("Мой телефон").getByText("1.1.1.1")).toBeTruthy();
+    expect(rowForDevice("Мой телефон").getByText("8.8.8.8")).toBeTruthy();
     expect(rowForDevice("Мой телефон").getByText("d1")).toBeTruthy();
-    expect(preferredExit).toBe("proxy");
+    expect(preferredExit).toBe("server");
     expect(subscriptionPath).toBe(oldPath);
     expect(rotations).toBe(0);
     expect(revision).toBe(appliedRevision);
@@ -1154,9 +1009,9 @@ describe("administrator panel", () => {
     fireEvent.click(rowForDevice("Мой телефон").getByRole("button", { name: "Профиль" }));
     await screen.findByRole("dialog", { name: "Профиль: Мой телефон" });
     expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value)
-      .toBe(subscriptionLink().replace("/sub/", "/sub/proxy/"));
+      .toBe(subscriptionLink());
     fireEvent.change(screen.getByLabelText("Формат профиля"), { target: { value: "uri" } });
-    expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(proxyURI);
+    expect((screen.getByLabelText("Ссылка подключения") as HTMLTextAreaElement).value).toBe(profileURI);
   });
 
   it("cancels renaming without a request and validates invalid names before saving", async () => {

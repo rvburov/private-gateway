@@ -54,7 +54,6 @@ def stop(process):
 class VPNSmokeTest(unittest.TestCase):
     def exported_checks(self, public_port=8443, internal_port=443, configured_internal=443,
                         profile_port=None, xhttp=False, xhttp_path=None, xhttp_flow=None,
-                        proxy=False, proxy_route=True, proxy_available=True,
                         expected_ip=None, profile_expected_ip=None, configured_expected_ip="", requested_expected_ip=""):
         credential = "00000000-0000-4000-8000-000000000000"
         public_key, short_id, server_name = "public-key", "0123456789abcdef", "reality.example"
@@ -67,24 +66,11 @@ class VPNSmokeTest(unittest.TestCase):
                                    "serverNames": [server_name]}}}]}
         responses = {
             "/devices": {"devices": [{"id": "test-device", "node_id": "local"}]},
-            "/devices/test-device/profile?exit=server": {"uri": profile},
+            "/devices/test-device/profile": {"uri": profile},
             "/nodes": {"nodes": [{"id": "local", "host": "vpn.example", "port": public_port,
                                   "public_key": public_key, "short_id": short_id,
                                   "server_name": server_name}]},
         }
-        if proxy:
-            proxy_credential = "22222222-3333-4444-8555-666666666666"
-            proxy_profile = profile.replace(credential, proxy_credential)
-            responses["/devices/test-device/profile?exit=proxy"] = {"uri": proxy_profile}
-            responses["/nodes"]["nodes"][0]["proxy_available"] = proxy_available
-            config["inbounds"][0]["settings"]["clients"].append({
-                "id": proxy_credential, "flow": "xtls-rprx-vision",
-            })
-            config["outbounds"] = [{"protocol": "blackhole", "tag": "block"},
-                                   {"protocol": "freedom", "tag": "direct"},
-                                   {"protocol": "socks", "tag": "proxy"}]
-            config["routing"] = {"rules": [{"outboundTag": "proxy" if proxy_route else "direct",
-                                             "user": [proxy_credential + "@private-gateway"]}]}
         if xhttp:
             credential = "11111111-2222-3333-4444-555555555555"
             sid, path = "1111222233334444", "/test-xhttp-path-1234"
@@ -92,7 +78,7 @@ class VPNSmokeTest(unittest.TestCase):
             node.update(host="192.0.2.10", server_name="example.com", xhttp={
                 "port": 8444, "public_key": "xhttp-public-key", "short_id": sid, "path": path, "mode": "auto",
             })
-            responses["/devices/test-device/profile?exit=server"]["xhttp_uri"] = (
+            responses["/devices/test-device/profile"]["xhttp_uri"] = (
                 f"vless://{credential}@192.0.2.10:8444?encryption=none&type=xhttp&security=reality&"
                 f"pbk=xhttp-public-key&sid={sid}&sni=example.com&path={path}&mode=auto")
             account = {"id": credential}
@@ -105,8 +91,8 @@ class VPNSmokeTest(unittest.TestCase):
                                                           "realitySettings": {"privateKey": "xhttp-private-key",
                                                                               "shortIds": [sid],
                                                                               "serverNames": ["example.com"]}}})
-        responses["/nodes"]["nodes"][0]["expected_proxy_ip" if proxy else "expected_server_ip"] = expected_ip
-        responses["/devices/test-device/profile?exit=" + ("proxy" if proxy else "server")]["expected_exit_ip"] = profile_expected_ip
+        responses["/nodes"]["nodes"][0]["expected_server_ip"] = expected_ip
+        responses["/devices/test-device/profile"]["expected_exit_ip"] = profile_expected_ip
         opener = mock.Mock()
         def open_response(request, timeout):
             path = request.full_url.removeprefix("http://127.0.0.1:8080/api/v1")
@@ -114,11 +100,12 @@ class VPNSmokeTest(unittest.TestCase):
         opener.open.side_effect = open_response
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            content = json.dumps(config).encode()
-            (root / "xray.json").write_bytes(content)
-            (root / "xray.status.json").write_text(json.dumps({
+            content = json.dumps({"inbounds": config["inbounds"][1:]} if xhttp else config).encode()
+            stem = "xhttp" if xhttp else "xray"
+            (root / f"{stem}.json").write_bytes(content)
+            (root / f"{stem}.status.json").write_text(json.dumps({
                 "running": True, "sha256": hashlib.sha256(content).hexdigest(),
-                "mtime_ns": (root / "xray.json").stat().st_mtime_ns,
+                "mtime_ns": (root / f"{stem}.json").stat().st_mtime_ns,
             }))
             original_open = open
             def state_open(path, *args, **kwargs):
@@ -130,9 +117,8 @@ class VPNSmokeTest(unittest.TestCase):
                                                "GATEWAY_REALITY_PRIVATE_KEY": "private-key",
                                                "GATEWAY_XRAY_PORT": str(configured_internal),
                                                "GATEWAY_SMOKE_TRANSPORT": "xhttp" if xhttp else "tcp",
-                                               "GATEWAY_SMOKE_EXIT": "proxy" if proxy else "server",
-                                               "GATEWAY_SERVER_EXPECTED_IP": configured_expected_ip if not proxy else "",
-                                               "GATEWAY_PROXY_EXPECTED_IP": configured_expected_ip if proxy else "",
+                                               "GATEWAY_SMOKE_EXIT": "server",
+                                               "GATEWAY_SERVER_EXPECTED_IP": configured_expected_ip,
                                                "GATEWAY_SMOKE_EXPECTED_IP": requested_expected_ip,
                                                "GATEWAY_XHTTP_PORT": "8444",
                                                "GATEWAY_XHTTP_PRIVATE_KEY": "xhttp-private-key"}), \
@@ -152,40 +138,28 @@ class VPNSmokeTest(unittest.TestCase):
         self.assertFalse(self.exported_checks(xhttp=True, xhttp_path="/different-test-path")["profile_xhttp"])
         self.assertFalse(self.exported_checks(xhttp=True, xhttp_flow="xtls-rprx-vision")["profile_client"])
 
-    def test_proxy_export_requires_applied_route_and_blackhole_default(self):
-        self.assertTrue(all(self.exported_checks(proxy=True).values()))
-        self.assertFalse(self.exported_checks(proxy=True, proxy_route=False)["proxy_route"])
-        self.assertFalse(self.exported_checks(proxy=True, proxy_available=False)["proxy_available"])
+    def test_proxy_exit_is_unavailable(self):
+        with self.assertRaisesRegex(smoke.SmokeError, "unavailable"):
+            smoke.get_profile("tcp", "proxy")
 
     def test_expected_exit_ip_is_published_for_the_selected_profile(self):
-        for proxy in (False, True):
-            with self.subTest(proxy=proxy):
-                self.assertTrue(all(self.exported_checks(proxy=proxy, expected_ip="8.8.8.8",
-                    profile_expected_ip="8.8.8.8", configured_expected_ip="8.8.8.8").values()))
-                self.assertFalse(self.exported_checks(proxy=proxy, expected_ip="8.8.8.8",
-                    profile_expected_ip="1.1.1.1")["profile_expected_ip"])
-                self.assertFalse(self.exported_checks(proxy=proxy,
-                    configured_expected_ip="8.8.8.8")["configured_expected_ip"])
-                self.assertFalse(self.exported_checks(proxy=proxy,
-                    requested_expected_ip="8.8.8.8")["requested_expected_ip"])
-        self.assertTrue(all(self.exported_checks(proxy=True, expected_ip="2606:4700:4700::1111",
+        self.assertTrue(all(self.exported_checks(expected_ip="8.8.8.8",
+            profile_expected_ip="8.8.8.8", configured_expected_ip="8.8.8.8").values()))
+        self.assertFalse(self.exported_checks(expected_ip="8.8.8.8",
+            profile_expected_ip="1.1.1.1")["profile_expected_ip"])
+        self.assertFalse(self.exported_checks(configured_expected_ip="8.8.8.8")["configured_expected_ip"])
+        self.assertFalse(self.exported_checks(requested_expected_ip="8.8.8.8")["requested_expected_ip"])
+        self.assertTrue(all(self.exported_checks(expected_ip="2606:4700:4700::1111",
             profile_expected_ip="2606:4700:4700:0:0:0:0:1111", requested_expected_ip="2606:4700:4700::1111").values()))
 
-    def test_mapped_expected_ip_does_not_reject_the_same_observed_ipv4(self):
-        profile = ("vless://00000000-0000-4000-8000-000000000000@vpn.example:8443?"
-                   "encryption=none&flow=xtls-rprx-vision&type=tcp&security=reality&"
-                   "sni=reality.example&fp=chrome&pbk=public-key&sid=0123456789abcdef&spx=%2F")
-        output = io.StringIO()
-        with mock.patch.object(smoke, "XRAY") as binary, \
-             mock.patch.object(smoke, "get_profile", return_value=profile) as exported, \
-             mock.patch.object(smoke, "free_port", return_value=19000), \
-             mock.patch.object(smoke, "run_client", return_value="8.8.8.8"), \
-             mock.patch("sys.argv", ["vpn-smoke.py", "--exit", "proxy", "--expected-ip", "::ffff:8.8.8.8"]), \
-             contextlib.redirect_stdout(output):
-            binary.is_file.return_value = True
-            smoke.main()
-        exported.assert_called_once_with("tcp", "proxy", "8.8.8.8")
-        self.assertIn("observed IP 8.8.8.8", output.getvalue())
+    def test_old_proxy_flags_are_rejected_before_any_network_access(self):
+        for arguments in (["--exit", "proxy"], ["--expected-ip", "8.8.8.8"]):
+            with self.subTest(arguments=arguments), mock.patch("sys.argv", ["vpn-smoke.py", *arguments]), \
+                 mock.patch.object(smoke, "get_profile") as exported, contextlib.redirect_stderr(io.StringIO()), \
+                 self.assertRaises(SystemExit) as stopped:
+                smoke.main()
+            self.assertEqual(stopped.exception.code, 2)
+            exported.assert_not_called()
 
     def test_client_uses_public_profile_port_or_explicit_published_ingress(self):
         profile = ("vless://00000000-0000-4000-8000-000000000000@vpn.example:8443?"

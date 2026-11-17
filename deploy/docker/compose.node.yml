@@ -1,0 +1,68 @@
+name: private-gateway-node
+
+# Удалённый VPS не получает БД, административный токен или главный ключ панели.
+services:
+  node-agent:
+    image: private-gateway/node:${PG_RELEASE_SHA:?Set PG_RELEASE_SHA}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    environment:
+      GATEWAY_CONTROL_URL: ${GATEWAY_CONTROL_URL:?Set GATEWAY_CONTROL_URL}
+      GATEWAY_NODE_ID: ${GATEWAY_NODE_ID:?Set GATEWAY_NODE_ID}
+      GATEWAY_NODE_TOKEN_FILE: /state/agent.token
+      GATEWAY_HOST: ${GATEWAY_HOST:?Set GATEWAY_HOST}
+      GATEWAY_PORT: ${GATEWAY_PORT:-8443}
+      GATEWAY_REALITY_PRIVATE_KEY: ${GATEWAY_REALITY_PRIVATE_KEY:?Set GATEWAY_REALITY_PRIVATE_KEY}
+      GATEWAY_SERVER_NAME: ${GATEWAY_SERVER_NAME:?Set GATEWAY_SERVER_NAME}
+      GATEWAY_SHORT_ID: ${GATEWAY_SHORT_ID:?Set GATEWAY_SHORT_ID}
+      GATEWAY_REALITY_TARGET: ${GATEWAY_REALITY_TARGET:?Set GATEWAY_REALITY_TARGET}
+      GATEWAY_XRAY_PORT: ${GATEWAY_XRAY_PORT:-443}
+      GATEWAY_XRAY_CONFIG: /state/xray.json
+      GATEWAY_XRAY_BINARY: /usr/local/bin/xray
+      GATEWAY_XRAY_RESTART: '["python3","/usr/local/bin/wait-xray.py"]'
+      GATEWAY_XHTTP_ENABLED: ${GATEWAY_XHTTP_ENABLED:-0}
+      GATEWAY_XHTTP_PORT: ${GATEWAY_XHTTP_PORT:-8444}
+      GATEWAY_XHTTP_PRIVATE_KEY: ${GATEWAY_XHTTP_PRIVATE_KEY:-}
+      GATEWAY_XHTTP_SHORT_ID: ${GATEWAY_XHTTP_SHORT_ID:-}
+      GATEWAY_XHTTP_PATH: ${GATEWAY_XHTTP_PATH:-}
+      GATEWAY_XHTTP_CONFIG: /state/xhttp.json
+      GATEWAY_XHTTP_RESTART: '["python3","/usr/local/bin/wait-xray.py","xhttp"]'
+      GATEWAY_XHTTP_H3_ENABLED: ${GATEWAY_XHTTP_H3_ENABLED:-0}
+      GATEWAY_XHTTP_H3_DOMAIN: ${GATEWAY_XHTTP_H3_DOMAIN:-}
+      GATEWAY_XHTTP_H3_PORT: ${GATEWAY_XHTTP_H3_PORT:-8444}
+      GATEWAY_XHTTP_H3_PATH: ${GATEWAY_XHTTP_H3_PATH:-}
+      GATEWAY_XHTTP_H3_INTERNAL_PORT: ${GATEWAY_XHTTP_H3_INTERNAL_PORT:-8081}
+    volumes:
+      - ${GATEWAY_STATE_DIR:?Set GATEWAY_STATE_DIR}:/state
+    networks: [vpn]
+    depends_on: [xray]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+
+  xray:
+    image: private-gateway/xray:${PG_XRAY_IMAGE:-${PG_RELEASE_SHA}}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.xray
+    ports:
+      - "0.0.0.0:${GATEWAY_PORT:-8443}:${GATEWAY_XRAY_PORT:-443}/tcp"
+    volumes:
+      - ${GATEWAY_STATE_DIR}:/state
+    networks: [vpn, edge]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    restart: unless-stopped
+
+networks:
+  vpn: {}
+  edge: {}

@@ -94,7 +94,7 @@ func TestXHTTPSubscriptionPreservesDevicePostgreSQL(t *testing.T) {
 	}
 
 	const token = "xhttp-subscription-test-token-with-32-characters"
-	handler := New(store, &testXray{}, &testBrowser{}, Options{Token: token, XrayConfigured: true})
+	handler := New(store, &testXray{}, &testBrowser{}, Options{Token: token, XrayConfigured: true, PanelOrigin: "https://panel.example:8443"})
 	get := func(path, agent string) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodGet, "https://example.org:8443"+path, nil)

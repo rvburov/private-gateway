@@ -26,6 +26,8 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build -trimpath -ldflags='-s 
   -o "$temporary/payload/bin/gateway-api" ./cmd/gateway-api
 CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build -trimpath -ldflags='-s -w' \
   -o "$temporary/payload/bin/gatewayctl" ./cmd/gatewayctl
+CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build -trimpath -ldflags='-s -w' \
+  -o "$temporary/payload/bin/gateway-node" ./cmd/gateway-node
 bash scripts/install-xray.sh "$temporary/payload/bin"
 npm --prefix web ci
 npm --prefix web run build
@@ -67,23 +69,27 @@ for name in ("start.sh", "healthcheck.sh", "smoke.py"):
         raise SystemExit(f"Browser release file must be regular: {source}")
     (payload / "browser").mkdir(exist_ok=True)
     shutil.copyfile(source, payload / "browser" / name)
-for name in ("compose.yml", "compose.xhttp.yml", "Caddyfile.template", "haproxy.cfg.template", "Dockerfile.api", "Dockerfile.xray",
+for name in ("compose.yml", "compose.xhttp.yml", "compose.xhttp-legacy.yml", "compose.xhttp-h3.yml",
+             "compose.node.yml", "compose.node-h3.yml", "Caddyfile.template", "Caddyfile.node.template",
+             "render-caddy.py", "render-node-caddy.py", "haproxy.cfg.template", "Dockerfile.api", "Dockerfile.node", "Dockerfile.xray",
              "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py",
              "vpn-smoke.py", "change-reality-target.py", "rotate-admin-token.py", "admin-credentials.py", "configure-xhttp.py", "configure-proxy.py",
-             "image-tags.py", "release-ports.py", "install.sh", "update.sh"):
+             "image-tags.py", "release-ports.py", "install.sh", "install-node.sh", "update.sh"):
     source = Path("deploy/docker") / name
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Docker release file must be regular: {source}")
     (payload / "docker").mkdir(exist_ok=True)
     shutil.copyfile(source, payload / "docker" / name)
 shutil.copyfile(Path("scripts/verify-release.py"), payload / "docker/verify-release.py")
-required = {"bin/gateway-api", "bin/gatewayctl", "bin/xray", "web/index.html",
+required = {"bin/gateway-api", "bin/gatewayctl", "bin/gateway-node", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
-            "docker/compose.yml", "docker/compose.xhttp.yml", "docker/Caddyfile.template", "docker/haproxy.cfg.template", "docker/Dockerfile.api",
+            "docker/compose.yml", "docker/compose.xhttp.yml", "docker/compose.xhttp-legacy.yml", "docker/compose.xhttp-h3.yml",
+            "docker/compose.node.yml", "docker/compose.node-h3.yml", "docker/Caddyfile.template", "docker/Caddyfile.node.template",
+            "docker/render-caddy.py", "docker/render-node-caddy.py", "docker/haproxy.cfg.template", "docker/Dockerfile.api", "docker/Dockerfile.node",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
             "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/configure-xhttp.py", "docker/configure-proxy.py",
-            "docker/image-tags.py", "docker/release-ports.py", "docker/install.sh", "docker/update.sh",
+            "docker/image-tags.py", "docker/release-ports.py", "docker/install.sh", "docker/install-node.sh", "docker/update.sh",
             "docker/verify-release.py"}
 files = {path.relative_to(payload).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
          for path in sorted(payload.rglob("*")) if path.is_file()}
@@ -105,13 +111,13 @@ checksum = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
 # Файлы первой установки не содержат созданных ключей и локальных файлов окружения.
 install = temporary / "install"
-for source in (Path("deploy/docker/install.sh"), Path("scripts/verify-release.py")):
+for source in (Path("deploy/docker/install.sh"), Path("deploy/docker/install-node.sh"), Path("scripts/verify-release.py")):
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Installer source must be a regular file: {source}")
-    target = install / ("install.sh" if source.name == "install.sh" else source.name)
+    target = install / source.name
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-if not (install / "install.sh").is_file() or not (install / "verify-release.py").is_file():
+if not all((install / name).is_file() for name in ("install.sh", "install-node.sh", "verify-release.py")):
     raise SystemExit("The Docker installer and release verifier are required")
 destination_install = output / "install"
 if destination_install.is_symlink() or (destination_install.exists() and not destination_install.is_dir()):

@@ -13,9 +13,13 @@ import tempfile
 import time
 
 
-CONFIG = pathlib.Path("/state/xray.json")
-STATUS = pathlib.Path("/state/xray.status.json")
-METRICS = pathlib.Path("/state/xray.metrics.json")
+TRANSPORT = os.environ.get("XRAY_TRANSPORT", "tcp")
+if TRANSPORT not in ("tcp", "xhttp"):
+    raise SystemExit("unknown Xray transport")
+STEM = "xray" if TRANSPORT == "tcp" else "xhttp"
+CONFIG = pathlib.Path("/state") / (STEM + ".json")
+STATUS = pathlib.Path("/state") / (STEM + ".status.json")
+METRICS = pathlib.Path("/state") / (STEM + ".metrics.json")
 running = True
 process = None
 
@@ -208,18 +212,24 @@ def stop_child():
 
 def start_child(state):
     global process
-    # С XHTTP или внешним SOCKS5 не отдаём сырой вывод дочернего процесса в журнал:
-    # даже ошибка старта может включать путь, логин, пароль или другое поле секрета.
+    # С XHTTP не отдаём сырой вывод дочернего процесса в журнал:
+    # даже ошибка старта может включать секретный путь или UUID.
     # Неразбираемый конфиг также не является основанием раскрывать его содержимое.
     suppress_output = True
+    listen_port = None
     try:
         configuration = json.loads(CONFIG.read_text(encoding="utf-8"))
+        inbound = next(item for item in configuration.get("inbounds", [])
+                       if item.get("protocol") == "vless")
+        listen_port = inbound.get("port")
         suppress_output = (any(inbound.get("streamSettings", {}).get("network") == "xhttp"
                                for inbound in configuration.get("inbounds", [])) or
                            any(outbound.get("protocol") == "socks"
                                for outbound in configuration.get("outbounds", [])))
-    except (OSError, ValueError, TypeError, AttributeError):
+    except (OSError, ValueError, TypeError, AttributeError, StopIteration):
         pass
+    if type(listen_port) is not int or not 1 <= listen_port <= 65535:
+        return False
     output = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if suppress_output else {}
     process = subprocess.Popen(["/usr/local/bin/xray", "run", "-config", str(CONFIG)], **output)
     deadline = time.monotonic() + 8
@@ -227,7 +237,7 @@ def start_child(state):
         if process.poll() is not None:
             return False
         try:
-            with socket.create_connection(("127.0.0.1", 443), timeout=0.25):
+            with socket.create_connection(("127.0.0.1", listen_port), timeout=0.25):
                 write_status(state, True)
                 return True
         except OSError:
@@ -255,7 +265,7 @@ def main():
                 if state is None:
                     write_status(None, False)
                 elif not start_child(state):
-                    write_status(state, False, "Xray failed to listen on TCP 443")
+                    write_status(state, False, "Xray failed to listen on the configured TCP port")
                     stop_child()
                     # Неверная конфигурация не должна вызывать частый цикл перезапусков.
                     time.sleep(2)

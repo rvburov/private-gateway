@@ -204,8 +204,10 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         raise ConfigurationError("install a verified release with XHTTP support first")
     smoke = compose.parent / "vpn-smoke.py"
     overlay = compose.parent / "compose.xhttp.yml"
+    legacy_overlay = compose.parent / "compose.xhttp-legacy.yml"
+    h3_overlay = compose.parent / "compose.xhttp-h3.yml"
     api = compose.parent.parent / "bin/gateway-api"
-    if not smoke.is_file() or not api.is_file() or not overlay.is_file():
+    if not all(path.is_file() for path in (smoke, api, overlay, legacy_overlay, h3_overlay)):
         raise ConfigurationError("installed Docker release is incomplete")
     before = env.read_bytes()
     metadata = env.stat()
@@ -217,8 +219,13 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         xray_config = state / "xray.json"
     def command():
         result = ["docker", "compose", "--env-file", str(env), "-f", str(compose)]
-        if parse_env(env.read_bytes()).get("GATEWAY_XHTTP_ENABLED") == "1":
+        values = parse_env(env.read_bytes())
+        if values.get("GATEWAY_XHTTP_ENABLED") == "1" or values.get("GATEWAY_XHTTP_H3_ENABLED") == "1":
             result += ["-f", str(overlay)]
+        if values.get("GATEWAY_XHTTP_ENABLED") == "1":
+            result += ["-f", str(legacy_overlay)]
+        if values.get("GATEWAY_XHTTP_H3_ENABLED") == "1":
+            result += ["-f", str(h3_overlay)]
         return result
 
     if apply:
@@ -254,9 +261,26 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
         xray_before = xray_config.read_bytes()
         (backup / "xray.json").write_bytes(xray_before)
         os.chmod(backup / "xray.json", 0o600)
+    xhttp_config = xray_config.with_name("xhttp.json")
+    xhttp_before = None
+    xhttp_metadata = None
+    if xhttp_config.exists():
+        xhttp_metadata = xhttp_config.lstat()
+        if not stat.S_ISREG(xhttp_metadata.st_mode):
+            raise ConfigurationError("XHTTP configuration must be a regular file")
+        xhttp_before = xhttp_config.read_bytes()
+        (backup / "xhttp.json").write_bytes(xhttp_before)
+        os.chmod(backup / "xhttp.json", 0o600)
     def start_and_apply():
-        execute_at("compose-start", command() + ["up", "-d", "--wait", "--no-deps", "api", "xray"], timeout=120)
+        enabled_now = parse_env(env.read_bytes()).get("GATEWAY_XHTTP_ENABLED") == "1"
+        h3_now = parse_env(env.read_bytes()).get("GATEWAY_XHTTP_H3_ENABLED") == "1"
+        execute_at("compose-start", command() + ["up", "-d", "--wait", "--remove-orphans", "--no-deps", "api", "xray"], timeout=120)
+        if enabled_now or h3_now:
+            # Новый процесс ждёт первую конфигурацию, поэтому запускаем без --wait.
+            execute_at("compose-start", command() + ["up", "-d", "--no-deps", "xray-xhttp"], timeout=120)
         execute_at("config-apply", command() + ["exec", "-T", "api", "/usr/local/bin/gatewayctl", "config", "apply"], timeout=90)
+        if enabled_now or h3_now:
+            execute_at("compose-start", command() + ["up", "-d", "--wait", "--no-deps", "xray-xhttp"], timeout=120)
 
     def check_traffic(transport):
         stage = "xhttp-smoke" if transport == "xhttp" else "tcp-smoke"
@@ -320,6 +344,10 @@ def configure(*, enabled=True, port=None, apply=False, env=ENV, compose=COMPOSE,
                 atomic_write(xray_config, xray_before, xray_metadata)
             else:
                 xray_config.unlink(missing_ok=True)
+            if xhttp_before is not None:
+                atomic_write(xhttp_config, xhttp_before, xhttp_metadata)
+            else:
+                xhttp_config.unlink(missing_ok=True)
             if apply:
                 start_and_apply()
                 check_traffic("tcp")

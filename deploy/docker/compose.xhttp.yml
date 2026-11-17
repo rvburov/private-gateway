@@ -1,5 +1,20 @@
-# Применяется только при GATEWAY_XHTTP_ENABLED=1. Выключенный транспорт не резервирует порт.
+# Второй процесс Xray изолирован от TCP/Vision и запускается только при XHTTP или H3.
 services:
-  xray:
-    ports:
-      - "0.0.0.0:${GATEWAY_XHTTP_PORT:-8444}:${GATEWAY_XHTTP_PORT:-8444}/tcp"
+  xray-xhttp:
+    image: private-gateway/xray:${PG_XRAY_IMAGE:-${PG_RELEASE_SHA}}
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.xray
+    environment:
+      XRAY_TRANSPORT: xhttp
+    volumes:
+      - ${GATEWAY_STATE_DIR:?Set GATEWAY_STATE_DIR}:/state
+    networks: [vpn, edge]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    restart: unless-stopped

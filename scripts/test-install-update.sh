@@ -9,7 +9,7 @@ install_test_error_reported=false
 report_install_failure() {
   local exit_status=$1 failed_line=$2 safe_phase
   case "$install_test_phase" in
-    initialisation|bootstrap|initial-checks|panel-update|xhttp-enable|proxy-rollback|port-preparation|panel-rollback|vless-rollback|primary-transition|single-port|fresh-install)
+    initialisation|bootstrap|initial-checks|panel-update|xhttp-enable|proxy-preserve|port-preparation|panel-rollback|vless-rollback|primary-transition|single-port|fresh-install)
       safe_phase=$install_test_phase ;;
     *) safe_phase=unknown ;;
   esac
@@ -40,8 +40,15 @@ collector=''
 compose() {
   local release=/opt/private-gateway-docker/current/docker
   local files=(-f "$release/compose.yml")
-  if sudo test -f "$release/compose.xhttp.yml" && sudo grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+  if sudo test -f "$release/compose.xhttp.yml" &&
+      { sudo grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file" || sudo grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; }; then
     files+=(-f "$release/compose.xhttp.yml")
+  fi
+  if sudo test -f "$release/compose.xhttp-legacy.yml" && sudo grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(-f "$release/compose.xhttp-legacy.yml")
+  fi
+  if sudo test -f "$release/compose.xhttp-h3.yml" && sudo grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; then
+    files+=(-f "$release/compose.xhttp-h3.yml")
   fi
   sudo docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
@@ -418,7 +425,7 @@ write(sys.argv[5], main)
 write(sys.argv[6], {**main, 'docker/haproxy.cfg.template': template.replace(route, route.replace('panel_https', 'vpn_reality')).encode()})
 write(sys.argv[7], {**main, 'docker/haproxy.cfg.template': template.replace(default, 'default_backend panel_https').encode()})
 write(sys.argv[8], {**main, 'docker/compose.yml': compose_at(8443, only=True)})
-write(sys.argv[9], {'web/proxy-rollback-marker.txt': b'Proxy rollback fixture.\n',
+write(sys.argv[9], {'web/proxy-preserve-marker.txt': b'Proxy preservation fixture.\n',
                     'docker/Caddyfile.template': initial_caddy.encode()})
 PY
 
@@ -512,10 +519,9 @@ sudo env GITHUB_ACTIONS=true python3 /opt/private-gateway-docker/current/docker/
 [[ $(xhttp_identity) == "$saved_xhttp_identity" ]] || fail 'Repeated configuration changed the XHTTP identity.'
 check_stack
 
-printf '\n== Failed staged SOCKS5 exit restores the active environment and direct VPN ==\n'
-install_test_phase=proxy-rollback
+printf '\n== Old SOCKS5 exit is disabled while provider settings remain untouched ==\n'
+install_test_phase=proxy-preserve
 pending_proxy=/etc/private-gateway-docker/proxy.pending.env
-active_env_hash=$(sudo sha256sum "$env_file" | awk '{print $1}')
 # Только вымышленные данные теста; реальных секретов в файл или журналы CI не записываем.
 sudo python3 - "$pending_proxy" <<'PY'
 import os
@@ -530,17 +536,23 @@ content = ('GATEWAY_PROXY_ENABLED=1\nGATEWAY_PROXY_HOST=127.0.0.1\n'
 with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as output:
     output.write(content)
 PY
-if deliver "$version_j" "$work/release-4.tar.gz" 2>&1 | tee "$work/proxy-rollback.log"; then
-  fail 'A failed staged SOCKS5 exit was accepted.'
-fi
-grep -q '^Docker deployment stopped: VLESS proxy traffic or its observed external IP failed the new release check.' \
-  "$work/proxy-rollback.log" || fail 'The proxy smoke gate did not reject the new release.'
-[[ $(installed) == "$version_b" ]] || fail 'The proxy rollback did not restore the installed release.'
-[[ $(sudo sha256sum "$env_file" | awk '{print $1}') == "$active_env_hash" ]] \
-  || fail 'The proxy rollback changed the previously active environment.'
-sudo test -f "$pending_proxy" || fail 'The staged proxy settings were lost after rollback.'
+sudo python3 - "$env_file" <<'PY'
+from pathlib import Path
+import sys
+with Path(sys.argv[1]).open('a') as output:
+    output.write('GATEWAY_PROXY_ENABLED=1\nGATEWAY_PROXY_USERNAME_B64=Zml4dHVyZQ==\n')
+    output.write('GATEWAY_PROXY_PASSWORD_B64=Zml4dHVyZQ==\n')
+PY
+pending_hash=$(sudo sha256sum "$pending_proxy" | awk '{print $1}')
+credentials_hash=$(sudo sed -n '/^GATEWAY_PROXY_.*_B64=/p' "$env_file" | sha256sum | awk '{print $1}')
+deliver "$version_j" "$work/release-4.tar.gz" 2>&1 | tee "$work/proxy-preserve.log"
+[[ $(installed) == "$version_j" ]] || fail 'The update did not install the new release.'
+sudo grep -qx 'GATEWAY_PROXY_ENABLED=0' "$env_file" || fail 'The old server exit mode was not disabled.'
+[[ $(sudo sed -n '/^GATEWAY_PROXY_.*_B64=/p' "$env_file" | sha256sum | awk '{print $1}') == "$credentials_hash" ]] \
+  || fail 'Stored provider credentials changed.'
+[[ $(sudo sha256sum "$pending_proxy" | awk '{print $1}') == "$pending_hash" ]] \
+  || fail 'The staged provider settings were changed or removed.'
 check_stack
-sudo rm -f -- "$pending_proxy"
 
 printf '\n== Preparation release keeps the old primary443 and both public ports ==\n'
 install_test_phase=port-preparation

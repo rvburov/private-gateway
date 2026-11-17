@@ -1,13 +1,13 @@
 -- name: UpsertNode :exec
-INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash, xhttp_config)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash, xhttp_config, h3_config)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name, host = EXCLUDED.host, port = EXCLUDED.port,
     server_name = EXCLUDED.server_name, public_key = EXCLUDED.public_key, short_id = EXCLUDED.short_id, config_hash = EXCLUDED.config_hash,
-    xhttp_config = EXCLUDED.xhttp_config,
+    xhttp_config = EXCLUDED.xhttp_config, h3_config = EXCLUDED.h3_config,
     revision = nodes.revision + CASE WHEN
-        (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash, nodes.xhttp_config)
-        IS DISTINCT FROM (EXCLUDED.host, EXCLUDED.port, EXCLUDED.server_name, EXCLUDED.public_key, EXCLUDED.short_id, EXCLUDED.config_hash, EXCLUDED.xhttp_config)
+        (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash, nodes.xhttp_config, nodes.h3_config)
+        IS DISTINCT FROM (EXCLUDED.host, EXCLUDED.port, EXCLUDED.server_name, EXCLUDED.public_key, EXCLUDED.short_id, EXCLUDED.config_hash, EXCLUDED.xhttp_config, EXCLUDED.h3_config)
         THEN 1 ELSE 0 END;
 
 -- name: ListNodes :many
@@ -15,6 +15,87 @@ SELECT * FROM nodes ORDER BY name, id;
 
 -- name: GetNode :one
 SELECT * FROM nodes WHERE id=$1;
+
+-- name: InsertRemoteNode :one
+INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash,
+                  xhttp_config, h3_config, kind, agent_join_hash, agent_join_expires_at, revision)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'remote', $11, $12, 1)
+RETURNING *;
+
+-- name: UpdateRemoteNode :one
+UPDATE nodes SET name=$2, host=$3, port=$4, server_name=$5, public_key=$6,
+                 short_id=$7, xhttp_config=$8, h3_config=$9,
+                 revision=revision+1
+WHERE id=$1 AND kind='remote' RETURNING *;
+
+-- name: DeleteRemoteNode :execrows
+DELETE FROM nodes WHERE nodes.id=$1 AND kind='remote'
+  AND NOT EXISTS (SELECT 1 FROM devices WHERE node_id=$1);
+
+-- name: SetNodeEntryProxy :one
+UPDATE nodes SET entry_proxy_id=$2 WHERE id=$1 RETURNING *;
+
+-- name: SetRequestedRevision :one
+UPDATE nodes SET requested_revision=revision WHERE id=$1 AND kind='remote' RETURNING *;
+
+-- name: EnrollAgent :one
+UPDATE nodes SET agent_token_hash=$3, agent_join_hash=NULL, agent_join_expires_at=NULL,
+                 agent_last_seen_at=now(), agent_error=''
+WHERE id=$1 AND kind='remote' AND agent_join_hash=$2 AND agent_join_expires_at>now()
+  AND agent_token_hash IS NULL RETURNING *;
+
+-- name: RotateAgentJoin :one
+UPDATE nodes SET agent_join_hash=$2, agent_join_expires_at=$3,
+                 agent_token_hash=NULL, agent_last_seen_at=NULL,
+                 agent_error='awaiting enrollment', applied_revision=0
+WHERE id=$1 AND kind='remote' RETURNING *;
+
+-- name: GetAgentNode :one
+SELECT * FROM nodes WHERE id=$1 AND kind='remote' AND agent_token_hash=$2;
+
+-- name: TouchAgent :exec
+UPDATE nodes SET agent_last_seen_at=now() WHERE id=$1 AND agent_token_hash=$2;
+
+-- name: AgentAck :execrows
+UPDATE nodes SET applied_revision=$2, agent_last_seen_at=now(), agent_error=''
+WHERE id=$1 AND kind='remote' AND agent_token_hash=$3 AND revision=$2
+  AND requested_revision=$2 AND applied_revision<$2;
+
+-- name: AgentFailure :execrows
+UPDATE nodes SET agent_last_seen_at=now(), agent_error=$3
+WHERE id=$1 AND kind='remote' AND agent_token_hash=$2
+  AND revision=$4 AND requested_revision=$4;
+
+-- name: InsertEntryProxy :one
+INSERT INTO entry_proxies(id, name, host, port, auth_type, username_ciphertext,
+                          password_ciphertext, enabled, supports_udp)
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *;
+
+-- name: ListEntryProxies :many
+SELECT * FROM entry_proxies ORDER BY name,id;
+
+-- name: GetEntryProxy :one
+SELECT * FROM entry_proxies WHERE id=$1;
+
+-- name: UpdateEntryProxy :one
+UPDATE entry_proxies SET name=$2,host=$3,port=$4,auth_type=$5,
+    username_ciphertext=$6,password_ciphertext=$7,enabled=$8,supports_udp=$9
+WHERE id=$1 RETURNING *;
+
+-- name: DeleteEntryProxy :execrows
+DELETE FROM entry_proxies WHERE entry_proxies.id=$1 AND NOT EXISTS
+    (SELECT 1 FROM nodes WHERE entry_proxy_id=$1);
+
+-- name: SetChainSubscriptionHash :exec
+UPDATE devices SET chain_subscription_hash=$2 WHERE id=$1;
+
+-- name: AdvanceChainSubscription :one
+UPDATE devices SET chain_subscription_generation=chain_subscription_generation+1,
+                   chain_subscription_hash=NULL
+WHERE id=$1 AND revoked_at IS NULL RETURNING *;
+
+-- name: GetActiveDeviceByChainHash :one
+SELECT * FROM devices WHERE chain_subscription_hash=$1 AND revoked_at IS NULL;
 
 -- name: InsertDevice :one
 INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING *;
@@ -61,6 +142,9 @@ SELECT * FROM audit_events ORDER BY id DESC LIMIT 100;
 
 -- name: CountDevices :one
 SELECT count(*) AS total, count(*) FILTER (WHERE revoked_at IS NULL) AS active FROM devices WHERE node_id=$1;
+
+-- name: CountAllDevices :one
+SELECT count(*) AS total, count(*) FILTER (WHERE revoked_at IS NULL) AS active FROM devices;
 
 -- name: GetAdministrator :one
 SELECT * FROM administrator_credentials WHERE id=1;

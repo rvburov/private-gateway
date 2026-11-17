@@ -61,8 +61,15 @@ build_checks_image() {
 dev=.local/dev
 dev_compose() {
   local -a dev_files=(--file "$dev/release/docker/compose.yml")
-  if [[ -f "$dev/release/docker/compose.xhttp.yml" ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$dev/stack.env"; then
+  if [[ -f "$dev/release/docker/compose.xhttp.yml" ]] &&
+      { grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$dev/stack.env" || grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$dev/stack.env"; }; then
     dev_files+=(--file "$dev/release/docker/compose.xhttp.yml")
+  fi
+  if [[ -f "$dev/release/docker/compose.xhttp-legacy.yml" ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$dev/stack.env"; then
+    dev_files+=(--file "$dev/release/docker/compose.xhttp-legacy.yml")
+  fi
+  if [[ -f "$dev/release/docker/compose.xhttp-h3.yml" ]] && grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$dev/stack.env"; then
+    dev_files+=(--file "$dev/release/docker/compose.xhttp-h3.yml")
   fi
   dev_files+=(--file deploy/dev/compose.yml)
   docker compose --project-name "private-gateway-dev-$checkout_name" --env-file "$dev/stack.env" \

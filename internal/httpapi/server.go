@@ -45,6 +45,7 @@ type Options struct {
 	StatsBinary       string
 	Checks            ServerChecks
 	IP2LocationAPIKey string
+	PanelOrigin       string
 }
 type Server struct {
 	store          *storage.Store
@@ -87,11 +88,15 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 	r.Get("/browser-authorization", s.browserAuthorization)
 	r.Get(storage.SubscriptionPathPrefix+"{token}", s.subscription)
 	r.Get(storage.ProxySubscriptionPathPrefix+"{token}", s.proxySubscription)
+	r.Get(storage.ChainSubscriptionPathPrefix+"{token}", s.chainSubscription)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(prometheus.NewGoCollector(), prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	requests := prometheus.NewCounterVec(prometheus.CounterOpts{Name: "gateway_http_requests_total", Help: "HTTP requests by method and status class."}, []string{"method", "status_class"})
 	registry.MustRegister(requests)
 	r.Route("/api/v1", func(r chi.Router) {
+		r.Post("/agent/enroll", s.agentEnroll)
+		r.Get("/agent/nodes/{id}/desired", s.agentDesired)
+		r.Post("/agent/nodes/{id}/ack", s.agentAck)
 		r.Post("/auth/login", s.login)
 		r.Get("/auth/restore", s.restoreSession)
 		r.Post("/auth/2fa", s.secondFactor)
@@ -103,11 +108,23 @@ func New(store *storage.Store, xray Xray, browser Browser, options Options) http
 			r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 			r.Get("/status", s.status)
 			r.Get("/nodes", s.nodes)
+			r.Post("/nodes", s.createNode)
+			r.Patch("/nodes/{id}", s.updateNode)
+			r.Delete("/nodes/{id}", s.deleteNode)
+			r.Post("/nodes/{id}/rotate-join", s.rotateJoin)
+			r.Put("/nodes/{id}/entry-proxy", s.assignEntryProxy)
+			r.Post("/nodes/{id}/apply", s.applyNode)
+			r.Get("/entry-proxies", s.entryProxies)
+			r.Post("/entry-proxies", s.createEntryProxy)
+			r.Patch("/entry-proxies/{id}", s.updateEntryProxy)
+			r.Delete("/entry-proxies/{id}", s.deleteEntryProxy)
 			r.Get("/devices", s.devices)
 			r.Get("/devices/traffic", s.deviceTraffic)
 			r.Post("/devices", s.create)
 			r.Patch("/devices/{id}", s.updateDevice)
 			r.Get("/devices/{id}/profile", s.export)
+			r.Get("/devices/{id}/chain", s.exportChain)
+			r.Post("/devices/{id}/chain-subscription", s.rotateChainSubscription)
 			r.Post("/devices/{id}/subscription", s.rotateSubscription)
 			r.Post("/devices/{id}/revoke", s.revoke)
 			r.Delete("/devices/{id}", s.deleteDevice)
@@ -302,9 +319,14 @@ func (s *Server) export(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
+	result.SubscriptionURL = s.absoluteSubscription(result.SubscriptionPath)
 	respond(w, 200, result)
 }
 func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
+	if s.absoluteSubscription(storage.SubscriptionPathPrefix+strings.Repeat("A", 43)) == "" {
+		fail(w, 503, "canonical panel URL is unavailable")
+		return
+	}
 	if !validProfilePortQuery(r) {
 		fail(w, 400, "unsupported profile port")
 		return
@@ -320,7 +342,7 @@ func (s *Server) rotateSubscription(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.emitNotification("devices", "Ссылка-подписка обновлена", "Для устройства выпущена новая ссылка; прежняя больше не действует.")
-	respond(w, 200, map[string]string{"subscription_path": path})
+	respond(w, 200, map[string]string{"subscription_path": path, "subscription_url": s.absoluteSubscription(path)})
 }
 func (s *Server) audit(w http.ResponseWriter, r *http.Request) {
 	result, err := s.store.Audit(r.Context())
@@ -423,8 +445,8 @@ func (s *Server) error(w http.ResponseWriter, err error) {
 		fail(w, 409, err.Error())
 	case errors.Is(err, storage.ErrRevoked):
 		fail(w, 410, err.Error())
-	case errors.Is(err, storage.ErrProxyUnavailable):
-		fail(w, 503, err.Error())
+	case errors.Is(err, storage.ErrChainUnavailable):
+		fail(w, 409, err.Error())
 	default:
 		slog.Error("database operation failed")
 		fail(w, 500, "operation failed")

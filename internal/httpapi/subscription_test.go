@@ -19,7 +19,7 @@ import (
 func TestSubscriptionLinkPostgreSQL(t *testing.T) {
 	store, pool, node, _ := integrationStore(t)
 	const token = "subscription-integration-token-with-32-characters"
-	server := httptest.NewServer(New(store, &testXray{}, &testBrowser{}, Options{Token: token, XrayConfigured: true}))
+	server := httptest.NewServer(New(store, &testXray{}, &testBrowser{}, Options{Token: token, XrayConfigured: true, PanelOrigin: "https://panel.example:8443"}))
 	defer server.Close()
 	call := func(method, path, auth string, headers map[string]string) (*http.Response, []byte) {
 		t.Helper()
@@ -114,8 +114,8 @@ func TestSubscriptionLinkPostgreSQL(t *testing.T) {
 	}
 	// Импорт в популярные приложения: каждая кнопка несёт ссылку в форме, которую ждёт приложение.
 	for _, button := range []string{
-		`href="happ://add/http://`, `href="v2rayng://install-sub?url=http%3A%2F%2F`, `href="hiddify://import/http://`,
-		`href="streisand://import/http://`, `href="v2box://install-sub?url=http%3A%2F%2F`, `href="clash://install-config?url=`,
+		`href="happ://add/https://`, `href="v2rayng://install-sub?url=https%3A%2F%2F`, `href="hiddify://import/https://`,
+		`href="streisand://import/https://`, `href="v2box://install-sub?url=https%3A%2F%2F`, `href="clash://install-config?url=`,
 	} {
 		if !strings.Contains(page, button) {
 			t.Fatalf("the browser page lacks the import button %s", button)

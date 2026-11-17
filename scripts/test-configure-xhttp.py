@@ -38,7 +38,10 @@ class ConfigureXHTTPTests(unittest.TestCase):
         self.compose = self.root / "release/docker/compose.yml"
         self.compose.write_text("GATEWAY_XHTTP_ENABLED: ${GATEWAY_XHTTP_ENABLED:-0}\n")
         self.overlay = self.compose.parent / "compose.xhttp.yml"
-        self.overlay.write_text("services:\n  xray:\n    ports: [\"8444:8444/tcp\"]\n")
+        self.overlay.write_text("services:\n  xray-xhttp:\n    image: xray\n")
+        self.legacy_overlay = self.compose.parent / "compose.xhttp-legacy.yml"
+        self.legacy_overlay.write_text("services:\n  xray-xhttp:\n    ports: [\"8444:8444/tcp\"]\n")
+        (self.compose.parent / "compose.xhttp-h3.yml").write_text("services:\n  caddy: {}\n")
         (self.compose.parent / "vpn-smoke.py").write_text("# Тестовая заглушка\n")
         (self.root / "release/bin/gateway-api").write_text("# Тестовая заглушка\n")
         self.config = self.root / "xray.json"
@@ -92,6 +95,7 @@ class ConfigureXHTTPTests(unittest.TestCase):
         probes = [command[-1] for command in self.calls if "vpn-smoke.py" in command[1]]
         self.assertEqual(probes, ["tcp", "xhttp"])
         self.assertTrue(any(command[-2:] == ["api", "xray"] for command in self.calls))
+        self.assertTrue(any(command[-1] == "xray-xhttp" and "up" in command for command in self.calls))
         for command in self.calls:
             self.assertNotIn(KEY, command)
         self.assertEqual(xhttp.parse_env(self.env.read_bytes())["GATEWAY_XHTTP_PORT"], "9444")

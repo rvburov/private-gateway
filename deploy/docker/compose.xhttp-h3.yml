@@ -1,0 +1,5 @@
+# H3 принимает только Caddy: сертификат не передаётся Xray.
+services:
+  caddy:
+    ports:
+      - "0.0.0.0:${GATEWAY_XHTTP_H3_PORT:-8444}:${GATEWAY_XHTTP_H3_PORT:-8444}/udp"

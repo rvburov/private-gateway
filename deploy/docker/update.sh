@@ -9,7 +9,6 @@ fail() { printf 'Docker deployment stopped: %s\n' "$*" >&2; exit 1; }
 IFS= read -r expected || fail 'Expected a commit SHA before the release archive.'
 [[ $expected =~ ^[0-9a-f]{40}$ ]] || fail 'Expected a full commit SHA before the release archive.'
 env_file=/etc/private-gateway-docker/stack.env
-pending_proxy=/etc/private-gateway-docker/proxy.pending.env
 caddyfile=/etc/private-gateway-docker/Caddyfile
 haproxy_cfg=/etc/private-gateway-docker/haproxy.cfg
 current=/opt/private-gateway-docker/current
@@ -20,8 +19,15 @@ compose_release() {
   local file=$1
   shift
   local files=(--file "$file")
-  if [[ -f ${file%/*}/compose.xhttp.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+  if [[ -f ${file%/*}/compose.xhttp.yml ]] &&
+      { grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file" || grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; }; then
     files+=(--file "${file%/*}/compose.xhttp.yml")
+  fi
+  if [[ -f ${file%/*}/compose.xhttp-legacy.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(--file "${file%/*}/compose.xhttp-legacy.yml")
+  fi
+  if [[ -f ${file%/*}/compose.xhttp-h3.yml ]] && grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; then
+    files+=(--file "${file%/*}/compose.xhttp-h3.yml")
   fi
   docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
@@ -75,9 +81,12 @@ fi
 if [[ -f /var/lib/private-gateway-docker/xray/xray.json ]]; then
   cp -p /var/lib/private-gateway-docker/xray/xray.json "$backup/xray.json"
 fi
+if [[ -f /var/lib/private-gateway-docker/xray/xhttp.json ]]; then
+  cp -p /var/lib/private-gateway-docker/xray/xhttp.json "$backup/xhttp.json"
+fi
 install -d -m 0755 "$release"
 tar -xzf "$archive" -C "$release" --no-same-owner --no-same-permissions
-chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/xray
+chmod 0555 "$release"/bin/gateway-api "$release"/bin/gatewayctl "$release"/bin/gateway-node "$release"/bin/xray
 # Теги по содержимому: образ сохраняет свой тег, а его контейнер продолжает работать, пока не
 # изменятся его файлы. Релиз без помощника тегов собирает теги коммита, как велит его compose.
 image_tags=()
@@ -92,8 +101,15 @@ fi
 compose_old() { compose_release "$old_compose" "$@"; }
 compose_new() {
   local files=(--file "$new_compose")
-  if [[ -f $release/docker/compose.xhttp.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+  if [[ -f $release/docker/compose.xhttp.yml ]] &&
+      { grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file" || grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; }; then
     files+=(--file "$release/docker/compose.xhttp.yml")
+  fi
+  if [[ -f $release/docker/compose.xhttp-legacy.yml ]] && grep -qx 'GATEWAY_XHTTP_ENABLED=1' "$env_file"; then
+    files+=(--file "$release/docker/compose.xhttp-legacy.yml")
+  fi
+  if [[ -f $release/docker/compose.xhttp-h3.yml ]] && grep -qx 'GATEWAY_XHTTP_H3_ENABLED=1' "$env_file"; then
+    files+=(--file "$release/docker/compose.xhttp-h3.yml")
   fi
   env PG_RELEASE_SHA="$version" "${image_tags[@]}" docker compose --env-file "$env_file" "${files[@]}" "$@"
 }
@@ -130,12 +146,12 @@ old_services=(api browser xray caddy)
 old_service_list=$(compose_old config --services)
 new_service_list=$(compose_new config --services)
 # При переносе опубликованного порта между службами сначала освобождается старый владелец.
-# Та же проверка нужна при откате: работающий новый edge иначе удержит 8443 старого Caddy.
+# Учитываем и протокол: TCP8444 прежнего XHTTP и UDP8444 H3 могут сосуществовать.
 port_owner() {
   python3 -c 'import json, sys
 services = json.load(sys.stdin)["services"]
-print(",".join(sorted(name for name, service in services.items()
-    if any(str(port.get("published")) == "8443" for port in service.get("ports", [])))))'
+print(",".join(sorted(str(port.get("published")) + "/" + port.get("protocol", "tcp") + ":" + name
+    for name, service in services.items() for port in service.get("ports", []))))'
 }
 old_port_owner=$(compose_old config --format json | port_owner)
 new_port_owner=$(compose_new config --format json | port_owner)
@@ -154,6 +170,14 @@ if grep -qx edge <<< "$old_service_list"; then
   old_edge=true
   old_services+=(edge)
 fi
+if grep -qx xray-xhttp <<< "$old_service_list"; then old_services+=(xray-xhttp); fi
+new_xhttp=false
+if grep -qx xray-xhttp <<< "$new_service_list"; then new_xhttp=true; fi
+xhttp_transfer=false
+if ((old_xhttp_port != 0)) && grep -qx xray-xhttp <<< "$new_service_list" &&
+    ! grep -qx xray-xhttp <<< "$old_service_list"; then
+  xhttp_transfer=true
+fi
 if grep -qx edge <<< "$new_service_list"; then
   edge_enabled=true
   services+=(edge)
@@ -162,6 +186,7 @@ if grep -qx edge <<< "$new_service_list"; then
 else
   compose_new pull postgres caddy
 fi
+health_services=("${services[@]}")
 # Пересобранный тег получил бы новый ID образа, и compose пересоздал бы контейнер, который не менялся.
 for service in api xray browser; do
   if ! docker image inspect "$(image_of "$service")" >/dev/null 2>&1; then compose_new build "$service"; fi
@@ -169,7 +194,7 @@ done
 domain=$(sed -n 's/^PANEL_DOMAIN=//p' "$env_file")
 [[ $domain =~ ^[A-Za-z0-9.-]+$ ]] || fail 'Panel domain is invalid.'
 # Неизменный файл конфигурации остаётся как есть, а с ним и контейнер, который его читает.
-stage_config "$release/docker/Caddyfile.template" "$caddyfile.next" 600
+python3 "$release/docker/render-caddy.py" "$release/docker/Caddyfile.template" "$caddyfile.next" "$env_file"
 if cmp -s "$caddyfile.next" "$caddyfile"; then
   rm -f -- "$caddyfile.next"
 else
@@ -207,10 +232,6 @@ vless_works() {
   local port_args=()
   if [[ -n ${2:-} ]]; then port_args=(--port "$2"); fi
   if [[ -n ${3:-} ]]; then port_args+=(--transport "$3"); fi
-  if [[ ${4:-} == proxy ]]; then
-    port_args+=(--exit proxy)
-    if [[ -n ${5:-} ]]; then port_args+=(--expected-ip "$5"); fi
-  fi
   for attempt in 1 2 3; do
     if python3 "$1/docker/vpn-smoke.py" "${port_args[@]}"; then return 0; fi
     if ((attempt < 3)); then sleep 5; fi
@@ -248,6 +269,10 @@ rollback() {
   if [[ -f $backup/xray.json ]]; then
     cp -p "$backup/xray.json" /var/lib/private-gateway-docker/xray/xray.json
   fi
+  if [[ -f $backup/xhttp.json ]]; then
+    cp -p "$backup/xhttp.json" /var/lib/private-gateway-docker/xray/xhttp.json
+  fi
+  if [[ $xhttp_transfer == true ]]; then compose_new stop xray-xhttp || true; fi
   if [[ $database_saved == true ]]; then
     compose_old up -d --wait postgres || true
     compose_old exec -T postgres psql -v ON_ERROR_STOP=1 -U gateway -d postgres \
@@ -287,32 +312,15 @@ compose_old exec -T postgres pg_dump -Fc -U gateway gateway > "$backup/gateway.d
 database_saved=true
 
 compose_new run --rm --no-deps api migrate
-proxy_staged=false
-if [[ -e $pending_proxy || -L $pending_proxy ]]; then proxy_staged=true; fi
-python3 - "$env_file" "$pending_proxy" "PG_RELEASE_SHA=$version" "${image_tags[@]}" <<'PY'
+python3 - "$env_file" "PG_RELEASE_SHA=$version" 'GATEWAY_PROXY_ENABLED=0' "${image_tags[@]}" <<'PY'
 import os
 from pathlib import Path
-import stat
 import sys
 import tempfile
 
 path = Path(sys.argv[1])
-pending = Path(sys.argv[2])
 lines = path.read_text().splitlines()
-assignments = list(sys.argv[3:])
-if pending.exists() or pending.is_symlink():
-    metadata = pending.lstat()
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
-        raise SystemExit('Pending SOCKS5 settings must be a root-owned regular file with mode 0600.')
-    names = {"GATEWAY_PROXY_ENABLED", "GATEWAY_PROXY_HOST", "GATEWAY_PROXY_PORT",
-             "GATEWAY_PROXY_AUTH", "GATEWAY_PROXY_USERNAME_B64", "GATEWAY_PROXY_PASSWORD_B64",
-             "GATEWAY_PROXY_EXPECTED_IP"}
-    staged = pending.read_text().splitlines()
-    found = [line.partition('=')[0] for line in staged]
-    if len(staged) != len(names) or set(found) != names or len(set(found)) != len(found) or \
-            any('=' not in line for line in staged) or 'GATEWAY_PROXY_ENABLED=1' not in staged:
-        raise SystemExit('Pending SOCKS5 settings are incomplete or invalid.')
-    assignments.extend(staged)
+assignments = list(sys.argv[2:])
 for assignment in assignments:
     name = assignment.split('=', 1)[0]
     matches = [i for i, line in enumerate(lines) if line.startswith(name + '=')]
@@ -346,10 +354,15 @@ if [[ $port_transfer == true ]]; then
   compose_old stop caddy
   if [[ $old_edge == true ]]; then compose_old stop edge; fi
 fi
-compose_new up -d --wait "${services[@]}"
+if [[ $xhttp_transfer == true ]]; then compose_old stop xray; fi
+# При первом разделении у отдельного XHTTP-процесса ещё нет конфигурации.
+# Запускаем его до применения и ждём готовности после записи конфигурации API.
+if [[ $new_xhttp == true ]]; then compose_new up -d --no-deps xray-xhttp; fi
+compose_new up -d --wait "${health_services[@]}"
 if [[ $caddy_changed == true ]]; then compose_new up -d --wait --no-deps --force-recreate caddy; fi
 if [[ $haproxy_changed == true ]]; then compose_new up -d --wait --no-deps --force-recreate edge; fi
 compose_new exec -T api /usr/local/bin/gatewayctl config apply
+if [[ $new_xhttp == true ]]; then compose_new up -d --wait --no-deps xray-xhttp; fi
 ready=false
 for _ in $(seq 1 30); do
   if curl --noproxy '*' --fail --silent --show-error --max-time 4 \
@@ -404,23 +417,6 @@ elif [[ $xhttp_port != 0 ]] && ! vless_works "$release" "$xhttp_port" xhttp; the
   vless_failed=true
   fail 'VLESS traffic does not pass through the XHTTP port.'
 fi
-proxy_enabled=false
-proxy_expected_ip=$(sed -n 's/^GATEWAY_PROXY_EXPECTED_IP=//p' "$env_file")
-if grep -qx 'GATEWAY_PROXY_ENABLED=1' "$env_file"; then proxy_enabled=true; fi
-if [[ $proxy_enabled == true && $active_devices != 0 ]]; then
-  if ! vless_works "$release" "$vpn_port" tcp proxy "$proxy_expected_ip"; then
-    vless_failed=true
-    fail 'VLESS proxy traffic or its observed external IP failed the new release check.'
-  fi
-  if [[ $fallback_port != 0 ]] && ! vless_works "$release" "$fallback_port" tcp proxy "$proxy_expected_ip"; then
-    vless_failed=true
-    fail 'VLESS proxy traffic failed through the fallback port.'
-  fi
-  if [[ $xhttp_port != 0 ]] && ! vless_works "$release" "$xhttp_port" xhttp proxy "$proxy_expected_ip"; then
-    vless_failed=true
-    fail 'VLESS proxy traffic failed through the XHTTP port.'
-  fi
-fi
 ln -s "$release" "$current.next"
 mv -Tf "$current.next" "$current"
 pointer_changed=true
@@ -432,6 +428,5 @@ install -m 0644 "$release/docker/verify-release.py" /usr/local/lib/private-gatew
 mv -f /usr/local/lib/private-gateway-docker/.verify-release.next /usr/local/lib/private-gateway-docker/verify-release.py
 cmp -s "$release/docker/update.sh" /usr/local/sbin/private-gateway-docker-deploy \
   || fail 'The installed updater does not match the new release.'
-if [[ $proxy_staged == true ]]; then rm -f -- "$pending_proxy"; fi
 success=true
 printf 'Docker deployment verified: %s. Backup: %s\n' "$version" "$backup"

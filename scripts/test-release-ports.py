@@ -97,6 +97,19 @@ class ReleasePortTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ports.release_ports(config)
 
+    def test_h3_udp_can_share_number_with_legacy_xhttp_tcp(self):
+        config = self.xhttp_config()
+        config["services"]["xray-xhttp"] = config["services"].pop("xray")
+        config["services"]["api"]["environment"].update({
+            "GATEWAY_XHTTP_H3_ENABLED": "1", "GATEWAY_XHTTP_H3_PORT": "8444"})
+        config["services"]["caddy"]["ports"].append(
+            {"published": "8444", "target": 8444, "protocol": "udp"})
+        self.assertEqual(ports.release_ports(config)["h3"], 8444)
+        self.assertEqual(ports.release_ports(config)["xhttp"], 8444)
+        config["services"]["caddy"]["ports"][-1]["protocol"] = "tcp"
+        with self.assertRaises(ValueError):
+            ports.release_ports(config)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -216,11 +216,12 @@ func serve() error {
 	}
 	stopCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	handler := httpapi.New(store, xray.NewManager(cfg.Xray), browserManager, httpapi.Options{
+	handler := httpapi.New(store, xray.NewTransportManager(cfg.Xray, cfg.XHTTP), browserManager, httpapi.Options{
 		Context: stopCtx,
 		Token:   cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
 		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
 		IP2LocationAPIKey: cfg.IP2LocationAPIKey,
+		PanelOrigin:       "https://" + os.Getenv("GATEWAY_PANEL_DOMAIN") + ":8443",
 		Checks: httpapi.ServerChecks{
 			XrayBinary: cfg.Xray.Binary, XrayConfigPath: cfg.Xray.ConfigPath,
 			XrayServer:    os.Getenv("GATEWAY_XRAY_SERVER_ADDRESS"),

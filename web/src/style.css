@@ -2570,3 +2570,14 @@ details[open] > summary {
     margin-bottom: 8px;
   }
 }
+
+/* Управление VPS и входными прокси. */
+.fleet-actions, .entry-proxy-row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.fleet-actions { margin-bottom: 1rem; }
+.entry-proxy-row { padding: 1rem 0; border-bottom: 1px solid var(--border); }
+.entry-proxy-row:last-child { border-bottom: 0; }
+.fleet-field { display: grid; gap: .4rem; margin: .9rem 0; }
+.fleet-field input, .fleet-field select, .fleet-field textarea { width: 100%; min-width: 0; }
+.fleet-check { display: flex; gap: .6rem; align-items: center; margin: 1rem 0; }
+.fleet-check input { width: auto; margin: 0; }
+.nodes-grid { margin-bottom: 1.25rem; }

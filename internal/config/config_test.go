@@ -76,7 +76,7 @@ func TestConfigurationRequiresSecretsAndLoopback(t *testing.T) {
 	}
 }
 
-func TestProxySettingsAreExplicitAndSupportPasswordOrIPAuthentication(t *testing.T) {
+func TestLegacyProxySettingsCannotEnableServerExit(t *testing.T) {
 	key, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -107,26 +107,24 @@ func TestProxySettingsAreExplicitAndSupportPasswordOrIPAuthentication(t *testing
 	t.Setenv("GATEWAY_PROXY_USERNAME_B64", base64.StdEncoding.EncodeToString([]byte("sample-user")))
 	t.Setenv("GATEWAY_PROXY_PASSWORD_B64", base64.StdEncoding.EncodeToString([]byte("sample-password")))
 	withPassword, err := Load()
-	if err != nil || withPassword.Xray.Settings.Proxy == nil || !withPassword.Node.ProxyAvailable ||
-		withPassword.Node.ConfigHash == direct.Node.ConfigHash ||
-		withPassword.Xray.Settings.Proxy.Username != "sample-user" ||
-		withPassword.Xray.Settings.Proxy.Password != "sample-password" {
-		t.Fatal("valid SOCKS5 password settings were not loaded")
+	if err != nil || withPassword.Xray.Settings.Proxy != nil || withPassword.Node.ProxyAvailable ||
+		withPassword.Node.ConfigHash != direct.Node.ConfigHash {
+		t.Fatal("legacy SOCKS5 settings enabled a server exit", err)
 	}
 	t.Setenv("GATEWAY_PROXY_PASSWORD_B64", "")
-	if _, err = Load(); err == nil {
-		t.Fatal("one-sided SOCKS5 credentials were accepted")
+	if _, err = Load(); err != nil {
+		t.Fatal("obsolete SOCKS5 credentials affected loading", err)
 	}
 	t.Setenv("GATEWAY_PROXY_USERNAME_B64", "")
 	t.Setenv("GATEWAY_PROXY_AUTH", "none")
 	withoutPassword, err := Load()
-	if err != nil || withoutPassword.Xray.Settings.Proxy == nil || !withoutPassword.Node.ProxyAvailable ||
-		withoutPassword.Xray.Settings.Proxy.Username != "" || withoutPassword.Xray.Settings.Proxy.Password != "" {
-		t.Fatal("IP-authenticated SOCKS5 was not loaded")
+	if err != nil || withoutPassword.Xray.Settings.Proxy != nil || withoutPassword.Node.ProxyAvailable ||
+		withoutPassword.Node.ConfigHash != direct.Node.ConfigHash {
+		t.Fatal("legacy IP-authenticated SOCKS5 enabled a server exit", err)
 	}
 	t.Setenv("GATEWAY_PROXY_USERNAME_B64", "invalid-base64")
-	if _, err = Load(); err == nil {
-		t.Fatal("invalid encoded SOCKS5 credentials were accepted")
+	if _, err = Load(); err != nil {
+		t.Fatal("obsolete encoded SOCKS5 credentials affected loading", err)
 	}
 }
 
@@ -175,10 +173,9 @@ func TestExpectedExitIPsUsePublicConfigurationWithoutChangingRoutes(t *testing.T
 	}
 	t.Setenv("GATEWAY_PROXY_EXPECTED_IP", "2606:4700:4700:0:0:0:0:1111")
 	withProxyIP, err := Load()
-	if err != nil || withProxyIP.Node.ExpectedProxyIP != "2606:4700:4700::1111" ||
-		withProxyIP.Xray.Settings.Proxy.Address != "proxy.example.com" ||
+	if err != nil || withProxyIP.Node.ExpectedProxyIP != "" || withProxyIP.Xray.Settings.Proxy != nil ||
 		withProxyIP.Node.ConfigHash != withoutProxyIP.Node.ConfigHash {
-		t.Fatal("display-only proxy expectation changed connection settings", err)
+		t.Fatal("obsolete proxy expectation changed connection settings", err)
 	}
 	t.Setenv("GATEWAY_PROXY_ENABLED", "0")
 	t.Setenv("GATEWAY_PROXY_EXPECTED_IP", "not-an-address")
@@ -204,7 +201,7 @@ func TestExpectedServerIPIsUnknownForDomainOrNonPublicHost(t *testing.T) {
 func TestExpectedExitIPsRejectInvalidAndNonPublicValues(t *testing.T) {
 	expectedIPEnvironment(t)
 	t.Setenv("GATEWAY_PROXY_ENABLED", "1")
-	for _, name := range []string{"GATEWAY_SERVER_EXPECTED_IP", "GATEWAY_PROXY_EXPECTED_IP"} {
+	for _, name := range []string{"GATEWAY_SERVER_EXPECTED_IP"} {
 		t.Run(name, func(t *testing.T) {
 			for _, value := range []string{"not-an-address", "https://1.1.1.1", "1.1.1.1:443", "127.0.0.1", "192.168.1.1", "100.64.0.1", "203.0.113.1", "224.0.0.1", "::1", "fe80::1%eth0", "::ffff:127.0.0.1", "2001:db8::1", "2002::1"} {
 				t.Setenv(name, value)

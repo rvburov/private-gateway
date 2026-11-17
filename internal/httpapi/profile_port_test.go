@@ -43,7 +43,7 @@ func TestPublicPortMigrationPreservesDeviceAndSubscriptionPostgreSQL(t *testing.
 	}
 	const token = "port-migration-integration-token-with-32-characters"
 	engine := &testXray{}
-	handler := New(store, engine, &testBrowser{}, Options{Token: token, XrayConfigured: true})
+	handler := New(store, engine, &testBrowser{}, Options{Token: token, XrayConfigured: true, PanelOrigin: "https://panel.example:8443"})
 	call := func(method, path, host string, auth bool) *httptest.ResponseRecorder {
 		t.Helper()
 		r := httptest.NewRequest(method, "https://"+host+path, nil)
