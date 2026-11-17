@@ -68,3 +68,64 @@ it("does not report remote configuration applied before an agent acknowledgement
   await screen.findByText(/Дождитесь подтверждения/);
   expect(screen.getByText("Ожидает применения")).toBeTruthy();
 });
+
+it("selects the connection mode explicitly and saves the selected proxy only on submit", async () => {
+  const fetchMock = vi.fn(async (_path: string, options: RequestInit = {}) => options.method === "PUT"
+    ? Response.json({ node: { ...node, entry_proxy_id: proxy.id } }) : Response.json({ entry_proxies: [proxy] }));
+  vi.stubGlobal("fetch", fetchMock);
+  mount();
+  expect((screen.getByLabelText("Способ подключения") as HTMLSelectElement).value).toBe("direct");
+  expect(screen.queryByLabelText("Входной прокси")).toBeNull();
+  fireEvent.change(screen.getByLabelText("Способ подключения"), { target: { value: "proxy" } });
+  await waitFor(() => expect((screen.getByLabelText("Входной прокси") as HTMLSelectElement).disabled).toBe(false));
+  expect((screen.getByRole("button", { name: "Сохранить способ подключения" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.change(screen.getByLabelText("Входной прокси"), { target: { value: proxy.id } });
+  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "PUT")).toHaveLength(0);
+  expect(screen.getByText("Устройство → VPS → интернет")).toBeTruthy();
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить способ подключения" }));
+  await screen.findByRole("status");
+  const put = fetchMock.mock.calls.find(([, options]) => options?.method === "PUT")!;
+  expect(put[0]).toBe("/api/v1/nodes/node-1/entry-proxy");
+  expect(JSON.parse(put[1]!.body as string)).toEqual({ entry_proxy_id: proxy.id });
+  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE" || options?.method === "POST")).toHaveLength(0);
+});
+
+it("can explicitly switch to direct even when the proxy list cannot be loaded", async () => {
+  const fetchMock = vi.fn(async (_path: string, options: RequestInit = {}) => options.method === "PUT"
+    ? Response.json({ node: { ...node, entry_proxy_id: null } }) : Response.json({ error: "unavailable" }, { status: 503 }));
+  vi.stubGlobal("fetch", fetchMock);
+  mount([{ ...node, entry_proxy_id: proxy.id }]);
+  await waitFor(() => expect(cache.getQueryState(["entry-proxies"])?.status).toBe("error"));
+  fireEvent.change(screen.getByLabelText("Способ подключения"), { target: { value: "direct" } });
+  expect((screen.getByRole("button", { name: "Сохранить способ подключения" }) as HTMLButtonElement).disabled).toBe(false);
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить способ подключения" }));
+  await screen.findByRole("status");
+  const writes = fetchMock.mock.calls.filter(([, options]) => options?.method === "PUT");
+  expect(writes).toHaveLength(1);
+  expect(JSON.parse(writes[0][1]!.body as string)).toEqual({ entry_proxy_id: null });
+  expect(fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE")).toHaveLength(0);
+});
+
+it("retains the saved proxy route when saving direct fails", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (_path: string, options: RequestInit = {}) => options.method === "PUT"
+    ? Response.json({ error: "unavailable" }, { status: 503 }) : Response.json({ entry_proxies: [proxy] })));
+  mount([{ ...node, entry_proxy_id: proxy.id }]);
+  await screen.findByText("Устройство → Вход → VPS → интернет");
+  fireEvent.change(screen.getByLabelText("Способ подключения"), { target: { value: "direct" } });
+  fireEvent.click(screen.getByRole("button", { name: "Сохранить способ подключения" }));
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("status")).toBeNull();
+  expect(screen.getByText("Устройство → Вход → VPS → интернет")).toBeTruthy();
+});
+
+it("does not save a disabled proxy as the new connection mode", async () => {
+  const fetchMock = vi.fn(async () => Response.json({ entry_proxies: [{ ...proxy, enabled: false }] }));
+  vi.stubGlobal("fetch", fetchMock);
+  mount();
+  fireEvent.change(screen.getByLabelText("Способ подключения"), { target: { value: "proxy" } });
+  await screen.findByText("Вход (выключен)");
+  fireEvent.change(screen.getByLabelText("Входной прокси"), { target: { value: proxy.id } });
+  expect((screen.getByRole("button", { name: "Сохранить способ подключения" }) as HTMLButtonElement).disabled).toBe(true);
+  fireEvent.submit(screen.getByRole("form", { name: "Подключение к US VPS" }));
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});

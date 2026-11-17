@@ -45,9 +45,11 @@ export function ChainProfileDialog({ token, device, bundle, onClose }: {
     finally { if (!abort.signal.aborted) setBusy(false); }
   }
   return <Modal title={`Профиль VPS: ${device.name}`} onClose={onClose}>
+    <p className="notice">Способ подключения: через прокси. Устройство → SOCKS5 → VPS → интернет.</p>
     <p className="modal-description">Устройство подключается через назначенный SOCKS5 к VPS. В приложении появятся варианты VPN этого VPS; отдельного профиля с выходом через IP прокси нет.</p>
     <div className="notice warning-notice">Файл содержит ключ устройства и данные входного прокси. Передавайте его только владельцу устройства.</div>
     <p>Импортируйте файл в Private Gateway с поддержкой цепочек. Обычная VLESS-ссылка не содержит входной прокси. Для другого приложения нужна подтверждённая поддержка такого формата.</p>
+    <p className="hint">Если раньше этот VPS подключался напрямую, сначала скачайте файл, затем отключите VPN и удалите прежнюю группу подписки или отдельный прямой профиль в приложении. После этого импортируйте файл цепочки.</p>
     <label htmlFor="chain-content">Профиль с входным прокси</label>
     <textarea id="chain-content" className="profile-uri mono" readOnly rows={10} value={json} spellCheck={false} onFocus={(event) => event.target.select()} />
     <div className="button-group">

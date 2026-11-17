@@ -91,6 +91,7 @@ export function ProfileDialog({
 
   return (
     <Modal title={`Профиль: ${profile.device.name}`} onClose={onClose}>
+      <p className="notice">Способ подключения: напрямую к VPS. Устройство → VPS → интернет.</p>
       <div className="notice warning-notice">
         <Icon name="lock" size={18} />
         Профиль содержит секрет доступа. Передавайте его только владельцу устройства.
@@ -101,6 +102,7 @@ export function ProfileDialog({
         могут использовать собственный файл конфигурации. Для нового устройства сначала примените
         конфигурацию.
       </p>
+      <p className="hint">Если раньше этот VPS подключался через прокси, сначала сохраните новую ссылку, затем отключите VPN и удалите прежнюю группу подписки в приложении. После этого импортируйте прямой профиль. Старый профиль сам маршрут не меняет.</p>
       <label htmlFor="profile-format">Формат профиля</label>
       <select
         id="profile-format"

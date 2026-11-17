@@ -11,6 +11,54 @@ type ProxyDraft = Omit<EntryProxy, "id"> & { username: string; password: string;
 const blankProxy: ProxyDraft = { name: "", host: "", port: 1080, auth_type: "password", enabled: true, supports_udp: false,
   username: "", password: "", replace_credentials: true };
 
+function NodeConnectionSettings({ node, proxies, busy, proxiesUnavailable, onSave }: {
+  node: Node; proxies: EntryProxy[]; busy: boolean; proxiesUnavailable: boolean;
+  onSave: (entryID: string | null) => void;
+}) {
+  const [mode, setMode] = useState(node.entry_proxy_id ? "proxy" : "direct");
+  const [entryID, setEntryID] = useState(node.entry_proxy_id ?? "");
+  useEffect(() => {
+    setMode(node.entry_proxy_id ? "proxy" : "direct");
+    setEntryID(node.entry_proxy_id ?? "");
+  }, [node.entry_proxy_id]);
+  const savedEntry = proxies.find((proxy) => proxy.id === node.entry_proxy_id);
+  const selectedEntry = proxies.find((proxy) => proxy.id === entryID);
+  const selectedID = mode === "direct" ? null : entryID || null;
+  const changed = selectedID !== (node.entry_proxy_id ?? null);
+  const canSave = changed && !busy && (mode === "direct" || (!proxiesUnavailable && selectedEntry?.enabled));
+  return <form aria-label={`Подключение к ${node.name}`} onSubmit={(event) => {
+    event.preventDefault();
+    if (canSave) onSave(selectedID);
+  }}>
+    <p><strong>Сохранённый маршрут:</strong> {node.entry_proxy_id
+      ? `Устройство → ${savedEntry?.name ?? "назначенный прокси"} → VPS → интернет`
+      : "Устройство → VPS → интернет"}</p>
+    <label className="fleet-field" htmlFor={`connection-mode-${node.id}`}>Способ подключения
+      <select id={`connection-mode-${node.id}`} value={mode} disabled={busy} onChange={(event) => setMode(event.target.value)}>
+        <option value="direct">Напрямую к VPS</option>
+        <option value="proxy">Через прокси</option>
+      </select>
+    </label>
+    {mode === "proxy" && <>
+      <label className="fleet-field" htmlFor={`entry-${node.id}`}>Входной прокси
+        <select id={`entry-${node.id}`} value={entryID} disabled={busy || proxiesUnavailable}
+          onChange={(event) => setEntryID(event.target.value)}>
+          <option value="">Выберите прокси</option>
+          {proxies.map((proxy) => <option key={proxy.id} value={proxy.id} disabled={!proxy.enabled}>
+            {proxy.name}{proxy.enabled ? "" : " (выключен)"}</option>)}
+          {entryID && !selectedEntry && <option value={entryID}>Назначенный прокси недоступен</option>}
+        </select>
+      </label>
+      {!proxiesUnavailable && !proxies.some((proxy) => proxy.enabled) && <p className="hint">Добавьте или включите прокси в разделе «Входные прокси» ниже.</p>}
+      <p className="hint">Устройство → выбранный прокси → VPS → интернет. Если прокси недоступен, прямое подключение автоматически не включается.</p>
+    </>}
+    {mode === "direct" && <p className="hint">Устройство подключается к адресу VPS без входного прокси. Сохранённые прокси остаются в списке для будущего выбора.</p>}
+    {node.entry_proxy_id && savedEntry?.enabled === false && <p className="hint">Прокси выключен. Сохранённый маршрут через него сейчас недоступен.</p>}
+    <p className="hint">Выбор действует для всех устройств этого VPS. После смены режима получите новый профиль в «Устройствах». В приложении отключите VPN, удалите прежнюю группу подписки этого VPS или его отдельный профиль и импортируйте новый. Устройство на сайте удалять не нужно.</p>
+    <button className="button secondary-button" disabled={!canSave}>Сохранить способ подключения</button>
+  </form>;
+}
+
 export function NodesManager({ token, nodes }: { token: string; nodes: Node[] }) {
   const cache = useQueryClient();
   const proxies = useQuery({ queryKey: ["entry-proxies"], queryFn: ({ signal }) =>
@@ -76,7 +124,7 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
   }
   return <>
     <div className="fleet-actions">
-      <p>Устройство → входной прокси → выбранный VPS → интернет. Сайты видят выходной IP VPS.</p>
+      <p>Подключайтесь к каждому VPS напрямую или через входной прокси. В обоих случаях сайты видят выходной IP VPS.</p>
       <button className="button primary" onClick={() => openNode()}>Добавить VPS</button>
     </div>
     {message && <div className="notice" role="status">{message}</div>}
@@ -84,7 +132,6 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
     <div className="nodes-grid">
       {nodes.map((node) => {
         const pending = node.desired_revision !== node.applied_revision;
-        const entry = proxyList.find((proxy) => proxy.id === node.entry_proxy_id);
         return <section className="card node-card" key={node.id}>
           <div className="card-heading"><div><h2>{node.name}</h2><p className="mono">{node.host}:{node.port}</p></div>
             <span className={`badge ${pending ? "warning" : "neutral"}`}>{pending ? "Ожидает применения" : "VPS"}</span></div>
@@ -93,22 +140,12 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
             <p>Применённая / нужная версия: {node.applied_revision ?? "—"} / {node.desired_revision ?? "—"}</p>
             <p>TCP + REALITY + Vision{node.xhttp ? " · XHTTP/HTTP2" : ""}{node.h3 ? " · XHTTP/HTTP3" : ""}</p>
             {node.agent_error && <p className="notice error" role="alert">Агент не применил конфигурацию: {node.agent_error}</p>}
-            <label htmlFor={`entry-${node.id}`}>Входной прокси</label>
-            <select id={`entry-${node.id}`} value={node.entry_proxy_id ?? ""} disabled={busy || proxies.isPending || proxies.isError}
-              onChange={(event) => {
-                const entryID = event.target.value;
-                void perform(async (signal) => {
-                  await request(token, `/nodes/${encodeURIComponent(node.id)}/entry-proxy`, { method: "PUT",
-                    body: JSON.stringify({ entry_proxy_id: entryID || null }), signal });
-                  setMessage("Способ подключения сохранён. Обновите профиль на устройстве; уже открытые соединения используют прежние настройки.");
-                });
-              }}>
-              <option value="">Напрямую к VPS</option>
-              {proxyList.map((proxy) => <option key={proxy.id} value={proxy.id} disabled={!proxy.enabled && proxy.id !== node.entry_proxy_id}>
-                {proxy.name}{proxy.enabled ? "" : " (выключен)"}</option>)}
-              {node.entry_proxy_id && !entry && <option value={node.entry_proxy_id}>Назначенный прокси недоступен</option>}
-            </select>
-            {node.entry_proxy_id && <p className="hint">{entry?.enabled === false ? "Прокси выключен. Подключение через него недоступно; прямой путь автоматически не включается." : "Профиль включает входной прокси. Отдельного подключения с выходом через IP прокси нет."}</p>}
+            <NodeConnectionSettings node={node} proxies={proxyList} busy={busy}
+              proxiesUnavailable={proxies.isPending || proxies.isError} onSave={(entryID) => void perform(async (signal) => {
+                await request(token, `/nodes/${encodeURIComponent(node.id)}/entry-proxy`, { method: "PUT",
+                  body: JSON.stringify({ entry_proxy_id: entryID }), signal });
+                setMessage("Способ подключения сохранён для всех устройств этого VPS. Откройте «Устройства → Профиль» и импортируйте новый профиль. При смене режима прежняя подписка сама на новый способ не переключается.");
+              })} />
             <div className="button-group">
               <button className="button secondary-button" disabled={busy} onClick={() => void perform(async (signal) => {
                 await request(token, `/nodes/${encodeURIComponent(node.id)}/apply`, { method: "POST", signal });
