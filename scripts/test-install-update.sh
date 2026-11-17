@@ -539,9 +539,22 @@ PY
 sudo python3 - "$env_file" <<'PY'
 from pathlib import Path
 import sys
-with Path(sys.argv[1]).open('a') as output:
-    output.write('GATEWAY_PROXY_ENABLED=1\nGATEWAY_PROXY_USERNAME_B64=Zml4dHVyZQ==\n')
-    output.write('GATEWAY_PROXY_PASSWORD_B64=Zml4dHVyZQ==\n')
+
+path = Path(sys.argv[1])
+lines = path.read_text().splitlines()
+for name, value in (
+    ('GATEWAY_PROXY_ENABLED', '1'),
+    ('GATEWAY_PROXY_USERNAME_B64', 'Zml4dHVyZQ=='),
+    ('GATEWAY_PROXY_PASSWORD_B64', 'Zml4dHVyZQ=='),
+):
+    matches = [i for i, line in enumerate(lines) if line.startswith(name + '=')]
+    if len(matches) > 1:
+        raise SystemExit('Duplicate test fixture setting')
+    if matches:
+        lines[matches[0]] = f'{name}={value}'
+    else:
+        lines.append(f'{name}={value}')
+path.write_text('\n'.join(lines) + '\n')
 PY
 pending_hash=$(sudo sha256sum "$pending_proxy" | awk '{print $1}')
 credentials_hash=$(sudo sed -n '/^GATEWAY_PROXY_.*_B64=/p' "$env_file" | sha256sum | awk '{print $1}')
@@ -567,6 +580,11 @@ if deliver "$version_g" "$work/release-1.tar.gz" 2>&1 | tee "$work/panel-rollbac
 fi
 [[ $(installed) == "$version_e" ]] || fail 'The panel rollback did not restore the release.'
 [[ $(public_port panel) == 443 && $(public_port vpn) == 443 ]] || fail 'The panel rollback did not restore the old ports.'
+sudo grep -qx 'GATEWAY_PROXY_ENABLED=0' "$env_file" || fail 'Panel rollback re-enabled the old server exit.'
+[[ $(sudo sed -n '/^GATEWAY_PROXY_.*_B64=/p' "$env_file" | sha256sum | awk '{print $1}') == "$credentials_hash" ]] \
+  || fail 'Panel rollback changed the stored provider credentials.'
+[[ $(sudo sha256sum "$pending_proxy" | awk '{print $1}') == "$pending_hash" ]] \
+  || fail 'Panel rollback changed the staged provider settings.'
 check_stack
 
 printf '\n== Failed VLESS transition rolls back while the panel itself works ==\n'
@@ -579,6 +597,11 @@ grep -q '^Docker deployment stopped: VLESS traffic does not pass through the new
 grep -q '^VLESS traffic passes again with the previous release.' "$work/vless-rollback.log" \
   || fail 'VLESS was not verified after the rollback.'
 [[ $(installed) == "$version_e" ]] || fail 'The VLESS rollback did not restore the release.'
+sudo grep -qx 'GATEWAY_PROXY_ENABLED=0' "$env_file" || fail 'VLESS rollback re-enabled the old server exit.'
+[[ $(sudo sed -n '/^GATEWAY_PROXY_.*_B64=/p' "$env_file" | sha256sum | awk '{print $1}') == "$credentials_hash" ]] \
+  || fail 'VLESS rollback changed the stored provider credentials.'
+[[ $(sudo sha256sum "$pending_proxy" | awk '{print $1}') == "$pending_hash" ]] \
+  || fail 'VLESS rollback changed the staged provider settings.'
 check_stack
 
 previous_revision=$(compose exec -T api /usr/local/bin/gatewayctl status | awk '$1 == "DESIRED" && $2 == "REVISION" {print $3}')
