@@ -39,6 +39,7 @@ for test in scripts/test-release.py scripts/test-image-tags.py scripts/test-rele
   scripts/test-servers.py; do
   python3 "$test"
 done
+bash scripts/test-upgrade-updater.sh
 
 printf '\nAll checks passed.\n'
 printf 'Not run here: production image builds, Caddy and HAProxy routing (test-browser-proxy.py,\n'

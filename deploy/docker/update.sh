@@ -269,10 +269,16 @@ rollback() {
   if [[ -f $backup/xray.json ]]; then
     cp -p "$backup/xray.json" /var/lib/private-gateway-docker/xray/xray.json
   fi
+  # При первом разделении старый релиз не имел отдельного xhttp.json. Сначала
+  # остановить новый worker, затем убрать созданный им файл при откате.
+  if [[ $xhttp_transfer == true || ( $new_xhttp == true && ! -f $backup/xhttp.json ) ]]; then
+    compose_new stop xray-xhttp || true
+  fi
   if [[ -f $backup/xhttp.json ]]; then
     cp -p "$backup/xhttp.json" /var/lib/private-gateway-docker/xray/xhttp.json
+  elif [[ $new_xhttp == true ]]; then
+    rm -f -- /var/lib/private-gateway-docker/xray/xhttp.json
   fi
-  if [[ $xhttp_transfer == true ]]; then compose_new stop xray-xhttp || true; fi
   if [[ $database_saved == true ]]; then
     compose_old up -d --wait postgres || true
     compose_old exec -T postgres psql -v ON_ERROR_STOP=1 -U gateway -d postgres \

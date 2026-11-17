@@ -107,6 +107,16 @@ jobs:
       - name: Test installation, update and rollback
         if: github.event_name == 'push'
         run: bash scripts/test-install-update.sh "$RUNNER_TEMP/release/release.tar.gz"
+      - name: Save the candidate for the installed-version upgrade test
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: private-gateway-upgrade-candidate
+          path: |
+            ${{ runner.temp }}/release/release.tar.gz
+            ${{ runner.temp }}/release/release.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 1
       - name: Upload production release and installer
         if: github.event_name == 'push' && github.ref == 'refs/heads/master'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -115,6 +125,33 @@ jobs:
           path: ${{ runner.temp }}/release/
           if-no-files-found: error
           retention-days: 30
+
+  # Прежняя проверка создаёт варианты текущего кода. Этот отдельный runner сначала
+  # ставит настоящий установленный выпуск: его проверяющий скрипт, API и общий Xray.
+  legacy-upgrade:
+    name: Upgrade the installed 8d73025 release
+    if: github.event_name == 'push'
+    needs: [verify]
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 8d73025eae365e426e0d2080d9f81f15ec267b10
+          path: legacy-source
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: private-gateway-upgrade-candidate
+          path: ${{ runner.temp }}/upgrade-candidate
+      - name: Build the actual previous release
+        working-directory: legacy-source
+        run: bash scripts/dev.sh release "$RUNNER_TEMP/legacy-release"
+      - name: Check the legacy-to-split-worker migration
+        run: |
+          bash scripts/test-legacy-upgrade.sh \
+            "$RUNNER_TEMP/legacy-release/release.tar.gz" \
+            "$RUNNER_TEMP/upgrade-candidate/release.tar.gz" \
+            "$GITHUB_WORKSPACE/legacy-source"
 
   servers:
     name: Server list
@@ -134,7 +171,7 @@ jobs:
   deploy:
     name: Deploy Docker to VPS (${{ matrix.server }})
     if: github.event_name == 'push' && github.ref == 'refs/heads/master' && needs.servers.outputs.names != '[]'
-    needs: [verify, servers]
+    needs: [verify, legacy-upgrade, servers]
     runs-on: ubuntu-26.04
     strategy:
       fail-fast: false

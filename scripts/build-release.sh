@@ -74,7 +74,7 @@ for name in ("compose.yml", "compose.xhttp.yml", "compose.xhttp-legacy.yml", "co
              "render-caddy.py", "render-node-caddy.py", "haproxy.cfg.template", "Dockerfile.api", "Dockerfile.node", "Dockerfile.xray",
              "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py",
              "vpn-smoke.py", "change-reality-target.py", "rotate-admin-token.py", "admin-credentials.py", "configure-xhttp.py", "configure-proxy.py",
-             "image-tags.py", "release-ports.py", "install.sh", "install-node.sh", "update.sh"):
+             "image-tags.py", "release-ports.py", "install.sh", "install-node.sh", "upgrade-updater.sh", "update.sh"):
     source = Path("deploy/docker") / name
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Docker release file must be regular: {source}")
@@ -111,13 +111,15 @@ checksum = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 
 # Файлы первой установки не содержат созданных ключей и локальных файлов окружения.
 install = temporary / "install"
-for source in (Path("deploy/docker/install.sh"), Path("deploy/docker/install-node.sh"), Path("scripts/verify-release.py")):
+for source in (Path("deploy/docker/install.sh"), Path("deploy/docker/install-node.sh"),
+               Path("deploy/docker/upgrade-updater.sh"), Path("scripts/verify-release.py")):
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Installer source must be a regular file: {source}")
     target = install / source.name
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
-if not all((install / name).is_file() for name in ("install.sh", "install-node.sh", "verify-release.py")):
+if not all((install / name).is_file() for name in
+           ("install.sh", "install-node.sh", "upgrade-updater.sh", "verify-release.py")):
     raise SystemExit("The Docker installer and release verifier are required")
 destination_install = output / "install"
 if destination_install.is_symlink() or (destination_install.exists() and not destination_install.is_dir()):
