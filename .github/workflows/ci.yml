@@ -51,6 +51,7 @@ jobs:
             --entrypoint caddy "$caddy_image" validate --config /etc/caddy/Caddyfile
           python3 scripts/test-browser-proxy.py
           python3 scripts/test-edge-router.py
+          python3 scripts/test-bridge-forward.py
           bash scripts/test-first-deploy.sh "$RUNNER_TEMP/release/release.tar.gz" private-gateway/api:ci
       - name: Validate Docker Compose configuration
         if: github.event_name == 'push'

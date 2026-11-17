@@ -1,70 +1,77 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { request, type EntryProxy, type Node } from "./api";
+import { useQueryClient } from "@tanstack/react-query";
+import { request, type Bridge, type Node } from "./api";
 import { ErrorNotice, Modal, date } from "./ui";
 
 type NodeDraft = Pick<Node, "name" | "host" | "port" | "server_name" | "public_key" | "short_id"> & {
   xhttp?: Node["xhttp"] | null; h3?: Node["h3"] | null;
 };
 const blankNode: NodeDraft = { name: "", host: "", port: 8443, server_name: "", public_key: "", short_id: "" };
-type ProxyDraft = Omit<EntryProxy, "id"> & { username: string; password: string; replace_credentials: boolean };
-const blankProxy: ProxyDraft = { name: "", host: "", port: 1080, auth_type: "password", enabled: true, supports_udp: false,
-  username: "", password: "", replace_credentials: true };
+type ConnectionDraft = { mode: "direct" | "bridge"; bridge: Bridge | null };
 
-function NodeConnectionSettings({ node, proxies, busy, proxiesUnavailable, onSave }: {
-  node: Node; proxies: EntryProxy[]; busy: boolean; proxiesUnavailable: boolean;
-  onSave: (entryID: string | null) => void;
+function NodeConnectionSettings({ node, busy, onSave, onDownload }: {
+  node: Node; busy: boolean; onSave: (draft: ConnectionDraft) => void; onDownload: () => void;
 }) {
-  const [mode, setMode] = useState(node.entry_proxy_id ? "proxy" : "direct");
-  const [entryID, setEntryID] = useState(node.entry_proxy_id ?? "");
+  const savedMode = node.connection_mode ?? "direct";
+  const [mode, setMode] = useState(savedMode);
+  const [bridge, setBridge] = useState<Bridge>(node.bridge ?? { host: "", tcp_port: 443, xhttp_port: 8444 });
   useEffect(() => {
-    setMode(node.entry_proxy_id ? "proxy" : "direct");
-    setEntryID(node.entry_proxy_id ?? "");
-  }, [node.entry_proxy_id]);
-  const savedEntry = proxies.find((proxy) => proxy.id === node.entry_proxy_id);
-  const selectedEntry = proxies.find((proxy) => proxy.id === entryID);
-  const selectedID = mode === "direct" ? null : entryID || null;
-  const changed = selectedID !== (node.entry_proxy_id ?? null);
-  const canSave = changed && !busy && (mode === "direct" || (!proxiesUnavailable && selectedEntry?.enabled));
+    setMode(node.connection_mode ?? "direct");
+    setBridge(node.bridge ?? { host: "", tcp_port: 443, xhttp_port: 8444 });
+  }, [node.connection_mode, node.bridge?.host, node.bridge?.tcp_port, node.bridge?.xhttp_port]);
+  const selectedBridge: Bridge | null = mode === "bridge" ? { host: bridge.host.trim(), tcp_port: bridge.tcp_port,
+    ...(node.xhttp ? { xhttp_port: bridge.xhttp_port } : {}) } : null;
+  const validPort = (port: number | undefined) => Number.isInteger(port) && port! >= 1 && port! <= 65535;
+  const validBridge = selectedBridge && selectedBridge.host && !/[\s/?#@]/.test(selectedBridge.host) &&
+    validPort(selectedBridge.tcp_port) && (!node.xhttp || (validPort(selectedBridge.xhttp_port) && selectedBridge.xhttp_port !== selectedBridge.tcp_port));
+  const changed = mode !== savedMode || (mode === "bridge" && (selectedBridge?.host !== node.bridge?.host ||
+    selectedBridge?.tcp_port !== node.bridge?.tcp_port || selectedBridge?.xhttp_port !== node.bridge?.xhttp_port));
+  const canSave = changed && !busy && (mode === "direct" || (mode === "bridge" && Boolean(validBridge)));
   return <form aria-label={`Подключение к ${node.name}`} onSubmit={(event) => {
     event.preventDefault();
-    if (canSave) onSave(selectedID);
+    if (canSave) onSave({ mode, bridge: selectedBridge });
   }}>
-    <p><strong>Сохранённый маршрут:</strong> {node.entry_proxy_id
-      ? `Устройство → ${savedEntry?.name ?? "назначенный прокси"} → VPS → интернет`
-      : "Устройство → VPS → интернет"}</p>
+    <p><strong>Сохранённый маршрут:</strong> {savedMode === "bridge"
+      ? `Устройство → ${node.bridge?.host} → VPS → интернет`
+      : savedMode === "unconfigured" ? "Не выбран — выдача профилей приостановлена" : "Устройство → VPS → интернет"}</p>
+    {savedMode === "unconfigured" && <p className="notice warning-notice">Прежняя SOCKS5-цепочка удалена. Выберите прямой вход или настройте VPS-мост, затем получите обычную VPN-ссылку.</p>}
     <label className="fleet-field" htmlFor={`connection-mode-${node.id}`}>Способ подключения
-      <select id={`connection-mode-${node.id}`} value={mode} disabled={busy} onChange={(event) => setMode(event.target.value)}>
+      <select id={`connection-mode-${node.id}`} value={mode} disabled={busy} onChange={(event) => setMode(event.target.value as typeof mode)}>
+        {savedMode === "unconfigured" && <option value="unconfigured" disabled>Выберите способ подключения</option>}
         <option value="direct">Напрямую к VPS</option>
-        <option value="proxy">Через прокси</option>
+        <option value="bridge">Через VPS-мост</option>
       </select>
     </label>
-    {mode === "proxy" && <>
-      <label className="fleet-field" htmlFor={`entry-${node.id}`}>Входной прокси
-        <select id={`entry-${node.id}`} value={entryID} disabled={busy || proxiesUnavailable}
-          onChange={(event) => setEntryID(event.target.value)}>
-          <option value="">Выберите прокси</option>
-          {proxies.map((proxy) => <option key={proxy.id} value={proxy.id} disabled={!proxy.enabled}>
-            {proxy.name}{proxy.enabled ? "" : " (выключен)"}</option>)}
-          {entryID && !selectedEntry && <option value={entryID}>Назначенный прокси недоступен</option>}
-        </select>
+    {mode === "bridge" && <>
+      <label className="fleet-field" htmlFor={`bridge-host-${node.id}`}>Адрес VPS-моста
+        <input id={`bridge-host-${node.id}`} required maxLength={253} value={bridge.host} disabled={busy}
+          placeholder="IP или домен без https://" onChange={(event) => setBridge({ ...bridge, host: event.target.value })} />
       </label>
-      {!proxiesUnavailable && !proxies.some((proxy) => proxy.enabled) && <p className="hint">Добавьте или включите прокси в разделе «Входные прокси» ниже.</p>}
-      <p className="hint">Устройство → выбранный прокси → VPS → интернет. Если прокси недоступен, прямое подключение автоматически не включается.</p>
+      <label className="fleet-field" htmlFor={`bridge-tcp-${node.id}`}>Порт TCP/Vision на мосту
+        <input id={`bridge-tcp-${node.id}`} required type="number" min={1} max={65535} value={bridge.tcp_port} disabled={busy}
+          onChange={(event) => setBridge({ ...bridge, tcp_port: Number(event.target.value) })} />
+      </label>
+      {node.xhttp && <label className="fleet-field" htmlFor={`bridge-xhttp-${node.id}`}>Порт XHTTP на мосту
+        <input id={`bridge-xhttp-${node.id}`} required type="number" min={1} max={65535} value={bridge.xhttp_port ?? ""} disabled={busy}
+          onChange={(event) => setBridge({ ...bridge, xhttp_port: Number(event.target.value) })} />
+      </label>}
+      {node.xhttp && bridge.tcp_port === bridge.xhttp_port && <p className="hint">Для TCP/Vision и XHTTP нужны разные порты моста.</p>}
+      <p className="hint">Сохранение адреса не устанавливает мост. Скачайте его настройку, установите её на входном VPS по инструкции и проверьте подключение. Сайты будут видеть IP выходного VPS.</p>
+      {node.h3 && <p className="hint">Через этот TCP-мост выдаются TCP/Vision и XHTTP/REALITY. Вариант HTTP/3 (UDP) не выдаётся.</p>}
     </>}
-    {mode === "direct" && <p className="hint">Устройство подключается к адресу VPS без входного прокси. Сохранённые прокси остаются в списке для будущего выбора.</p>}
-    {node.entry_proxy_id && savedEntry?.enabled === false && <p className="hint">Прокси выключен. Сохранённый маршрут через него сейчас недоступен.</p>}
-    <p className="hint">Выбор действует для всех устройств этого VPS. После смены режима получите новый профиль в «Устройствах». В приложении отключите VPN, удалите прежнюю группу подписки этого VPS или его отдельный профиль и импортируйте новый. Устройство на сайте удалять не нужно.</p>
-    <button className="button secondary-button" disabled={!canSave}>Сохранить способ подключения</button>
+    {mode === "direct" && <p className="hint">Устройство подключается к адресу выходного VPS.</p>}
+    <p className="hint">После сохранения обновите обычную подписку в VPN-клиенте или замените ранее скопированную ссылку. Открытое соединение использует прежний маршрут до переподключения.</p>
+    <div className="button-group">
+      <button className="button secondary-button" disabled={!canSave}>Сохранить способ подключения</button>
+      {savedMode === "bridge" && <button type="button" className="button secondary-button" disabled={busy || changed} onClick={onDownload}>Скачать настройку моста</button>}
+      <a className="button secondary-button" href="https://github.com/rvburov/private-gateway/blob/master/docs/bridge.md" target="_blank" rel="noreferrer">Инструкция VPS-моста</a>
+    </div>
   </form>;
 }
 
 export function NodesManager({ token, nodes }: { token: string; nodes: Node[] }) {
   const cache = useQueryClient();
-  const proxies = useQuery({ queryKey: ["entry-proxies"], queryFn: ({ signal }) =>
-    request<{ entry_proxies: EntryProxy[] }>(token, "/entry-proxies", { signal }) });
   const [nodeForm, setNodeForm] = useState<{ id?: string; draft: NodeDraft } | null>(null);
-  const [proxyForm, setProxyForm] = useState<{ id?: string; draft: ProxyDraft } | null>(null);
   const [enrollment, setEnrollment] = useState<{ node: Node; join_token: string } | null>(null);
   const [reenrolling, setReenrolling] = useState<Node | null>(null);
   const [removing, setRemoving] = useState<{ path: string; name: string } | null>(null);
@@ -74,7 +81,7 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
 
-  // Пароли и токен регистрации остаются в состоянии формы, без кеша запросов и localStorage.
+  // Токен регистрации остаётся в состоянии формы, без кеша запросов и localStorage.
   async function perform(action: (signal: AbortSignal) => Promise<void>) {
     if (busy) return;
     const abort = new AbortController();
@@ -84,7 +91,7 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
       await action(abort.signal);
       abort.signal.throwIfAborted();
       await Promise.all([cache.invalidateQueries({ queryKey: ["nodes"] }),
-        cache.invalidateQueries({ queryKey: ["entry-proxies"] }), cache.invalidateQueries({ queryKey: ["status"] })]);
+        cache.invalidateQueries({ queryKey: ["status"] })]);
     } catch (err) {
       if (!abort.signal.aborted) setError(err);
     } finally { if (!abort.signal.aborted) setBusy(false); }
@@ -102,20 +109,6 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
       setMessage("Параметры VPS сохранены. Готовность подключения определяется после применения конфигурации на сервере.");
     });
   }
-  function saveProxy(event: FormEvent) {
-    event.preventDefault();
-    if (!proxyForm) return;
-    void perform(async (signal) => {
-      const { username, password, replace_credentials, ...settings } = proxyForm.draft;
-      const credentials = settings.auth_type === "password" && (!proxyForm.id || replace_credentials) ? { username, password } : {};
-      await request(token, proxyForm.id ? `/entry-proxies/${encodeURIComponent(proxyForm.id)}` : "/entry-proxies", {
-        method: proxyForm.id ? "PATCH" : "POST", body: JSON.stringify({ ...settings, ...credentials }), signal,
-      });
-      setProxyForm(null);
-      setMessage("Входной прокси сохранён. Назначьте его нужному VPS и обновите профиль на устройстве.");
-    });
-  }
-  const proxyList = proxies.data?.entry_proxies ?? [];
   function openNode(node?: Node) {
     setError(null);
     setNodeForm(node ? { id: node.id, draft: { name: node.name, host: node.host, port: node.port,
@@ -124,11 +117,11 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
   }
   return <>
     <div className="fleet-actions">
-      <p>Подключайтесь к каждому VPS напрямую или через входной прокси. В обоих случаях сайты видят выходной IP VPS.</p>
+      <p>Подключайтесь к каждому VPS напрямую или через отдельный VPS-мост. Используйте обычные VPN-ссылки; сайты видят IP выходного VPS.</p>
       <button className="button primary" onClick={() => openNode()}>Добавить VPS</button>
     </div>
     {message && <div className="notice" role="status">{message}</div>}
-    {!nodeForm && !proxyForm && !removing && !reenrolling && <ErrorNotice error={error || proxies.error} />}
+    {!nodeForm && !removing && !reenrolling && <ErrorNotice error={error} />}
     <div className="nodes-grid">
       {nodes.map((node) => {
         const pending = node.desired_revision !== node.applied_revision;
@@ -140,12 +133,19 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
             <p>Применённая / нужная версия: {node.applied_revision ?? "—"} / {node.desired_revision ?? "—"}</p>
             <p>TCP + REALITY + Vision{node.xhttp ? " · XHTTP/HTTP2" : ""}{node.h3 ? " · XHTTP/HTTP3" : ""}</p>
             {node.agent_error && <p className="notice error" role="alert">Агент не применил конфигурацию: {node.agent_error}</p>}
-            <NodeConnectionSettings node={node} proxies={proxyList} busy={busy}
-              proxiesUnavailable={proxies.isPending || proxies.isError} onSave={(entryID) => void perform(async (signal) => {
-                await request(token, `/nodes/${encodeURIComponent(node.id)}/entry-proxy`, { method: "PUT",
-                  body: JSON.stringify({ entry_proxy_id: entryID }), signal });
-                setMessage("Способ подключения сохранён для всех устройств этого VPS. Откройте «Устройства → Профиль» и импортируйте новый профиль. При смене режима прежняя подписка сама на новый способ не переключается.");
-              })} />
+            <NodeConnectionSettings node={node} busy={busy} onSave={(draft) => void perform(async (signal) => {
+              await request(token, `/nodes/${encodeURIComponent(node.id)}/connection`, { method: "PUT",
+                body: JSON.stringify(draft), signal });
+              setMessage("Способ подключения сохранён. Настройте входной VPS, если выбран мост, затем обновите подписку или получите новую ссылку в «Устройствах» и переподключитесь.");
+            })} onDownload={() => void perform(async (signal) => {
+              const config = await request<Record<string, unknown>>(token, `/nodes/${encodeURIComponent(node.id)}/bridge-config`, { signal });
+              const url = URL.createObjectURL(new Blob([JSON.stringify(config, null, 2) + "\n"], { type: "application/json" }));
+              const link = document.createElement("a");
+              link.href = url; link.download = `bridge-${node.id}.json`;
+              document.body.append(link); link.click(); link.remove();
+              window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+              setMessage("Настройка скачана. Установите её на VPS-мост по инструкции. После изменения адресов или портов скачайте и примените настройку заново.");
+            })} />
             <div className="button-group">
               <button className="button secondary-button" disabled={busy} onClick={() => void perform(async (signal) => {
                 await request(token, `/nodes/${encodeURIComponent(node.id)}/apply`, { method: "POST", signal });
@@ -161,20 +161,6 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
         </section>;
       })}
     </div>
-    <section className="card">
-      <div className="card-heading"><div><h2>Входные прокси</h2><p>Доступ до VPS. Меняйте реквизиты здесь, затем обновляйте профиль на устройствах.</p></div>
-        <button className="button secondary-button" onClick={() => { setError(null); setProxyForm({ draft: { ...blankProxy } }); }}>Добавить прокси</button></div>
-      <div className="card-body">
-        {proxies.isPending ? <p>Загрузка прокси…</p> : proxyList.length === 0 ? <p>Входные прокси ещё не добавлены.</p> : proxyList.map((proxy) =>
-          <div key={proxy.id} className="entry-proxy-row"><div><strong>{proxy.name}</strong><p className="mono">{proxy.host}:{proxy.port}</p>
-            <span className="secondary small">SOCKS5 · {proxy.enabled ? "Включён" : "Выключен"} · {proxy.supports_udp ? "Заявлена поддержка UDP" : "TCP"}</span></div>
-            <div className="button-group"><button className="button secondary-button" disabled={busy} onClick={() => {
-              setError(null); setProxyForm({ id: proxy.id, draft: { ...proxy, username: "", password: "", replace_credentials: false } });
-            }}>Изменить</button><button className="button secondary-button danger-text" disabled={busy || nodes.some((node) => node.entry_proxy_id === proxy.id)}
-              title="Перед удалением снимите назначение с VPS" onClick={() => { setError(null); setRemoving({ path: `/entry-proxies/${encodeURIComponent(proxy.id)}`, name: proxy.name }); }}>Удалить</button></div>
-          </div>)}
-      </div>
-    </section>
     {nodeForm && <Modal title={nodeForm.id ? "Изменить VPS" : "Добавить VPS"} onClose={() => !busy && setNodeForm(null)}>
       <form onSubmit={saveNode}>
         <p className="modal-description">Введите публичные параметры VPN-сервера. Для нового VPS панель выдаст одноразовый код подключения агента.</p>
@@ -201,30 +187,6 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
           <button className="button primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить VPS"}</button></div>
       </form>
     </Modal>}
-    {proxyForm && <Modal title={proxyForm.id ? "Изменить входной прокси" : "Добавить входной прокси"} onClose={() => !busy && setProxyForm(null)}>
-      <form onSubmit={saveProxy} autoComplete="off">
-        {([['name', 'Название'], ['host', 'Адрес SOCKS5'], ['port', 'Порт SOCKS5']] as const).map(([key, label]) =>
-          <label className="fleet-field" key={key}>{label}<input required maxLength={key === "name" ? 64 : 255} type={key === "port" ? "number" : "text"}
-            min={key === "port" ? 1 : undefined} max={key === "port" ? 65535 : undefined} value={proxyForm.draft[key]}
-            onChange={(event) => setProxyForm({ ...proxyForm, draft: { ...proxyForm.draft, [key]: key === "port" ? Number(event.target.value) : event.target.value } })} /></label>)}
-        <label className="fleet-field">Авторизация<select value={proxyForm.draft.auth_type} onChange={(event) => setProxyForm({ ...proxyForm,
-          draft: { ...proxyForm.draft, auth_type: event.target.value as ProxyDraft["auth_type"], replace_credentials: true } })}>
-          <option value="password">Логин и пароль</option><option value="none">Без логина и пароля</option></select></label>
-        {proxyForm.id && proxyForm.draft.auth_type === "password" && <label className="fleet-check"><input type="checkbox" checked={proxyForm.draft.replace_credentials}
-          onChange={(event) => setProxyForm({ ...proxyForm, draft: { ...proxyForm.draft, replace_credentials: event.target.checked, username: "", password: "" } })} />Заменить логин и пароль</label>}
-        {proxyForm.draft.auth_type === "password" && proxyForm.draft.replace_credentials && <>
-          <label className="fleet-field">Логин SOCKS5<input required maxLength={255} autoComplete="off" value={proxyForm.draft.username}
-            onChange={(event) => setProxyForm({ ...proxyForm, draft: { ...proxyForm.draft, username: event.target.value } })} /></label>
-          <label className="fleet-field">Пароль SOCKS5<input required maxLength={255} type="password" autoComplete="new-password" value={proxyForm.draft.password}
-            onChange={(event) => setProxyForm({ ...proxyForm, draft: { ...proxyForm.draft, password: event.target.value } })} /></label>
-        </>}
-        <label className="fleet-check"><input type="checkbox" checked={proxyForm.draft.enabled} onChange={(event) => setProxyForm({ ...proxyForm, draft: { ...proxyForm.draft, enabled: event.target.checked } })} />Прокси включён</label>
-        <label className="fleet-check"><input type="checkbox" checked={proxyForm.draft.supports_udp} onChange={(event) => setProxyForm({ ...proxyForm, draft: { ...proxyForm.draft, supports_udp: event.target.checked } })} />Провайдер прокси поддерживает UDP ASSOCIATE</label>
-        <p className="hint">Для XHTTP/HTTP3 нужен рабочий UDP relay. Эта отметка задаёт возможность прокси; успешное подключение проверяется отдельно.</p>
-        <ErrorNotice error={error} /><div className="modal-actions"><button type="button" className="button secondary-button" disabled={busy} onClick={() => setProxyForm(null)}>Отмена</button>
-          <button className="button primary" disabled={busy}>{busy ? "Сохраняем…" : "Сохранить прокси"}</button></div>
-      </form>
-    </Modal>}
     {enrollment && <Modal title="Подключить агент VPS" onClose={() => setEnrollment(null)}>
       <p>Сохраните данные подключения агента для VPS «{enrollment.node.name}». Код действует 15 минут и после закрытия окна больше не показывается.</p>
       <label className="fleet-field">Идентификатор VPS<input readOnly className="mono" value={enrollment.node.id} onFocus={(event) => event.target.select()} /></label>
@@ -242,7 +204,7 @@ export function NodesManager({ token, nodes }: { token: string; nodes: Node[] })
         })}>Выдать новый код</button></div>
     </Modal>}
     {removing && <Modal title={`Удалить «${removing.name}»?`} onClose={() => !busy && setRemoving(null)}>
-      <p>Для удаления VPS сначала отзовите, примените отзыв и удалите его устройства. Для прокси снимите назначения с серверов.</p>
+      <p>Для удаления VPS сначала отзовите, примените отзыв и удалите его устройства.</p>
       <ErrorNotice error={error} /><div className="modal-actions"><button className="button secondary-button" disabled={busy} onClick={() => setRemoving(null)}>Отмена</button>
         <button className="button danger" disabled={busy} onClick={() => void perform(async (signal) => {
           await request(token, removing.path, { method: "DELETE", signal }); setRemoving(null); setMessage("Запись удалена.");

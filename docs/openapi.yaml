@@ -4,7 +4,7 @@ info:
   version: 0.1.0
   description: >-
     Центральное управление локальным и удалёнными узлами Xray. Создание и отзыв
-    устройств требуют применения на соответствующем VPS. Входные SOCKS5 используются до VPN.
+    устройств требуют применения на соответствующем VPS. Обычные профили поддерживают прямой вход и серверный TCP-мост.
     Профили содержат секреты: их нельзя кешировать, журналировать и передавать.
     Публичный доступ по Bearer требует временного сеанса после проверки пароля и
     подтверждения аутентификатора. Пока администратор не настроен, публичного доступа
@@ -357,8 +357,9 @@ paths:
       operationId: exportDevice
       description: >-
         Выдать профиль с выходом через выбранный VPS. Прежний exit=proxy недоступен.
-        Для подключения через назначенный входной SOCKS5 используется отдельный
-        endpoint chain: обычная VLESS-ссылка не содержит настройки цепочки.
+        При выборе серверного моста обычные профили используют его публичный адрес
+        и отдельные порты TCP/Vision и XHTTP; ключи и SNI принадлежат выходному VPS.
+        H3 через TCP-мост не выдаётся. Режим unconfigured закрывает выдачу до выбора маршрута.
       responses:
         '200':
           description: Секретная ссылка VLESS и конфигурации клиентов sing-box и Mihomo, Cache-Control no-store
@@ -368,7 +369,9 @@ paths:
                 type: object
                 required: [port, uri, sing_box_json, mihomo_yaml, subscription_path]
                 properties:
-                  port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт существующего TCP/Vision-профиля и панели; в production 8443}
+                  connection_mode: {type: string, enum: [direct, bridge], description: Режим именно этих выданных профилей}
+                  bridge: {$ref: '#/components/schemas/BridgeNode'}
+                  port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт TCP/Vision на выбранном входе}
                   uri: {type: string, format: uri, description: Существующий профиль VLESS + TCP + REALITY + Vision}
                   xhttp_uri: {type: string, format: uri, description: Необязательный профиль VLESS + XHTTP + REALITY без Vision; доступен при включённом входе XHTTP}
                   xhttp_port: {type: integer, minimum: 1, maximum: 65535, description: Внешний порт необязательного входа XHTTP}
@@ -448,9 +451,9 @@ paths:
         и не попадают в аудит. При включённом и успешно применённом XHTTP общий список
         base64 содержит сначала XHTTP, затем TCP/Vision. Известные legacy-клиенты
         Hiddify, sing-box, Clash/Mihomo и Stash получают совместимый TCP-профиль.
-        Форматы uri, sing-box и mihomo сохраняют прежнее содержимое.
-        Входная цепочка имеет отдельную подписку /sub/entry/{token}.
-        При назначенном входном прокси прямая подписка отвечает 404.
+        Форматы uri, sing-box и mihomo остаются стандартными. Ссылка подписки сохраняется
+        при явной смене маршрута и выдаёт актуальные адреса выбранного входа.
+        Режим unconfigured отвечает 404. Прежняя /sub/entry/{token} удалена и отвечает 410.
         Для удалённого VPS она также отвечает 404 до подтверждения агентом
         текущей желаемой ревизии; новые TCP-параметры до ACK не выдаются.
         Прежний /sub/proxy/{token} отключён; query exit не принимается.
@@ -1021,32 +1024,18 @@ paths:
                 - expires_at
         default:
           $ref: '#/components/responses/Error'
-  /api/v1/nodes/{id}/entry-proxy:
+  /api/v1/nodes/{id}/connection:
     parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
+      - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
     put:
-      operationId: assignEntryProxy
-      description: Назначить входной SOCKS5. null включает прямое подключение по явному выбору администратора.
-      responses:
-        '200':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  node:
-                    $ref: '#/components/schemas/Node'
-                required:
-                - node
-        default:
-          $ref: '#/components/responses/Error'
+      operationId: setNodeConnection
+      description: >-
+        Явно выбрать прямой вход или прозрачный TCP-мост. Меняет выдачу обычных
+        профилей и существующих обычных подписок; не устанавливает мост и не
+        подтверждает доступность. Для direct поле bridge обязано быть null;
+        для bridge нужны host, tcp_port и xhttp_port при включённом XHTTP.
+        Пересечения портов на одном входном хосте, порт 22 и более 64 listeners отклоняются. DNS-псевдонимы
+        дополнительно проверяются при установке. Ревизия Xray не меняется.
       requestBody:
         required: true
         content:
@@ -1054,14 +1043,42 @@ paths:
             schema:
               type: object
               additionalProperties: false
+              required: [mode, bridge]
               properties:
-                entry_proxy_id:
-                  type:
-                  - string
-                  - 'null'
-                  format: uuid
-              required:
-              - entry_proxy_id
+                mode: {type: string, enum: [direct, bridge]}
+                bridge:
+                  oneOf:
+                    - {$ref: '#/components/schemas/BridgeNode'}
+                    - {type: 'null'}
+      responses:
+        '200':
+          description: Сохранён способ подключения
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [node]
+                properties:
+                  node: {$ref: '#/components/schemas/Node'}
+        default: {$ref: '#/components/responses/Error'}
+  /api/v1/nodes/{id}/bridge-config:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+    get:
+      operationId: exportBridgeConfiguration
+      description: >-
+        Открытые параметры установки всех назначений на тот же bridge.host.
+        Секреты VPN не входят. Не подтверждает установку или работу моста.
+        После смены host/портов выходного узла мост становится unconfigured;
+        требуется заново назначить вход и установить новую конфигурацию.
+      responses:
+        '200':
+          description: Конфигурация установщика моста
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BridgeConfiguration'
+        default: {$ref: '#/components/responses/Error'}
   /api/v1/nodes/{id}/apply:
     parameters:
     - name: id
@@ -1091,215 +1108,15 @@ paths:
           $ref: '#/components/responses/Error'
         '200':
           description: Локальная конфигурация применена
-  /api/v1/entry-proxies:
-    get:
-      operationId: listEntryProxies
-      description: Список входных SOCKS5 без логинов и паролей.
-      responses:
-        '200':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  entry_proxies:
-                    type: array
-                    items:
-                      $ref: '#/components/schemas/EntryProxy'
-        default:
-          $ref: '#/components/responses/Error'
-    post:
-      operationId: createEntryProxy
-      description: Сохранить входной SOCKS5. Реквизиты шифруются отдельно с AAD идентификатора.
-      responses:
-        '201':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EntryProxy'
-        default:
-          $ref: '#/components/responses/Error'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                name:
-                  type: string
-                host:
-                  type: string
-                port:
-                  type: integer
-                  minimum: 1
-                  maximum: 65535
-                auth_type:
-                  type: string
-                  enum:
-                  - none
-                  - password
-                enabled:
-                  type: boolean
-                supports_udp:
-                  type: boolean
-                username:
-                  type: string
-                  writeOnly: true
-                password:
-                  type: string
-                  format: password
-                  writeOnly: true
-              required:
-              - name
-              - host
-              - port
-              - auth_type
-              - enabled
-              - supports_udp
-  /api/v1/entry-proxies/{id}:
-    parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-    patch:
-      operationId: updateEntryProxy
-      description: Изменить входной SOCKS5. Отсутствующие логин и пароль сохраняются; новые реквизиты передаются вместе.
-      responses:
-        '200':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/EntryProxy'
-        default:
-          $ref: '#/components/responses/Error'
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              additionalProperties: false
-              properties:
-                name:
-                  type: string
-                host:
-                  type: string
-                port:
-                  type: integer
-                  minimum: 1
-                  maximum: 65535
-                auth_type:
-                  type: string
-                  enum:
-                  - none
-                  - password
-                enabled:
-                  type: boolean
-                supports_udp:
-                  type: boolean
-                username:
-                  type: string
-                  writeOnly: true
-                password:
-                  type: string
-                  format: password
-                  writeOnly: true
-              required:
-              - name
-              - host
-              - port
-              - auth_type
-              - enabled
-              - supports_udp
-    delete:
-      operationId: deleteEntryProxy
-      description: Удалить прокси, который не назначен VPS.
-      responses:
-        '200':
-          description: Успех
-        default:
-          $ref: '#/components/responses/Error'
-  /api/v1/devices/{id}/chain:
-    parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-    get:
-      operationId: exportChain
-      description: Выдать секретный профиль цепочки после применения ревизии узла. Прямого fallback нет. Не кешировать.
-      responses:
-        '200':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ChainBundle'
-        default:
-          $ref: '#/components/responses/Error'
-  /api/v1/devices/{id}/chain-subscription:
-    parameters:
-    - name: id
-      in: path
-      required: true
-      schema:
-        type: string
-        format: uuid
-    post:
-      operationId: rotateChainSubscription
-      description: Отозвать прежний токен подписки цепочки и выдать новый; обычная подписка имеет отдельный токен.
-      responses:
-        '200':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                type: object
-                additionalProperties: false
-                properties:
-                  subscription_path:
-                    type: string
-                  subscription_url:
-                    type: string
-                    format: uri
-                required:
-                - subscription_path
-                - subscription_url
-        default:
-          $ref: '#/components/responses/Error'
   /sub/entry/{token}:
     parameters:
-    - name: token
-      in: path
-      required: true
-      schema:
-        type: string
-        pattern: ^[A-Za-z0-9_-]{43}$
+      - {name: token, in: path, required: true, schema: {type: string}}
     get:
-      operationId: fetchChainSubscription
-      description: Подписка содержит реквизиты входного SOCKS5. Токен device-scoped; недоступный/отозванный профиль
-        отвечает 404.
-      responses:
-        '200':
-          description: Успех
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ChainBundle'
-        default:
-          $ref: '#/components/responses/Error'
+      operationId: retiredChainSubscription
+      description: Прежняя клиентская SOCKS5-подписка удалена. Токен не преобразуется в обычную подписку.
       security: []
+      responses:
+        '410': {$ref: '#/components/responses/Error'}
   /api/v1/agent/enroll:
     post:
       operationId: enrollNodeAgent
@@ -1424,7 +1241,7 @@ components:
       required: false
       description: >-
         Устаревший параметр совместимости. Значения primary и 8443 принимаются, но
-        оба выдают текущий основной профиль узла (в production 8443), как запрос без
+        оба выдают TCP/Vision-профиль выбранного маршрута узла, как запрос без
         параметра. Он больше не выбирает альтернативный порт. Пустое значение, 443,
         произвольное значение или повтор параметра дают 400 до выдачи или замены
         ссылки. Действительные старые ссылки на HTTPS :8443 сохраняются. Новые пути
@@ -1753,7 +1570,8 @@ components:
         short_id: {type: string}
         expected_server_ip: {type: string, readOnly: true, description: 'Необязательный ожидаемый публичный IP прямого выхода: явная серверная настройка либо публичный IP-литерал host. Домен не разрешается в предположительный выходной IP.'}
         kind: {type: string, enum: [local, remote]}
-        entry_proxy_id: {type: [string, 'null'], format: uuid}
+        connection_mode: {type: string, enum: [direct, bridge, unconfigured]}
+        bridge: {$ref: '#/components/schemas/BridgeNode'}
         desired_revision: {type: integer}
         applied_revision: {type: integer}
         requested_revision: {type: integer}
@@ -1799,138 +1617,29 @@ components:
         desired_revision: {type: integer, minimum: 1}
         applied_revision: {type: integer, minimum: 0}
         xray_configured: {type: boolean, description: 'Команда перезапуска задана; это не значит, что процесс Xray работает'}
-    EntryProxy:
+    BridgeNode:
       type: object
       additionalProperties: false
+      required: [host, tcp_port]
       properties:
-        id:
-          type: string
-          format: uuid
-        name:
-          type: string
-        host:
-          type: string
-        port:
-          type: integer
-          minimum: 1
-          maximum: 65535
-        auth_type:
-          type: string
-          enum:
-          - none
-          - password
-        enabled:
-          type: boolean
-        supports_udp:
-          type: boolean
-      required:
-      - id
-      - name
-      - host
-      - port
-      - auth_type
-      - enabled
-      - supports_udp
-    ChainBundle:
+        host: {type: string, description: Публичный IP или DNS-имя входного VPS без схемы и порта}
+        tcp_port: {type: integer, minimum: 1, maximum: 65535}
+        xhttp_port: {type: integer, minimum: 1, maximum: 65535, description: Обязателен при включённом XHTTP; отличается от tcp_port}
+    BridgeConfiguration:
       type: object
       additionalProperties: false
+      required: [version, listeners]
       properties:
-        version:
-          type: integer
-          const: 1
-        device_id:
-          type: string
-          format: uuid
-        node_id:
-          type: string
-          format: uuid
-        entry_proxy:
-          type: object
-          additionalProperties: false
-          properties:
-            type:
-              type: string
-              const: socks5
-            host:
-              type: string
-            port:
-              type: integer
-            username:
-              type: string
-            password:
-              type: string
-              format: password
-            supports_udp:
-              type: boolean
-          required:
-          - type
-          - host
-          - port
-          - supports_udp
-        profiles:
+        version: {type: integer, const: 1}
+        listeners:
           type: array
           items:
             type: object
             additionalProperties: false
+            required: [name, transport, listen_port, target_host, target_port]
             properties:
-              id:
-                type: string
-              name:
-                type: string
-              transport:
-                type: string
-                enum:
-                - tcp
-                - xhttp
-              host:
-                type: string
-              port:
-                type: integer
-              uuid:
-                type: string
-                format: uuid
-              security:
-                type: string
-                enum:
-                - reality
-                - tls
-              sni:
-                type: string
-              public_key:
-                type: string
-              short_id:
-                type: string
-              fingerprint:
-                type: string
-              flow:
-                type: string
-              spider_x:
-                type: string
-              path:
-                type: string
-              mode:
-                type: string
-              alpn:
-                type: array
-                items:
-                  type: string
-            required:
-            - id
-            - name
-            - transport
-            - host
-            - port
-            - uuid
-            - security
-            - sni
-        subscription_url:
-          type: string
-          format: uri
-          description: Абсолютный HTTPS адрес центральной панели, из доверенной конфигурации.
-      required:
-      - version
-      - device_id
-      - node_id
-      - entry_proxy
-      - profiles
-      - subscription_url
+              name: {type: string}
+              transport: {type: string, enum: [tcp, xhttp]}
+              listen_port: {type: integer, minimum: 1, maximum: 65535}
+              target_host: {type: string}
+              target_port: {type: integer, minimum: 1, maximum: 65535}

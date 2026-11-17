@@ -20,7 +20,7 @@ REQUIRED = {"bin/gateway-api", "bin/gatewayctl", "bin/gateway-node", "bin/xray",
             "docker/Dockerfile.xray", "docker/Dockerfile.browser", "docker/browser-worker.py",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
             "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/configure-xhttp.py", "docker/configure-proxy.py", "docker/install.sh", "docker/install-node.sh",
-            "docker/update.sh", "docker/verify-release.py"}
+            "docker/update.sh", "docker/verify-release.py", "docker/install-bridge.sh", "docker/bridge.py"}
 
 
 def canonical_path(name):

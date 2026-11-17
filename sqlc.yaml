@@ -9,6 +9,7 @@ sql:
       - internal/storage/migrations/000007_nodes_xhttp.up.sql
       - internal/storage/migrations/000008_device_preferred_exit.up.sql
       - internal/storage/migrations/000009_remote_nodes_entry_proxies.up.sql
+      - internal/storage/migrations/000010_server_bridges.up.sql
     queries: internal/storage/queries.sql
     gen:
       go:

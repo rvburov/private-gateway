@@ -12,7 +12,7 @@ import (
 )
 
 const activeClients = `-- name: ActiveClients :many
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices WHERE node_id=$1 AND revoked_at IS NULL ORDER BY id
 `
 
 func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Device, error) {
@@ -34,8 +34,6 @@ func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Devi
 			&i.SubscriptionGeneration,
 			&i.SubscriptionHash,
 			&i.PreferredExit,
-			&i.ChainSubscriptionGeneration,
-			&i.ChainSubscriptionHash,
 		); err != nil {
 			return nil, err
 		}
@@ -45,31 +43,6 @@ func (q *Queries) ActiveClients(ctx context.Context, nodeID pgtype.UUID) ([]Devi
 		return nil, err
 	}
 	return items, nil
-}
-
-const advanceChainSubscription = `-- name: AdvanceChainSubscription :one
-UPDATE devices SET chain_subscription_generation=chain_subscription_generation+1,
-                   chain_subscription_hash=NULL
-WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash
-`
-
-func (q *Queries) AdvanceChainSubscription(ctx context.Context, id pgtype.UUID) (Device, error) {
-	row := q.db.QueryRow(ctx, advanceChainSubscription, id)
-	var i Device
-	err := row.Scan(
-		&i.ID,
-		&i.NodeID,
-		&i.Name,
-		&i.CredentialCiphertext,
-		&i.CreatedAt,
-		&i.RevokedAt,
-		&i.SubscriptionGeneration,
-		&i.SubscriptionHash,
-		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
-	)
-	return i, err
 }
 
 const advanceRevision = `-- name: AdvanceRevision :exec
@@ -83,7 +56,7 @@ func (q *Queries) AdvanceRevision(ctx context.Context, id pgtype.UUID) error {
 
 const advanceSubscription = `-- name: AdvanceSubscription :one
 UPDATE devices SET subscription_generation=subscription_generation+1, subscription_hash=NULL
-WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash
+WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 func (q *Queries) AdvanceSubscription(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -99,8 +72,6 @@ func (q *Queries) AdvanceSubscription(ctx context.Context, id pgtype.UUID) (Devi
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
 		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
 	)
 	return i, err
 }
@@ -195,19 +166,6 @@ func (q *Queries) DeleteAdministrator(ctx context.Context, generation int64) (in
 	return result.RowsAffected(), nil
 }
 
-const deleteEntryProxy = `-- name: DeleteEntryProxy :execrows
-DELETE FROM entry_proxies WHERE entry_proxies.id=$1 AND NOT EXISTS
-    (SELECT 1 FROM nodes WHERE entry_proxy_id=$1)
-`
-
-func (q *Queries) DeleteEntryProxy(ctx context.Context, id pgtype.UUID) (int64, error) {
-	result, err := q.db.Exec(ctx, deleteEntryProxy, id)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected(), nil
-}
-
 const deleteRemoteNode = `-- name: DeleteRemoteNode :execrows
 DELETE FROM nodes WHERE nodes.id=$1 AND kind='remote'
   AND NOT EXISTS (SELECT 1 FROM devices WHERE node_id=$1)
@@ -256,7 +214,7 @@ const enrollAgent = `-- name: EnrollAgent :one
 UPDATE nodes SET agent_token_hash=$3, agent_join_hash=NULL, agent_join_expires_at=NULL,
                  agent_last_seen_at=now(), agent_error=''
 WHERE id=$1 AND kind='remote' AND agent_join_hash=$2 AND agent_join_expires_at>now()
-  AND agent_token_hash IS NULL RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config
+  AND agent_token_hash IS NULL RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config
 `
 
 type EnrollAgentParams struct {
@@ -281,7 +239,6 @@ func (q *Queries) EnrollAgent(ctx context.Context, arg EnrollAgentParams) (Node,
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -289,35 +246,14 @@ func (q *Queries) EnrollAgent(ctx context.Context, arg EnrollAgentParams) (Node,
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
-	)
-	return i, err
-}
-
-const getActiveDeviceByChainHash = `-- name: GetActiveDeviceByChainHash :one
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash FROM devices WHERE chain_subscription_hash=$1 AND revoked_at IS NULL
-`
-
-func (q *Queries) GetActiveDeviceByChainHash(ctx context.Context, chainSubscriptionHash []byte) (Device, error) {
-	row := q.db.QueryRow(ctx, getActiveDeviceByChainHash, chainSubscriptionHash)
-	var i Device
-	err := row.Scan(
-		&i.ID,
-		&i.NodeID,
-		&i.Name,
-		&i.CredentialCiphertext,
-		&i.CreatedAt,
-		&i.RevokedAt,
-		&i.SubscriptionGeneration,
-		&i.SubscriptionHash,
-		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
 
 const getActiveDeviceBySubscription = `-- name: GetActiveDeviceBySubscription :one
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash FROM devices WHERE subscription_hash=$1 AND revoked_at IS NULL
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices WHERE subscription_hash=$1 AND revoked_at IS NULL
 `
 
 func (q *Queries) GetActiveDeviceBySubscription(ctx context.Context, subscriptionHash []byte) (Device, error) {
@@ -333,8 +269,6 @@ func (q *Queries) GetActiveDeviceBySubscription(ctx context.Context, subscriptio
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
 		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
 	)
 	return i, err
 }
@@ -359,7 +293,7 @@ func (q *Queries) GetAdministrator(ctx context.Context) (AdministratorCredential
 }
 
 const getAgentNode = `-- name: GetAgentNode :one
-SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config FROM nodes WHERE id=$1 AND kind='remote' AND agent_token_hash=$2
+SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config FROM nodes WHERE id=$1 AND kind='remote' AND agent_token_hash=$2
 `
 
 type GetAgentNodeParams struct {
@@ -383,7 +317,6 @@ func (q *Queries) GetAgentNode(ctx context.Context, arg GetAgentNodeParams) (Nod
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -391,12 +324,14 @@ func (q *Queries) GetAgentNode(ctx context.Context, arg GetAgentNodeParams) (Nod
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
 
 const getDevice = `-- name: GetDevice :one
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash FROM devices WHERE id=$1
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices WHERE id=$1
 `
 
 func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -412,35 +347,12 @@ func (q *Queries) GetDevice(ctx context.Context, id pgtype.UUID) (Device, error)
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
 		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
-	)
-	return i, err
-}
-
-const getEntryProxy = `-- name: GetEntryProxy :one
-SELECT id, name, host, port, auth_type, username_ciphertext, password_ciphertext, enabled, supports_udp FROM entry_proxies WHERE id=$1
-`
-
-func (q *Queries) GetEntryProxy(ctx context.Context, id pgtype.UUID) (EntryProxy, error) {
-	row := q.db.QueryRow(ctx, getEntryProxy, id)
-	var i EntryProxy
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Host,
-		&i.Port,
-		&i.AuthType,
-		&i.UsernameCiphertext,
-		&i.PasswordCiphertext,
-		&i.Enabled,
-		&i.SupportsUdp,
 	)
 	return i, err
 }
 
 const getNode = `-- name: GetNode :one
-SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config FROM nodes WHERE id=$1
+SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config FROM nodes WHERE id=$1
 `
 
 func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -459,7 +371,6 @@ func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -467,6 +378,8 @@ func (q *Queries) GetNode(ctx context.Context, id pgtype.UUID) (Node, error) {
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
@@ -501,7 +414,7 @@ func (q *Queries) InsertAudit(ctx context.Context, arg InsertAuditParams) error 
 }
 
 const insertDevice = `-- name: InsertDevice :one
-INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash
+INSERT INTO devices(id, node_id, name, credential_ciphertext) VALUES ($1, $2, $3, $4) RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 type InsertDeviceParams struct {
@@ -529,53 +442,6 @@ func (q *Queries) InsertDevice(ctx context.Context, arg InsertDeviceParams) (Dev
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
 		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
-	)
-	return i, err
-}
-
-const insertEntryProxy = `-- name: InsertEntryProxy :one
-INSERT INTO entry_proxies(id, name, host, port, auth_type, username_ciphertext,
-                          password_ciphertext, enabled, supports_udp)
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id, name, host, port, auth_type, username_ciphertext, password_ciphertext, enabled, supports_udp
-`
-
-type InsertEntryProxyParams struct {
-	ID                 pgtype.UUID
-	Name               string
-	Host               string
-	Port               int32
-	AuthType           string
-	UsernameCiphertext []byte
-	PasswordCiphertext []byte
-	Enabled            bool
-	SupportsUdp        bool
-}
-
-func (q *Queries) InsertEntryProxy(ctx context.Context, arg InsertEntryProxyParams) (EntryProxy, error) {
-	row := q.db.QueryRow(ctx, insertEntryProxy,
-		arg.ID,
-		arg.Name,
-		arg.Host,
-		arg.Port,
-		arg.AuthType,
-		arg.UsernameCiphertext,
-		arg.PasswordCiphertext,
-		arg.Enabled,
-		arg.SupportsUdp,
-	)
-	var i EntryProxy
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Host,
-		&i.Port,
-		&i.AuthType,
-		&i.UsernameCiphertext,
-		&i.PasswordCiphertext,
-		&i.Enabled,
-		&i.SupportsUdp,
 	)
 	return i, err
 }
@@ -584,7 +450,7 @@ const insertRemoteNode = `-- name: InsertRemoteNode :one
 INSERT INTO nodes(id, name, host, port, server_name, public_key, short_id, config_hash,
                   xhttp_config, h3_config, kind, agent_join_hash, agent_join_expires_at, revision)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'remote', $11, $12, 1)
-RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config
+RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config
 `
 
 type InsertRemoteNodeParams struct {
@@ -631,7 +497,6 @@ func (q *Queries) InsertRemoteNode(ctx context.Context, arg InsertRemoteNodePara
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -639,6 +504,8 @@ func (q *Queries) InsertRemoteNode(ctx context.Context, arg InsertRemoteNodePara
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
@@ -673,7 +540,7 @@ func (q *Queries) ListAudit(ctx context.Context) ([]AuditEvent, error) {
 }
 
 const listDevices = `-- name: ListDevices :many
-SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash FROM devices ORDER BY created_at, id
+SELECT id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit FROM devices ORDER BY created_at, id
 `
 
 func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
@@ -695,42 +562,6 @@ func (q *Queries) ListDevices(ctx context.Context) ([]Device, error) {
 			&i.SubscriptionGeneration,
 			&i.SubscriptionHash,
 			&i.PreferredExit,
-			&i.ChainSubscriptionGeneration,
-			&i.ChainSubscriptionHash,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
-const listEntryProxies = `-- name: ListEntryProxies :many
-SELECT id, name, host, port, auth_type, username_ciphertext, password_ciphertext, enabled, supports_udp FROM entry_proxies ORDER BY name,id
-`
-
-func (q *Queries) ListEntryProxies(ctx context.Context) ([]EntryProxy, error) {
-	rows, err := q.db.Query(ctx, listEntryProxies)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []EntryProxy{}
-	for rows.Next() {
-		var i EntryProxy
-		if err := rows.Scan(
-			&i.ID,
-			&i.Name,
-			&i.Host,
-			&i.Port,
-			&i.AuthType,
-			&i.UsernameCiphertext,
-			&i.PasswordCiphertext,
-			&i.Enabled,
-			&i.SupportsUdp,
 		); err != nil {
 			return nil, err
 		}
@@ -743,7 +574,7 @@ func (q *Queries) ListEntryProxies(ctx context.Context) ([]EntryProxy, error) {
 }
 
 const listNodes = `-- name: ListNodes :many
-SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config FROM nodes ORDER BY name, id
+SELECT id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config FROM nodes ORDER BY name, id
 `
 
 func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
@@ -768,7 +599,6 @@ func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
 			&i.AppliedRevision,
 			&i.XhttpConfig,
 			&i.Kind,
-			&i.EntryProxyID,
 			&i.AgentJoinHash,
 			&i.AgentJoinExpiresAt,
 			&i.AgentTokenHash,
@@ -776,6 +606,8 @@ func (q *Queries) ListNodes(ctx context.Context) ([]Node, error) {
 			&i.AgentError,
 			&i.RequestedRevision,
 			&i.H3Config,
+			&i.ConnectionMode,
+			&i.BridgeConfig,
 		); err != nil {
 			return nil, err
 		}
@@ -825,7 +657,7 @@ func (q *Queries) RestoreAdministrator(ctx context.Context, arg RestoreAdministr
 }
 
 const revokeDevice = `-- name: RevokeDevice :one
-UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash
+UPDATE devices SET revoked_at=now() WHERE id=$1 AND revoked_at IS NULL RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, error) {
@@ -841,8 +673,6 @@ func (q *Queries) RevokeDevice(ctx context.Context, id pgtype.UUID) (Device, err
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
 		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
 	)
 	return i, err
 }
@@ -851,7 +681,7 @@ const rotateAgentJoin = `-- name: RotateAgentJoin :one
 UPDATE nodes SET agent_join_hash=$2, agent_join_expires_at=$3,
                  agent_token_hash=NULL, agent_last_seen_at=NULL,
                  agent_error='awaiting enrollment', applied_revision=0
-WHERE id=$1 AND kind='remote' RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config
+WHERE id=$1 AND kind='remote' RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config
 `
 
 type RotateAgentJoinParams struct {
@@ -876,7 +706,6 @@ func (q *Queries) RotateAgentJoin(ctx context.Context, arg RotateAgentJoinParams
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -884,6 +713,8 @@ func (q *Queries) RotateAgentJoin(ctx context.Context, arg RotateAgentJoinParams
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
@@ -907,31 +738,18 @@ func (q *Queries) SetAdministrator(ctx context.Context, arg SetAdministratorPara
 	return err
 }
 
-const setChainSubscriptionHash = `-- name: SetChainSubscriptionHash :exec
-UPDATE devices SET chain_subscription_hash=$2 WHERE id=$1
+const setNodeConnection = `-- name: SetNodeConnection :one
+UPDATE nodes SET connection_mode=$2, bridge_config=$3 WHERE id=$1 RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config
 `
 
-type SetChainSubscriptionHashParams struct {
-	ID                    pgtype.UUID
-	ChainSubscriptionHash []byte
+type SetNodeConnectionParams struct {
+	ID             pgtype.UUID
+	ConnectionMode string
+	BridgeConfig   []byte
 }
 
-func (q *Queries) SetChainSubscriptionHash(ctx context.Context, arg SetChainSubscriptionHashParams) error {
-	_, err := q.db.Exec(ctx, setChainSubscriptionHash, arg.ID, arg.ChainSubscriptionHash)
-	return err
-}
-
-const setNodeEntryProxy = `-- name: SetNodeEntryProxy :one
-UPDATE nodes SET entry_proxy_id=$2 WHERE id=$1 RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config
-`
-
-type SetNodeEntryProxyParams struct {
-	ID           pgtype.UUID
-	EntryProxyID pgtype.UUID
-}
-
-func (q *Queries) SetNodeEntryProxy(ctx context.Context, arg SetNodeEntryProxyParams) (Node, error) {
-	row := q.db.QueryRow(ctx, setNodeEntryProxy, arg.ID, arg.EntryProxyID)
+func (q *Queries) SetNodeConnection(ctx context.Context, arg SetNodeConnectionParams) (Node, error) {
+	row := q.db.QueryRow(ctx, setNodeConnection, arg.ID, arg.ConnectionMode, arg.BridgeConfig)
 	var i Node
 	err := row.Scan(
 		&i.ID,
@@ -946,7 +764,6 @@ func (q *Queries) SetNodeEntryProxy(ctx context.Context, arg SetNodeEntryProxyPa
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -954,12 +771,14 @@ func (q *Queries) SetNodeEntryProxy(ctx context.Context, arg SetNodeEntryProxyPa
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
 
 const setRequestedRevision = `-- name: SetRequestedRevision :one
-UPDATE nodes SET requested_revision=revision WHERE id=$1 AND kind='remote' RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config
+UPDATE nodes SET requested_revision=revision WHERE id=$1 AND kind='remote' RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config
 `
 
 func (q *Queries) SetRequestedRevision(ctx context.Context, id pgtype.UUID) (Node, error) {
@@ -978,7 +797,6 @@ func (q *Queries) SetRequestedRevision(ctx context.Context, id pgtype.UUID) (Nod
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -986,6 +804,8 @@ func (q *Queries) SetRequestedRevision(ctx context.Context, id pgtype.UUID) (Nod
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
@@ -1019,7 +839,7 @@ func (q *Queries) TouchAgent(ctx context.Context, arg TouchAgentParams) error {
 }
 
 const updateDeviceMetadata = `-- name: UpdateDeviceMetadata :one
-UPDATE devices SET name=$2, preferred_exit=$3 WHERE id=$1 RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit, chain_subscription_generation, chain_subscription_hash
+UPDATE devices SET name=$2, preferred_exit=$3 WHERE id=$1 RETURNING id, node_id, name, credential_ciphertext, created_at, revoked_at, subscription_generation, subscription_hash, preferred_exit
 `
 
 type UpdateDeviceMetadataParams struct {
@@ -1041,62 +861,19 @@ func (q *Queries) UpdateDeviceMetadata(ctx context.Context, arg UpdateDeviceMeta
 		&i.SubscriptionGeneration,
 		&i.SubscriptionHash,
 		&i.PreferredExit,
-		&i.ChainSubscriptionGeneration,
-		&i.ChainSubscriptionHash,
-	)
-	return i, err
-}
-
-const updateEntryProxy = `-- name: UpdateEntryProxy :one
-UPDATE entry_proxies SET name=$2,host=$3,port=$4,auth_type=$5,
-    username_ciphertext=$6,password_ciphertext=$7,enabled=$8,supports_udp=$9
-WHERE id=$1 RETURNING id, name, host, port, auth_type, username_ciphertext, password_ciphertext, enabled, supports_udp
-`
-
-type UpdateEntryProxyParams struct {
-	ID                 pgtype.UUID
-	Name               string
-	Host               string
-	Port               int32
-	AuthType           string
-	UsernameCiphertext []byte
-	PasswordCiphertext []byte
-	Enabled            bool
-	SupportsUdp        bool
-}
-
-func (q *Queries) UpdateEntryProxy(ctx context.Context, arg UpdateEntryProxyParams) (EntryProxy, error) {
-	row := q.db.QueryRow(ctx, updateEntryProxy,
-		arg.ID,
-		arg.Name,
-		arg.Host,
-		arg.Port,
-		arg.AuthType,
-		arg.UsernameCiphertext,
-		arg.PasswordCiphertext,
-		arg.Enabled,
-		arg.SupportsUdp,
-	)
-	var i EntryProxy
-	err := row.Scan(
-		&i.ID,
-		&i.Name,
-		&i.Host,
-		&i.Port,
-		&i.AuthType,
-		&i.UsernameCiphertext,
-		&i.PasswordCiphertext,
-		&i.Enabled,
-		&i.SupportsUdp,
 	)
 	return i, err
 }
 
 const updateRemoteNode = `-- name: UpdateRemoteNode :one
 UPDATE nodes SET name=$2, host=$3, port=$4, server_name=$5, public_key=$6,
+                 connection_mode=CASE WHEN connection_mode='bridge' AND
+                     (host,port,xhttp_config->>'port') IS DISTINCT FROM ($3,$4,$8::jsonb->>'port') THEN 'unconfigured' ELSE connection_mode END,
+                 bridge_config=CASE WHEN connection_mode='bridge' AND
+                     (host,port,xhttp_config->>'port') IS DISTINCT FROM ($3,$4,$8::jsonb->>'port') THEN NULL ELSE bridge_config END,
                  short_id=$7, xhttp_config=$8, h3_config=$9,
                  revision=revision+1
-WHERE id=$1 AND kind='remote' RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, entry_proxy_id, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config
+WHERE id=$1 AND kind='remote' RETURNING id, name, host, port, server_name, public_key, short_id, config_hash, revision, applied_revision, xhttp_config, kind, agent_join_hash, agent_join_expires_at, agent_token_hash, agent_last_seen_at, agent_error, requested_revision, h3_config, connection_mode, bridge_config
 `
 
 type UpdateRemoteNodeParams struct {
@@ -1137,7 +914,6 @@ func (q *Queries) UpdateRemoteNode(ctx context.Context, arg UpdateRemoteNodePara
 		&i.AppliedRevision,
 		&i.XhttpConfig,
 		&i.Kind,
-		&i.EntryProxyID,
 		&i.AgentJoinHash,
 		&i.AgentJoinExpiresAt,
 		&i.AgentTokenHash,
@@ -1145,6 +921,8 @@ func (q *Queries) UpdateRemoteNode(ctx context.Context, arg UpdateRemoteNodePara
 		&i.AgentError,
 		&i.RequestedRevision,
 		&i.H3Config,
+		&i.ConnectionMode,
+		&i.BridgeConfig,
 	)
 	return i, err
 }
@@ -1155,6 +933,12 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (id) DO UPDATE SET
     name = EXCLUDED.name, host = EXCLUDED.host, port = EXCLUDED.port,
     server_name = EXCLUDED.server_name, public_key = EXCLUDED.public_key, short_id = EXCLUDED.short_id, config_hash = EXCLUDED.config_hash,
+    connection_mode = CASE WHEN nodes.connection_mode='bridge' AND
+        (nodes.host,nodes.port,nodes.xhttp_config->>'port') IS DISTINCT FROM
+        (EXCLUDED.host,EXCLUDED.port,EXCLUDED.xhttp_config->>'port') THEN 'unconfigured' ELSE nodes.connection_mode END,
+    bridge_config = CASE WHEN nodes.connection_mode='bridge' AND
+        (nodes.host,nodes.port,nodes.xhttp_config->>'port') IS DISTINCT FROM
+        (EXCLUDED.host,EXCLUDED.port,EXCLUDED.xhttp_config->>'port') THEN NULL ELSE nodes.bridge_config END,
     xhttp_config = EXCLUDED.xhttp_config, h3_config = EXCLUDED.h3_config,
     revision = nodes.revision + CASE WHEN
         (nodes.host, nodes.port, nodes.server_name, nodes.public_key, nodes.short_id, nodes.config_hash, nodes.xhttp_config, nodes.h3_config)

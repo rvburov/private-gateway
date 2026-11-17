@@ -15,7 +15,6 @@ import {
 import { Checks } from "./Checks";
 import { ServerDiagnostics } from "./ServerDiagnostics";
 import { NodesManager } from "./NodesManager";
-import { ChainProfileDialog } from "./ChainProfileDialog";
 import { Notifications, NotificationBell } from "./Notifications";
 import { ConnectionNotice, connectionState } from "./ConnectionStatus";
 import { Guide } from "./Guide";
@@ -32,7 +31,7 @@ const intros: Record<Page, [string, string]> = {
     "Профили устройств",
     "Отдельный профиль для каждого телефона и компьютера. Доступ можно отозвать в любой момент.",
   ],
-  nodes: ["VPN-серверы и входные прокси", "Добавляйте VPS и выбирайте, через какой прокси к ним подключаться."],
+  nodes: ["VPN-серверы и мосты", "Управляйте VPS и выбирайте прямое подключение или вход через VPS-мост."],
   audit: [
     "История действий",
     "Изменения доступа и конфигурации шлюза. Секреты и ссылки в журнал не попадают.",
@@ -80,7 +79,6 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
   const [profile, setProfile] = useState<RevealedProfile | null>(null);
   const [profilePending, setProfilePending] = useState<string | null>(null);
   const [profileError, setProfileError] = useState<unknown>(null);
-  const [chain, setChain] = useState<{ device: Device; bundle: Record<string, unknown> } | null>(null);
   const revealController = useRef<AbortController | null>(null);
   useEffect(() => () => revealController.current?.abort(), []);
   const [name, setName] = useState("");
@@ -236,17 +234,11 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
       if (!current) throw new Error("Устройство больше не доступно. Обновите список.");
       const node = freshNodes.data?.nodes.find((item) => item.id === current.node_id);
       if (!node) throw new Error("VPS устройства не найден. Обновите список.");
-      if (node.entry_proxy_id) {
-        const bundle = await request<Record<string, unknown>>(token,
-          `/devices/${encodeURIComponent(current.id)}/chain`, { signal: controller.signal });
-        controller.signal.throwIfAborted();
-        setChain({ device: current, bundle });
-      } else {
-        const result = await request<ProfileExport>(token,
-          `/devices/${encodeURIComponent(current.id)}/profile`, { signal: controller.signal });
-        controller.signal.throwIfAborted();
-        setProfile({ ...result, device: current, exit: "server" });
-      }
+      if (node.connection_mode === "unconfigured") throw new Error("Сначала выберите способ подключения к VPS в разделе «Серверы».");
+      const result = await request<ProfileExport>(token,
+        `/devices/${encodeURIComponent(current.id)}/profile`, { signal: controller.signal });
+      controller.signal.throwIfAborted();
+      setProfile({ ...result, device: current, exit: "server" });
     } catch (err) {
       if (!controller.signal.aborted) setProfileError(err);
     } finally {
@@ -862,7 +854,6 @@ export function Dashboard({ token, onLogout, onInstall, onSignIn }: { token: str
           onClose={() => setProfile(null)}
         />
       )}
-      {chain && <ChainProfileDialog token={token} device={chain.device} bundle={chain.bundle} onClose={() => setChain(null)} />}
     </Shell>
   );
 }

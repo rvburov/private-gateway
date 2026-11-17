@@ -13,7 +13,7 @@ import (
 	"github.com/rvburov/private-gateway/internal/xray"
 )
 
-func TestRemovedProxyExitFailsClosedAndEntryAssignmentHidesDirectPostgreSQL(t *testing.T) {
+func TestRemovedProxyExitFailsClosedPostgreSQL(t *testing.T) {
 	store, _, node, _ := integrationStore(t)
 	ctx := context.Background()
 	device, err := store.Create(ctx, "Proxy test", node.ID)
@@ -68,35 +68,5 @@ func TestRemovedProxyExitFailsClosedAndEntryAssignmentHidesDirectPostgreSQL(t *t
 	w = call(http.MethodGet, direct.SubscriptionPath+"?format=uri", "", false)
 	if w.Code != http.StatusOK || w.Body.String() != direct.URI+"\n" {
 		t.Fatal("direct subscription unavailable before assignment")
-	}
-	proxy, err := store.CreateEntryProxy(ctx, storage.EntryProxyInput{Name: "Entry", Host: "proxy.example", Port: 1080,
-		AuthType: "password", Username: "test-user", Password: "test-pass", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	assignPath := "/api/v1/nodes/" + node.ID + "/entry-proxy"
-	w = call(http.MethodPut, assignPath, `{}`, true)
-	if w.Code != http.StatusBadRequest {
-		t.Fatal("missing entry_proxy_id removed assignment")
-	}
-	w = call(http.MethodPut, assignPath, `{"entry_proxy_id":"`+proxy.ID+`"}`, true)
-	if w.Code != http.StatusOK {
-		t.Fatal("entry proxy assignment failed")
-	}
-	w = call(http.MethodGet, direct.SubscriptionPath+"?format=uri", "", false)
-	if w.Code != http.StatusNotFound || strings.Contains(w.Body.String(), direct.URI) {
-		t.Fatal("old direct link exposed assigned chain")
-	}
-	w = call(http.MethodGet, profilePath, "", true)
-	if w.Code != http.StatusConflict || strings.Contains(w.Body.String(), direct.URI) {
-		t.Fatal("direct export exposed assigned chain")
-	}
-	w = call(http.MethodPut, assignPath, `{"entry_proxy_id":null}`, true)
-	if w.Code != http.StatusOK {
-		t.Fatal("explicit null did not remove assignment")
-	}
-	w = call(http.MethodGet, direct.SubscriptionPath+"?format=uri", "", false)
-	if w.Code != http.StatusOK || w.Body.String() != direct.URI+"\n" {
-		t.Fatal("direct subscription not restored after explicit unassign")
 	}
 }

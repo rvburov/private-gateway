@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +12,7 @@ import (
 	"github.com/rvburov/private-gateway/internal/storage"
 )
 
-func TestRemoteAgentAndChainLifecyclePostgreSQL(t *testing.T) {
+func TestRemoteAgentLifecyclePostgreSQL(t *testing.T) {
 	store, _, local, _ := integrationStore(t)
 	ctx := context.Background()
 	remote := model.Node{Name: "Remote", Host: "198.51.100.7", Port: 8443,
@@ -75,28 +74,9 @@ func TestRemoteAgentAndChainLifecyclePostgreSQL(t *testing.T) {
 	if response := call(http.MethodGet, "/api/v1/agent/nodes/"+otherNode.ID+"/desired", otherToken, ""); response.Code != http.StatusNoContent {
 		t.Fatal("own agent token could not poll unrequested node")
 	}
-	proxy, err := store.CreateEntryProxy(ctx, storage.EntryProxyInput{Name: "Entry", Host: "proxy.example", Port: 1080,
-		AuthType: "password", Username: "user-secret", Password: "pass-secret", Enabled: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	public, err := store.EntryProxies(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, _ := json.Marshal(public)
-	if strings.Contains(string(encoded), "user-secret") || strings.Contains(string(encoded), "pass-secret") {
-		t.Fatal("public proxy list leaked credentials")
-	}
-	if _, err := store.AssignEntryProxy(ctx, node.ID, &proxy.ID); err != nil {
-		t.Fatal(err)
-	}
 	device, err := store.Create(ctx, "Remote phone", node.ID)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if _, err := store.ChainBundle(ctx, device.ID); !errors.Is(err, storage.ErrChainUnavailable) {
-		t.Fatal("chain exported before remote apply")
 	}
 	if desired, err := store.AgentDesired(ctx, node.ID, agentToken); err != nil || desired != nil {
 		t.Fatal("unrequested revision sent")
@@ -120,49 +100,8 @@ func TestRemoteAgentAndChainLifecyclePostgreSQL(t *testing.T) {
 	if err := store.AgentAck(ctx, node.ID, agentToken, desired.Revision, ""); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := store.ChainBundle(ctx, device.ID)
-	if err != nil || bundle.EntryProxy.Password != "pass-secret" || bundle.EntryProxy.Username != "user-secret" || len(bundle.Profiles) != 1 {
-		t.Fatal("applied chain bundle mismatch")
-	}
-	old := strings.TrimPrefix(bundle.SubscriptionURL, storage.ChainSubscriptionPathPrefix)
-	if _, err := store.ChainSubscription(ctx, old); err != nil {
-		t.Fatal(err)
-	}
-	chainPath := storage.ChainSubscriptionPathPrefix + old
-	response := call(http.MethodGet, chainPath, "", "")
-	var served model.ChainBundle
-	if response.Code != http.StatusOK || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/json") ||
-		json.Unmarshal(response.Body.Bytes(), &served) != nil || served.Version != 1 ||
-		served.DeviceID != device.ID || served.NodeID != node.ID ||
-		served.SubscriptionURL != "https://panel.example:8443"+chainPath ||
-		served.EntryProxy.Password != "pass-secret" || len(served.Profiles) != 1 {
-		t.Fatal("public chain subscription did not return the complete v1 bundle")
-	}
-	if _, err := store.UpdateEntryProxy(ctx, proxy.ID, storage.EntryProxyInput{
-		Name: "Entry", Host: "proxy.example", Port: 1080, AuthType: "password",
-		Username: "new-user", Password: "new-password", Enabled: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	response = call(http.MethodGet, chainPath, "", "")
-	served = model.ChainBundle{}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &served) != nil ||
-		served.EntryProxy.Username != "new-user" || served.EntryProxy.Password != "new-password" ||
-		served.SubscriptionURL != "https://panel.example:8443"+chainPath {
-		t.Fatal("chain subscription did not reflect changed proxy credentials at the same token")
-	}
-	path, err := store.RotateChainSubscription(ctx, device.ID)
-	if err != nil || path == bundle.SubscriptionURL {
-		t.Fatal("chain link not rotated")
-	}
-	if _, err := store.ChainSubscription(ctx, old); !errors.Is(err, storage.ErrNotFound) {
-		t.Fatal("old chain link remained active")
-	}
 	if _, err := store.Revoke(ctx, device.ID); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := store.ChainSubscription(ctx, strings.TrimPrefix(path, storage.ChainSubscriptionPathPrefix)); !errors.Is(err, storage.ErrNotFound) {
-		t.Fatal("revoked chain link remained active")
 	}
 	if err := store.DeleteRevoked(ctx, device.ID); !errors.Is(err, storage.ErrPendingConfig) {
 		t.Fatal("revoked device deleted before remote apply ACK")

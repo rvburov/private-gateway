@@ -26,29 +26,15 @@ type AuditEvent struct {
 }
 
 type Device struct {
-	ID                          pgtype.UUID
-	NodeID                      pgtype.UUID
-	Name                        string
-	CredentialCiphertext        []byte
-	CreatedAt                   pgtype.Timestamptz
-	RevokedAt                   pgtype.Timestamptz
-	SubscriptionGeneration      int64
-	SubscriptionHash            []byte
-	PreferredExit               string
-	ChainSubscriptionGeneration int64
-	ChainSubscriptionHash       []byte
-}
-
-type EntryProxy struct {
-	ID                 pgtype.UUID
-	Name               string
-	Host               string
-	Port               int32
-	AuthType           string
-	UsernameCiphertext []byte
-	PasswordCiphertext []byte
-	Enabled            bool
-	SupportsUdp        bool
+	ID                     pgtype.UUID
+	NodeID                 pgtype.UUID
+	Name                   string
+	CredentialCiphertext   []byte
+	CreatedAt              pgtype.Timestamptz
+	RevokedAt              pgtype.Timestamptz
+	SubscriptionGeneration int64
+	SubscriptionHash       []byte
+	PreferredExit          string
 }
 
 type Node struct {
@@ -64,7 +50,6 @@ type Node struct {
 	AppliedRevision    int64
 	XhttpConfig        []byte
 	Kind               string
-	EntryProxyID       pgtype.UUID
 	AgentJoinHash      []byte
 	AgentJoinExpiresAt pgtype.Timestamptz
 	AgentTokenHash     []byte
@@ -72,4 +57,6 @@ type Node struct {
 	AgentError         string
 	RequestedRevision  int64
 	H3Config           []byte
+	ConnectionMode     string
+	BridgeConfig       []byte
 }

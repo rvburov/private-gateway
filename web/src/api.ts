@@ -10,7 +10,8 @@ export interface Node {
   expected_server_ip?: string;
   expected_proxy_ip?: string;
   kind?: "local" | "remote";
-  entry_proxy_id?: string | null;
+  connection_mode?: "direct" | "bridge" | "unconfigured";
+  bridge?: Bridge | null;
   desired_revision?: number;
   applied_revision?: number;
   last_seen_at?: string | null;
@@ -20,14 +21,10 @@ export interface Node {
   xhttp?: { port: number; public_key: string; short_id: string; path: string; mode: string };
 }
 
-export interface EntryProxy {
-  id: string;
-  name: string;
+export interface Bridge {
   host: string;
-  port: number;
-  auth_type: "none" | "password";
-  enabled: boolean;
-  supports_udp: boolean;
+  tcp_port: number;
+  xhttp_port?: number;
 }
 
 export type ProfileExit = "server" | "proxy";
@@ -47,6 +44,8 @@ export interface TrafficUsage {
 }
 
 export interface ProfileExport {
+  connection_mode?: "direct" | "bridge";
+  bridge?: Bridge | null;
   expected_exit_ip?: string;
   port?: number;
   uri: string;

@@ -129,15 +129,14 @@ func (s *Store) Nodes(ctx context.Context) ([]model.Node, error) {
 			return nil, err
 		}
 		node = s.withExpectedIPs(node, r.ConfigHash)
-		// Прежний серверный proxy exit удалён. Входной SOCKS назначается
-		// отдельно и применяется клиентом до соединения с этим узлом.
+		// Прежний серверный proxy exit удалён; сайт выдаёт только профили VPS.
 		node.ProxyAvailable = false
 		out = append(out, node)
 	}
 	return out, nil
 }
 
-// Ожидаемые адреса принадлежат настройкам запущенного API, а не адресу входа в SOCKS5.
+// Ожидаемый выходной адрес принадлежит VPS, а не промежуточному мосту.
 func (s *Store) withExpectedIPs(node model.Node, configHash string) model.Node {
 	configured := s.publicNode.Load()
 	if configured != nil && configured.ID == node.ID && configured.ConfigHash == configHash {
@@ -341,8 +340,8 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 		if err != nil {
 			return err
 		}
-		if node.EntryProxyID.Valid {
-			return ErrChainUnavailable
+		if node.ConnectionMode == "unconfigured" {
+			return ErrConnectionUnavailable
 		}
 		if node.Kind == "local" {
 			if err := s.checkConfigHash(node.ConfigHash); err != nil {
@@ -358,9 +357,14 @@ func (s *Store) ExportForExit(ctx context.Context, deviceID, exit string) (model
 			return err
 		}
 		clientNode = s.withExpectedIPs(clientNode, node.ConfigHash)
+		clientNode, err = profileNode(clientNode)
+		if err != nil {
+			return err
+		}
 		profileName := row.Name
 		result, err = xray.ClientProfiles(clientNode, credential, profileName)
 		result.Port = clientNode.Port
+		result.ConnectionMode, result.Bridge = clientNode.ConnectionMode, clientNode.Bridge
 		if err != nil {
 			return err
 		}
@@ -448,8 +452,8 @@ func (s *Store) RotateSubscriptionForExit(ctx context.Context, deviceID, exit st
 		if err != nil {
 			return err
 		}
-		if node.EntryProxyID.Valid {
-			return ErrChainUnavailable
+		if node.ConnectionMode == "unconfigured" {
+			return ErrConnectionUnavailable
 		}
 		if row, err = q.AdvanceSubscription(ctx, row.ID); err != nil {
 			return err
@@ -484,13 +488,13 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 	if err != nil {
 		return model.Profile{}, "", classify(err)
 	}
-	if node.EntryProxyID.Valid {
-		return model.Profile{}, "", ErrChainUnavailable
+	if node.ConnectionMode == "unconfigured" {
+		return model.Profile{}, "", ErrConnectionUnavailable
 	}
 	// У удалённого узла новые параметры TCP становятся рабочими только после ACK
 	// агента. Подписка не должна рекламировать ещё не применённый listener.
 	if node.Kind == "remote" && node.Revision != node.AppliedRevision {
-		return model.Profile{}, "", ErrChainUnavailable
+		return model.Profile{}, "", ErrConnectionUnavailable
 	}
 	if node.Kind == "local" {
 		if err = s.checkConfigHash(node.ConfigHash); err != nil {
@@ -506,6 +510,10 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 		return model.Profile{}, "", err
 	}
 	clientNode = s.withExpectedIPs(clientNode, node.ConfigHash)
+	clientNode, err = profileNode(clientNode)
+	if err != nil {
+		return model.Profile{}, "", err
+	}
 	// Публичная подписка не должна рекламировать новый вход до успешного
 	// применения текущей ревизии. Закрытый Export остаётся доступен для подготовки.
 	if node.Revision != node.AppliedRevision {
@@ -514,6 +522,7 @@ func (s *Store) SubscriptionForExit(ctx context.Context, token, exit string) (mo
 	profileName := row.Name
 	profile, err := xray.ClientProfiles(clientNode, credential, profileName)
 	profile.Port = clientNode.Port
+	profile.ConnectionMode, profile.Bridge = clientNode.ConnectionMode, clientNode.Bridge
 	if err != nil {
 		return model.Profile{}, "", err
 	}
@@ -611,9 +620,11 @@ func deviceModel(d db.Device) model.Device {
 func nodeModel(n db.Node) (model.Node, error) {
 	node := model.Node{ID: id(n.ID), Name: n.Name, Host: n.Host, Port: int(n.Port), ServerName: n.ServerName, PublicKey: n.PublicKey, ShortID: n.ShortID,
 		Kind: n.Kind, DesiredRevision: n.Revision, AppliedRevision: n.AppliedRevision, RequestedRevision: n.RequestedRevision, AgentError: n.AgentError}
-	if n.EntryProxyID.Valid {
-		value := id(n.EntryProxyID)
-		node.EntryProxyID = &value
+	node.ConnectionMode = n.ConnectionMode
+	if len(n.BridgeConfig) > 0 {
+		if err := json.Unmarshal(n.BridgeConfig, &node.Bridge); err != nil {
+			return model.Node{}, errors.New("invalid stored bridge settings")
+		}
 	}
 	if n.AgentLastSeenAt.Valid {
 		value := n.AgentLastSeenAt.Time

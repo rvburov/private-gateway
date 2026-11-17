@@ -54,7 +54,7 @@ func (s *Server) serveSubscription(w http.ResponseWriter, r *http.Request, exit 
 		return
 	}
 	profile, name, err := s.store.SubscriptionForExit(r.Context(), token, exit)
-	if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrChainUnavailable) || errors.Is(err, storage.ErrRevoked) {
+	if errors.Is(err, storage.ErrNotFound) || errors.Is(err, storage.ErrConnectionUnavailable) || errors.Is(err, storage.ErrRevoked) {
 		fail(w, 404, "not found")
 		return
 	}

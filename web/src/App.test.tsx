@@ -33,8 +33,7 @@ let appliedRevision = 1;
 let interruptApply = false;
 let profileRequests = 0;
 let proxyAvailable = false;
-let entryProxyID: string | null = null;
-let chainFails = false;
+let connectionMode: "direct" | "bridge" | "unconfigured" = "direct";
 let deviceName = "Phone";
 let preferredExit: ProfileExit = "server";
 let extraDevices: Device[] = [];
@@ -85,8 +84,7 @@ beforeEach(() => {
   interruptApply = false;
   profileRequests = 0;
   proxyAvailable = false;
-  entryProxyID = null;
-  chainFails = false;
+  connectionMode = "direct";
   deviceName = "Phone";
   preferredExit = "server";
   extraDevices = [];
@@ -222,7 +220,8 @@ beforeEach(() => {
             public_key: "public",
             short_id: "abcd",
             proxy_available: proxyAvailable,
-            entry_proxy_id: entryProxyID,
+            connection_mode: connectionMode,
+            bridge: connectionMode === "bridge" ? { host: "bridge.example", tcp_port: 443 } : null,
             expected_server_ip: expectedServerIP,
             expected_proxy_ip: expectedProxyIP,
           },
@@ -232,11 +231,6 @@ beforeEach(() => {
       return Response.json({
         devices: [...(deleted ? [] : [currentDevice()]), ...extraDevices],
       });
-    if (path === "/api/v1/devices/d1/chain") return chainFails
-      ? Response.json({ error: "entry proxy unavailable" }, { status: 503 })
-      : Response.json({ version: 1, node_id: "n1", entry_proxy: { type: "socks5", host: "entry.example", port: 1080,
-        username: "entry-user", password: "sensitive-entry-password", supports_udp: false },
-        profiles: [{ id: "n1:tcp", name: "US VPS", uuid: "sensitive-device-credential" }] });
     if (path === "/api/v1/devices/traffic")
       return Response.json({ devices: { d1: { uplink_bytes: 2048, downlink_bytes: 1048576 } }, period: "since_xray_restart" });
     if (path === "/api/v1/checks")
@@ -261,7 +255,8 @@ beforeEach(() => {
       const proxy = deviceProfile[2] === "proxy";
       if (proxy && !proxyAvailable) return Response.json({ error: "proxy exit is not available" }, { status: 503 });
       const tokenPath = id === "d1" ? subscriptionPath : `/sub/sensitive-subscription-token-${id}`;
-      return Response.json({ uri: id === "d1" ? (proxy ? proxyURI : profileURI)
+      return Response.json({ connection_mode: connectionMode,
+        bridge: connectionMode === "bridge" ? { host: "bridge.example", tcp_port: 443 } : null, uri: id === "d1" ? (proxy ? proxyURI : profileURI)
         : (proxy ? proxyURI : profileURI).replace("-credential", `-credential-${id}`),
         sing_box_json: profileJSON, mihomo_yaml: profileYAML,
         subscription_path: proxy ? tokenPath.replace("/sub/", "/sub/proxy/") : tokenPath,
@@ -487,7 +482,7 @@ describe("administrator panel", () => {
     const sheet = screen.getByRole("dialog", { name: "Ещё" });
     fireEvent.click(within(sheet).getByRole("button", { name: "Серверы" }));
     expect(screen.queryByRole("dialog", { name: "Ещё" })).toBeNull();
-    expect(await screen.findByText("VPN-серверы и входные прокси")).toBeTruthy();
+    expect(await screen.findByText("VPN-серверы и мосты")).toBeTruthy();
     expect(screen.getByText("8.8.8.8:443")).toBeTruthy();
     fireEvent.click(within(tabs).getByRole("button", { name: "Ещё" }));
     fireEvent.click(within(screen.getByRole("dialog", { name: "Ещё" })).getByRole("button", { name: "Журнал действий" }));
@@ -957,34 +952,32 @@ describe("administrator panel", () => {
     expect(screen.queryByDisplayValue(subscriptionLink())).toBeNull();
   });
 
-  it("exports an assigned entry chain without requesting or caching a direct profile", async () => {
-    entryProxyID = "entry-1";
+  it("exports a bridge profile through the ordinary profile API", async () => {
+    connectionMode = "bridge";
     await login();
     fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByRole("dialog", { name: "Профиль VPS: Phone" });
-    expect((screen.getByLabelText("Профиль с входным прокси") as HTMLTextAreaElement).value).toContain("sensitive-entry-password");
-    expect(fetchMock.mock.calls.some(([path]) => path.includes("/profile"))).toBe(false);
-    expect(JSON.stringify(queryClient.getQueryCache().getAll().map((query) => query.state.data))).not.toContain("sensitive-entry-password");
-    expect(JSON.stringify(window.localStorage)).not.toContain("sensitive-entry-password");
-    fireEvent.click(screen.getByRole("button", { name: "Скрыть профиль" }));
-    expect(screen.queryByLabelText("Профиль с входным прокси")).toBeNull();
+    await screen.findByRole("dialog", { name: "Профиль: Phone" });
+    expect(screen.getByText(/Способ подключения: через VPS-мост/)).toBeTruthy();
+    expect(profileRequests).toBe(1);
+    expect(fetchMock.mock.calls.some(([path]) => path.includes("/chain"))).toBe(false);
+    expect((screen.getByLabelText("Ссылка-подписка") as HTMLTextAreaElement).value).toBe(subscriptionLink());
   });
 
-  it("does not fall back to a direct profile if the entry chain is unavailable", async () => {
-    entryProxyID = "entry-1"; chainFails = true;
+  it("requires an explicit new route for a retired SOCKS assignment", async () => {
+    connectionMode = "unconfigured";
     await login();
     fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByText("entry proxy unavailable");
-    expect(fetchMock.mock.calls.some(([path]) => path.includes("/profile"))).toBe(false);
+    await screen.findByText(/Сначала выберите способ подключения/);
+    expect(profileRequests).toBe(0);
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("refreshes the proxy assignment before exporting a profile", async () => {
+  it("refreshes the connection mode before exporting a profile", async () => {
     await login();
-    entryProxyID = "entry-1";
+    connectionMode = "unconfigured";
     fireEvent.click(rowForDevice("Phone").getByRole("button", { name: "Профиль" }));
-    await screen.findByRole("dialog", { name: "Профиль VPS: Phone" });
-    expect(fetchMock.mock.calls.some(([path]) => path.includes("/profile"))).toBe(false);
+    await screen.findByText(/Сначала выберите способ подключения/);
+    expect(profileRequests).toBe(0);
   });
 
   it("renames a device without rotating its subscription or changing its selected exit", async () => {

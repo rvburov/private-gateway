@@ -174,13 +174,12 @@ func TestDevicePreferredExitMigrationDisablesProxyPostgreSQL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Возвращаем изолированную схему к версии 8 и проверяем миграцию версии 9.
-	if _, err := pool.Exec(ctx, `ALTER TABLE devices DROP COLUMN chain_subscription_hash, DROP COLUMN chain_subscription_generation;
-		ALTER TABLE nodes DROP CONSTRAINT nodes_h3_config_object, DROP COLUMN h3_config, DROP COLUMN requested_revision,
-		DROP COLUMN agent_error, DROP COLUMN agent_last_seen_at, DROP COLUMN agent_token_hash,
-		DROP COLUMN agent_join_expires_at, DROP COLUMN agent_join_hash, DROP COLUMN entry_proxy_id, DROP COLUMN kind;
-		DROP TABLE entry_proxies;
-		UPDATE schema_migrations SET version=8`); err != nil {
+	// Возвращаем изолированную схему к версии 8 и проверяем все последующие миграции.
+	if _, err := pool.Exec(ctx, `ALTER TABLE nodes DROP CONSTRAINT nodes_bridge_config_valid, DROP COLUMN bridge_config, DROP COLUMN connection_mode;
+  ALTER TABLE nodes DROP CONSTRAINT nodes_h3_config_object, DROP COLUMN h3_config, DROP COLUMN requested_revision,
+  DROP COLUMN agent_error, DROP COLUMN agent_last_seen_at, DROP COLUMN agent_token_hash,
+  DROP COLUMN agent_join_expires_at, DROP COLUMN agent_join_hash, DROP COLUMN kind;
+  UPDATE schema_migrations SET version=8`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, "UPDATE devices SET preferred_exit='proxy' WHERE id=$1", device.ID); err != nil {
