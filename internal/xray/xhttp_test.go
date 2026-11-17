@@ -105,6 +105,68 @@ func TestXHTTPAddsIndependentInboundWithoutChangingTCP(t *testing.T) {
 	}
 }
 
+func TestRenderXHTTPRetainsPrivateStatistics(t *testing.T) {
+	for _, mode := range []string{"legacy", "combined", "h3-only"} {
+		settings := xhttpTestSettings()
+		if mode != "legacy" {
+			settings.H3 = &H3Settings{InternalPort: 8081, Path: "/h3_path_0123456789"}
+		}
+		if mode == "h3-only" {
+			settings.XHTTP = nil
+		}
+		data, err := RenderXHTTP(settings, []Client{{ID: xhttpTestUUID}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var rendered struct {
+			Inbounds []struct {
+				Tag  string `json:"tag"`
+				Port int    `json:"port"`
+			} `json:"inbounds"`
+			Stats  json.RawMessage `json:"stats"`
+			Policy json.RawMessage `json:"policy"`
+			API    struct {
+				Tag      string   `json:"tag"`
+				Services []string `json:"services"`
+			} `json:"api"`
+			Routing struct {
+				Rules []struct {
+					InboundTag  []string `json:"inboundTag"`
+					OutboundTag string   `json:"outboundTag"`
+				} `json:"rules"`
+			} `json:"routing"`
+		}
+		if err := json.Unmarshal(data, &rendered); err != nil {
+			t.Fatal(err)
+		}
+		foundStats := false
+		for _, inbound := range rendered.Inbounds {
+			if inbound.Tag == "stats-api" && inbound.Port == 10085 {
+				foundStats = true
+			}
+			if inbound.Tag == "vless-reality" {
+				t.Fatal("TCP listener appeared in the XHTTP worker")
+			}
+		}
+		if !foundStats || len(rendered.Stats) == 0 || len(rendered.Policy) == 0 ||
+			rendered.API.Tag != "stats-api" || !reflect.DeepEqual(rendered.API.Services, []string{"StatsService"}) ||
+			len(rendered.Routing.Rules) != 1 ||
+			!reflect.DeepEqual(rendered.Routing.Rules[0].InboundTag, []string{"stats-api"}) ||
+			rendered.Routing.Rules[0].OutboundTag != "stats-api" {
+			t.Fatalf("XHTTP worker lost private traffic accounting: %s", data)
+		}
+		if binary := os.Getenv("PRIVATE_GATEWAY_REAL_XRAY_BINARY"); binary != "" {
+			path := filepath.Join(t.TempDir(), "xhttp-stats.json")
+			if err := os.WriteFile(path, data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if output, err := exec.Command(binary, "run", "-test", "-config", path).CombinedOutput(); err != nil {
+				t.Fatalf("Xray rejected %s statistics configuration: %v (%s)", mode, err, output)
+			}
+		}
+	}
+}
+
 func TestXHTTPProfileIsAdditiveAndURLSafe(t *testing.T) {
 	node := xhttpTestNode(t)
 	withXHTTP, err := ClientProfiles(node, xhttpTestUUID, "Laptop #1")

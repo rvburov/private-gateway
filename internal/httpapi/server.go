@@ -42,6 +42,8 @@ type Options struct {
 	WebDir            string
 	XrayConfigured    bool
 	StatsAddress      string
+	XHTTPStatsAddress string
+	XHTTPConfigured   bool
 	StatsBinary       string
 	Checks            ServerChecks
 	IP2LocationAPIKey string
@@ -245,7 +247,8 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	respond(w, 200, map[string]any{"devices": result})
 }
 func (s *Server) deviceTraffic(w http.ResponseWriter, r *http.Request) {
-	if s.options.StatsAddress == "" {
+	if s.options.StatsAddress == "" || s.options.XHTTPConfigured &&
+		(s.options.XHTTPStatsAddress == "" || s.options.XHTTPStatsAddress == s.options.StatsAddress) {
 		fail(w, 503, "traffic statistics are unavailable")
 		return
 	}
@@ -254,16 +257,27 @@ func (s *Server) deviceTraffic(w http.ResponseWriter, r *http.Request) {
 		s.error(w, err)
 		return
 	}
-	traffic, err := xray.QueryTraffic(r.Context(), s.options.StatsBinary, s.options.StatsAddress)
+	tcpTraffic, err := xray.QueryTraffic(r.Context(), s.options.StatsBinary, s.options.StatsAddress)
 	if err != nil {
 		fail(w, 503, "traffic statistics are unavailable")
 		return
 	}
+	workers := []map[string]xray.Traffic{tcpTraffic}
+	if s.options.XHTTPConfigured {
+		xhttpTraffic, err := xray.QueryTraffic(r.Context(), s.options.StatsBinary, s.options.XHTTPStatsAddress)
+		if err != nil {
+			fail(w, 503, "traffic statistics are unavailable")
+			return
+		}
+		workers = append(workers, xhttpTraffic)
+	}
 	devices := make(map[string]xray.Traffic, len(ids))
 	for credential, id := range ids {
 		current := devices[id]
-		current.UplinkBytes += traffic[credential].UplinkBytes
-		current.DownlinkBytes += traffic[credential].DownlinkBytes
+		for _, traffic := range workers {
+			current.UplinkBytes += traffic[credential].UplinkBytes
+			current.DownlinkBytes += traffic[credential].DownlinkBytes
+		}
 		devices[id] = current
 	}
 	respond(w, 200, map[string]any{"devices": devices, "period": "since_xray_restart"})

@@ -9,7 +9,7 @@ services:
       XRAY_TRANSPORT: xhttp
     volumes:
       - ${GATEWAY_STATE_DIR:?Set GATEWAY_STATE_DIR}:/state
-    networks: [vpn, edge]
+    networks: [vpn, edge, telemetry]
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,noexec,size=32m,mode=1777

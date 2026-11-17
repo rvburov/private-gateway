@@ -457,6 +457,69 @@ func TestDeviceTrafficMapsPrivateCredentialToDevice(t *testing.T) {
 	}
 }
 
+func TestDeviceTrafficCombinesConfiguredWorkersAndFailsClosed(t *testing.T) {
+	store, _, node, _ := integrationStore(t)
+	device, err := store.Create(context.Background(), "Both transports", node.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := store.Export(context.Background(), device.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	uri, err := url.Parse(profile.URI)
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential := uri.User.Username()
+	path := t.TempDir() + "/xray-stats"
+	tcpOutput := `{"stat":[{"name":"user>>>` + credential + `@private-gateway>>>traffic>>>uplink","value":"1024"},{"name":"user>>>` + credential + `@private-gateway>>>traffic>>>downlink","value":"2048"}]}`
+	xhttpOutput := `{"stat":[{"name":"user>>>` + credential + `@private-gateway>>>traffic>>>uplink","value":"30"},{"name":"user>>>` + credential + `@private-gateway>>>traffic>>>downlink","value":"40"}]}`
+	writeProbe := func(xhttpFails bool) {
+		t.Helper()
+		second := "printf '%s\\n' '" + xhttpOutput + "'"
+		if xhttpFails {
+			second = "exit 1"
+		}
+		script := "#!/bin/sh\ncase \"$3\" in\n" +
+			"--server=xray:10085) printf '%s\\n' '" + tcpOutput + "' ;;\n" +
+			"--server=xray-xhttp:10085) " + second + " ;;\n" +
+			"*) exit 1 ;;\nesac\n"
+		if err := os.WriteFile(path, []byte(script), 0700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeProbe(false)
+	const token = "combined-traffic-test-token-at-least-32-characters"
+	handler := New(store, &testXray{}, &testBrowser{}, Options{
+		Token: token, StatsAddress: "xray:10085", XHTTPStatsAddress: "xray-xhttp:10085",
+		XHTTPConfigured: true, StatsBinary: path,
+	})
+	query := func() *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodGet, "/api/v1/devices/traffic", nil)
+		request.RemoteAddr = "127.0.0.1:12345"
+		request.Header.Set("Authorization", "Bearer "+token)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		return response
+	}
+	response := query()
+	var result struct {
+		Devices map[string]xray.Traffic `json:"devices"`
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &result) != nil ||
+		result.Devices[device.ID].UplinkBytes != 1054 || result.Devices[device.ID].DownlinkBytes != 2088 ||
+		bytes.Contains(response.Body.Bytes(), []byte(credential)) {
+		t.Fatalf("combined traffic response is invalid or exposes a credential: status %d", response.Code)
+	}
+	writeProbe(true)
+	response = query()
+	if response.Code != http.StatusServiceUnavailable || bytes.Contains(response.Body.Bytes(), []byte(`"devices"`)) {
+		t.Fatalf("unavailable XHTTP worker returned partial traffic: status %d", response.Code)
+	}
+}
+
 func TestConcurrentDeviceCreationPostgreSQL(t *testing.T) {
 	store, _, _, _ := integrationStore(t)
 	var group sync.WaitGroup

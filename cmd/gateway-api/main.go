@@ -219,7 +219,8 @@ func serve() error {
 	handler := httpapi.New(store, xray.NewTransportManager(cfg.Xray, cfg.XHTTP), browserManager, httpapi.Options{
 		Context: stopCtx,
 		Token:   cfg.Token, WebDir: cfg.WebDir, XrayConfigured: len(cfg.Xray.RestartCommand) > 0,
-		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), StatsBinary: cfg.Xray.Binary,
+		StatsAddress: os.Getenv("GATEWAY_XRAY_STATS_ADDRESS"), XHTTPStatsAddress: os.Getenv("GATEWAY_XHTTP_STATS_ADDRESS"),
+		XHTTPConfigured: cfg.XHTTP != nil, StatsBinary: cfg.Xray.Binary,
 		IP2LocationAPIKey: cfg.IP2LocationAPIKey,
 		PanelOrigin:       "https://" + os.Getenv("GATEWAY_PANEL_DOMAIN") + ":8443",
 		Checks: httpapi.ServerChecks{

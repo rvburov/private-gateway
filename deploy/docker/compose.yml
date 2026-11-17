@@ -70,6 +70,7 @@ services:
       GATEWAY_BROWSER_WORKER_TOKEN: ${BROWSER_WORKER_TOKEN:?Set BROWSER_WORKER_TOKEN}
       GATEWAY_BROWSER_PUBLIC_URL: https://${PANEL_DOMAIN:?Set PANEL_DOMAIN}:8443/browser/vnc.html?autoconnect=true&resize=remote
       GATEWAY_XRAY_STATS_ADDRESS: xray:10085
+      GATEWAY_XHTTP_STATS_ADDRESS: xray-xhttp:10085
       # Серверные проверки панели: настоящее VLESS-подключение к Xray и сертификат панели от Caddy —
       # оба по закрытым сетям Docker.
       GATEWAY_XRAY_SERVER_ADDRESS: xray:443

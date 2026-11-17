@@ -92,6 +92,8 @@ jobs:
             -f deploy/docker/compose.xhttp-legacy.yml -f deploy/docker/compose.node-h3.yml config --quiet
           python3 deploy/docker/render-node-caddy.py deploy/docker/Caddyfile.node.template \
             "$RUNNER_TEMP/node-Caddyfile" "$RUNNER_TEMP/docker-node.env"
+          # В настоящей установке закрытым файлом 0600 владеет root; повторяем это в CI.
+          sudo chown root:root "$RUNNER_TEMP/node-Caddyfile"
           caddy_image=$(sed -n 's/^ *image: \(caddy:[^ ]*\)$/\1/p' deploy/docker/compose.node-h3.yml)
           docker run --rm --network none --cap-drop=ALL --cap-add=NET_BIND_SERVICE \
             --security-opt=no-new-privileges \

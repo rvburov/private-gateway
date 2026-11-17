@@ -34,7 +34,7 @@ func RenderXHTTP(settings Settings, clients []Client) ([]byte, error) {
 	inbounds := make([]any, 0, 2)
 	for _, inbound := range config["inbounds"].([]any) {
 		item := inbound.(map[string]any)
-		if item["tag"] == "vless-xhttp-reality" {
+		if item["tag"] == "vless-xhttp-reality" || item["tag"] == "stats-api" {
 			inbounds = append(inbounds, item)
 		}
 	}
@@ -62,10 +62,6 @@ func RenderXHTTP(settings Settings, clients []Client) ([]byte, error) {
 	}
 	config["inbounds"] = inbounds
 	config["log"] = map[string]any{"loglevel": "none", "access": "none"}
-	delete(config, "stats")
-	delete(config, "policy")
-	delete(config, "api")
-	delete(config, "routing")
 	result, err := json.MarshalIndent(config, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("encode XHTTP configuration: %w", err)
