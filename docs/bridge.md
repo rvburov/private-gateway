@@ -1,60 +1,8 @@
-# Подключение через второй VPS-мост
+## 1. Подключиться к отдельному VPS-мосту и проверить ОС
 
-Этот порядок устанавливает **входной мост** на отдельной машине. Чтобы добавить
-полноценный выходной VPN-сервер к панели, используйте
-[инструкцию выходного VPS](node-setup.md). Установщики для этих ролей разные.
+**Действие:** арендуйте чистый VPS: Ubuntu 26.04 amd64, публичный IPv4, пользователь с `sudo`. Начальная конфигурация для личной нагрузки — 1 vCPU и 1 ГБ RAM. Запишите IP, SSH-порт и пользователя. Полноценный выходной VPS добавляется по [другой инструкции](node-setup.md).
 
-## Что получится
-
-```text
-Обычный VPN-клиент → входной VPS-мост → выходной VPS → сайты
-                   TCP/Vision           ваш сервер в США
-                   или XHTTP
-```
-
-Сайты видят выходной IP американского VPS. Мост пересылает зашифрованный
-TCP-поток без завершения TLS/REALITY, без подмены SNI и без доступа к ключам
-устройств. Он не добавляет второй слой шифрования. Хостинг моста может наблюдать
-соединение с американским VPS; схема не скрывает адрес назначения от сети моста.
-
-В панели выдаются обычные VLESS URI и QR. Клиент должен поддерживать выбранный
-вариант: TCP + REALITY + Vision либо XHTTP + REALITY. Поддержка XHTTP есть не во
-всех клиентах. Hysteria2, XHTTP H3/UDP и автоматическое переключение транспортов
-этот мост не добавляет. Два транспорта имеют отдельные процессы и порты, но сеть,
-ресурсы входного VPS и его доступность остаются общими.
-
-**Новый VPS ещё нужно предоставить и проверить.** Готовый установщик и успешные
-локальные тесты не подтверждают доступность будущего моста из МТС, Теле2 или
-домашнего Wi-Fi. Российское размещение само по себе не гарантирует доступ к США.
-
-## Какие данные нужны владельцу и агенту
-
-Можно передать в чат только открытые данные:
-
-- IPv4 входного VPS, страну/регион и название хостинга;
-- ОС и архитектуру (`Ubuntu 26.04 amd64` — целевая проверяемая установка);
-- имя пользователя SSH и порт SSH; доступ с `sudo`;
-- желаемые входные TCP-порты: начальный вариант `443` для TCP/Vision и `8444`
-  для XHTTP; при нестандартном SSH эти порты не должны его занимать;
-- есть ли на этом VPS другие службы и какие порты они занимают;
-- какие выходные VPS нужно подключить. Сейчас основной: `162.35.172.6`,
-  TCP/Vision `8443`, XHTTP `8444`.
-
-Пароль SSH, приватный SSH-ключ, VLESS UUID/URI, REALITY private key, пароль панели
-и коды 2FA в чат не отправлять. Вход выполняется вашим SSH-ключом локально либо
-через уже согласованный доступ агента. На мосту не нужны ключи REALITY,
-PostgreSQL, панель управления или купленные SOCKS5-прокси.
-
-Для начальной установки достаточно небольшого VPS с Docker Engine и Compose v2;
-1 vCPU и 1 ГБ RAM — отправная точка для проверки личной нагрузки, не гарантия
-скорости. Важнее доступность обоих маршрутов, пропускная способность и лимит
-трафика. Весь VPN-трафик проходит через мост и учитывается его хостингом.
-
-## 1. Проверить доступ к будущему мосту с вашего компьютера
-
-**На Windows в Git Bash**, без запущенного VPN и без его блока при обрыве.
-На macOS/Linux команды выполняются в bash, вместо `curl.exe` используйте `curl`.
-Замените значения на полученные у хостинга:
+Выключите все VPN и их настройку «Блок при обрыве / Kill Switch». Подставьте данные нового VPS:
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
@@ -63,29 +11,71 @@ bridge_ssh_port='22'
 ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
 ```
 
-При первом входе сверяйте отпечаток SSH-хоста с консолью хостинга. Успешный вход
-по SSH доказывает доступ только к этому SSH-порту; порты VPN проверяются после
-установки моста. Повторите доступ из МТС, Теле2 и домашнего Wi-Fi, которые вам нужны.
-Ключ SSH подтверждает право входа и не исправляет сетевой тайм-аут до сервера.
+При первом входе сверьте отпечаток SSH с консолью хостинга.
 
-## 2. Проверить путь с нового VPS к выходному
+**Где:** ваш компьютер → Windows Git Bash; на macOS/Linux — терминал bash. После входа — SSH нового VPS-моста.
 
-**В открытом SSH-терминале нового VPS**, а не на Windows и не на американском VPS:
+**Проверка:** после входа:
 
 ```bash
-uname -m
-cat /etc/os-release
-sudo ss -ltnp
+printf 'SSH_OK user=%s host=%s\n' "$(id -un)" "$(hostname)"
+sudo -v
+```
+
+```bash
+. /etc/os-release
+printf 'OS=%s VERSION=%s\n' "$ID" "$VERSION_ID"
+printf 'ARCH=%s\n' "$(uname -m)"
+```
+
+**Ожидаемый результат:** `SSH_OK user=<ваш пользователь> host=<имя нового VPS>`; `sudo -v` завершается без ошибки. Повторите вход из каждой нужной сети. SSH-ключ подтверждает право входа, но не исправляет сетевой тайм-аут. ОС и архитектура:
+
+```text
+OS=ubuntu VERSION=26.04
+ARCH=x86_64
+```
+
+## 2. Установить утилиты
+
+**Действие:**
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl python3 iproute2
+```
+
+**Где:** SSH нового VPS-моста.
+
+**Проверка:**
+
+```bash
+command -v curl python3 ip ss
+python3 --version
+```
+
+**Ожидаемый результат:** четыре пути к программам и строка `Python 3.<версия>`. Номер версии динамический; ошибок `command not found` нет.
+
+## 3. Проверить путь и HTTPS американского выхода
+
+**Действие:**
+
+```bash
 ip route get 162.35.172.6
 python3 - <<'PY'
 import socket
 for port in (8443, 8444):
-    try:
-        with socket.create_connection(('162.35.172.6', port), timeout=5):
-            print(f'TCP {port}: connected')
-    except OSError as error:
-        print(f'TCP {port}: FAILED ({error})')
+    with socket.create_connection(('162.35.172.6', port), timeout=5):
+        print(f'TCP {port}: connected')
 PY
+```
+
+Сразу после Python:
+
+```bash
+printf 'TCP_CHECK_EXIT=%s\n' "$?"
+```
+
+```bash
 curl -q -4 --proxy '' --noproxy '*' \
   --resolve rb-gateway-3708079.duckdns.org:8443:162.35.172.6 \
   --connect-timeout 5 --max-time 10 --fail --silent --show-error \
@@ -93,113 +83,232 @@ curl -q -4 --proxy '' --noproxy '*' \
   https://rb-gateway-3708079.duckdns.org:8443/readyz
 ```
 
-Нужны `connected` на используемых TCP-портах. HTTP 200 проверяет панель и TLS,
-а не VLESS. Если путь с моста до выхода не работает, сначала выбирается другой
-доступный входной адрес/маршрут; замена SNI на клиенте TCP-доступность не создаёт.
+**Где:** SSH нового VPS-моста. Назначения: `162.35.172.6:8443` для TCP/Vision и `162.35.172.6:8444` для XHTTP.
 
-На чистом новом Ubuntu VPS установите Docker Engine и Compose plugin из
-официального репозитория. Если Docker уже установлен или есть другие контейнеры,
-сначала сообщите их состояние; эти команды рассчитаны на новую машину.
-**В SSH нового VPS**:
+**Проверка:**
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y ca-certificates curl python3
+printf 'HTTPS_CHECK_EXIT=%s\n' "$?"
+```
+
+**Ожидаемый результат:** маршрут с `dev <интерфейс>` и `src <адрес>`, затем:
+
+```text
+TCP 8443: connected
+TCP 8444: connected
+TCP_CHECK_EXIT=0
+```
+
+При тайм-ауте дальше не переходите: нужен доступный путь от моста до выхода. Успех TCP еще не проверяет авторизацию VLESS.
+
+`HTTP=200 TCP=<время больше 0> TLS=<время больше 0>`, затем `HTTPS_CHECK_EXIT=0`. Это проверка панели и сертификата, работа VPN проверяется отдельно.
+
+## 4. Проверить свободные порты и поддержку IPv6
+
+**Действие:**
+
+```bash
+sudo ss -ltnp
+sudo python3 - <<'PY'
+import socket
+for port in (443, 8444):
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as probe:
+        probe.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+        probe.bind(('::', port))
+        print(f'LISTEN_PORT_{port}=FREE')
+PY
+```
+
+**Где:** SSH нового VPS-моста.
+
+**Проверка:**
+
+```bash
+printf 'PORT_CHECK_EXIT=%s\n' "$?"
+```
+
+**Ожидаемый результат:**
+
+```text
+LISTEN_PORT_443=FREE
+LISTEN_PORT_8444=FREE
+PORT_CHECK_EXIT=0
+```
+
+SSH должен использовать другой порт. TCP 22 зарезервирован установщиком для SSH. Поддержка IPv6 в ядре нужна для dual-stack слушателей даже без публичного IPv6. Если порты заняты или IPv6 отключен, шаг не пройден.
+
+## 5. Установить Docker Engine и Compose из официального репозитория
+
+**Действие:**
+
+```bash
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
 bridge_ubuntu_codename=$(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-$VERSION_CODENAME}")
 bridge_arch=$(dpkg --print-architecture)
-sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF
+sudo tee /etc/apt/sources.list.d/docker.sources > /dev/null <<EOF_DOCKER
 Types: deb
 URIs: https://download.docker.com/linux/ubuntu
 Suites: $bridge_ubuntu_codename
 Components: stable
 Architectures: $bridge_arch
 Signed-By: /etc/apt/keyrings/docker.asc
-EOF
+EOF_DOCKER
 sudo apt-get update
+```
+
+```bash
 sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-Источник: [официальная установка Docker для Ubuntu](https://docs.docker.com/engine/install/ubuntu/).
-Проверьте **на новом VPS**:
+**Где:** SSH нового чистого VPS-моста. Файлы: `/etc/apt/keyrings/docker.asc` и `/etc/apt/sources.list.d/docker.sources`. Источник: [официальная инструкция Docker для Ubuntu](https://docs.docker.com/engine/install/ubuntu/).
+
+**Проверка:**
 
 ```bash
-sudo docker version
+apt-cache policy docker-ce
+```
+
+```bash
+sudo systemctl is-active docker
+sudo docker version --format 'CLIENT={{.Client.Version}} SERVER={{.Server.Version}}'
 sudo docker compose version
-python3 --version
 ```
 
-Установщик не меняет SSH, настройки сети и firewall. В панели хостинга разрешите
-входящие TCP-порты моста и сохраните доступ к SSH. Если UFW уже активен,
-сначала посмотрите `sudo ufw status verbose`, затем добавьте только выбранные
-порты (`sudo ufw allow 443/tcp`, `sudo ufw allow 8444/tcp`). Не выполняйте
-`ufw reset`, не включайте его с пустыми правилами SSH и не очищайте iptables/nftables.
-Мост использует host networking: его слушатели подчиняются правилам host firewall.
-Слушатели работают одновременно по IPv4 и IPv6 (`v4v6`); поддержка IPv6 в ядре
-должна быть включена даже при использовании только публичного IPv4. Наличие
-публичного IPv6-адреса не требуется. Если публикуете AAAA-запись моста, отдельно
-проверьте этот маршрут и разрешения IPv6 firewall.
+**Ожидаемый результат:** в `Candidate:` указана версия, а не `(none)`; источник пакетов содержит `download.docker.com/linux/ubuntu`.
 
-## 3. Подготовить назначения в панели и скачать конфигурацию
+`active`, строка `CLIENT=<версия> SERVER=<версия>`, затем `Docker Compose version <версия>`. Все команды завершаются без ошибки.
 
-**В браузере**, используя пока рабочее подключение к панели:
+## 6. Разрешить входные порты
 
-1. Откройте `https://rb-gateway-3708079.duckdns.org:8443/`, войдите с 2FA.
-2. В **Серверы** найдите нужный **выходной** VPS.
-3. Выберите **Через VPS-мост**, введите адрес нового VPS и его порты TCP/Vision
-   и XHTTP. Сохраните способ подключения.
-4. Скачайте конфигурацию моста, сохраните файл как `bridge.json`.
+**Действие:** в firewall хостинга разрешите входящие TCP 443 и TCP 8444; сохраните правило своего SSH-порта. На VPS проверьте UFW:
 
-Скачанный файл содержит назначения **всех выходных VPS, использующих тот же
-нормализованный адрес моста**. Для нескольких выходных VPS задайте каждому свои
-входные порты: например, первый `443/8444`, второй `9443/9444`. Целевые порты
-каждого выхода остаются его собственными. Не называйте один мост разными DNS-именами:
-панель не может доказать, что разные алиасы означают одну машину.
-
-Пример файла с открытыми параметрами (панель подставляет актуальные значения):
-
-```json
-{
-  "version": 1,
-  "listeners": [
-    {"name": "main-tcp", "transport": "tcp", "listen_port": 443,
-     "target_host": "162.35.172.6", "target_port": 8443},
-    {"name": "main-xhttp", "transport": "xhttp", "listen_port": 8444,
-     "target_host": "162.35.172.6", "target_port": 8444}
-  ]
-}
+```bash
+if command -v ufw > /dev/null; then
+  sudo ufw status verbose
+else
+  printf 'UFW_NOT_INSTALLED\n'
+fi
 ```
 
-Файл не содержит токенов, пользовательских UUID, паролей или ключей. Однако
-сохранение адреса моста в панели **не устанавливает** пересылку на новом VPS.
-Новые профили начнут направлять клиента на него сразу; до шага 4 он ещё не работает.
+Только при `Status: active` добавьте:
 
-## 4. Установить мост из проверенного выпуска
+```bash
+sudo ufw allow 443/tcp
+sudo ufw allow 8444/tcp
+sudo ufw status verbose
+```
 
-В GitHub откройте **private-gateway → Actions → успешный CI/CD → Artifacts →
-private-gateway-linux-amd64**. Выпуск должен содержать `install/install-bridge.sh`.
-Скачайте и распакуйте ZIP. В нём находятся `release.tar.gz`, его `.sha256` и `install/`.
+**Где:** firewall — личный кабинет хостинга; команды — SSH нового VPS-моста. Установщик firewall не меняет. Не сбрасывайте правила и не включайте неактивный UFW этим порядком.
 
-**На Windows в Git Bash**, при необходимости с рабочим VPN для скачивания:
+**Проверка:** в активном UFW найдите `443/tcp` и `8444/tcp`; в кабинете хостинга сверьте сохраненные правила. Внешняя проверка будет после запуска слушателей на шаге 14.
+
+**Ожидаемый результат:** TCP 443/8444 разрешены. В активном UFW — строки `ALLOW`; при неактивном — `Status: inactive`; при отсутствующем — `UFW_NOT_INSTALLED`.
+
+## 7. Открыть панель
+
+**Действие:** откройте `https://rb-gateway-3708079.duckdns.org:8443/`, войдите с 2FA. Если напрямую сайт недоступен, используйте рабочее VPN-подключение для входа и скачивания файлов.
+
+**Где:** браузер вашего компьютера.
+
+**Проверка:** откройте раздел **«Серверы»**.
+
+**Ожидаемый результат:** видны карточки выходных VPS. Мост не меняет адрес панели и загрузки HTTPS-подписки. Уже импортированный VLESS URI не требует загрузки подписки при каждом подключении. Не заменяйте домен HTTPS-подписки на IP моста и не отключайте проверку TLS.
+
+## 8. Сохранить мост у американского выходного VPS
+
+**Действие:** в карточке действующего американского VPS заполните:
+
+| Поле | Значение |
+| --- | --- |
+| Способ подключения | `Через VPS-мост` |
+| Адрес VPS-моста | Публичный IPv4 нового моста |
+| Порт TCP/Vision на мосту | `443` |
+| Порт XHTTP на мосту | `8444` |
+
+Нажмите **«Сохранить способ подключения»**. Собственные адрес и порты американского выходного VPS не заменяйте: назначения остаются `162.35.172.6:8443` и `162.35.172.6:8444`.
+
+**Где:** браузер → панель → **«Серверы»** → карточка американского выходного VPS.
+
+**Проверка:** сверьте строку **«Сохраненный маршрут»** и кнопку **«Скачать настройку моста»**.
+
+**Ожидаемый результат:** сохранен маршрут через IP нового моста, кнопка скачивания доступна. Сохранение еще не устанавливает пересылку; новые профили уже ведут на мост, который запустится на шаге 13.
+
+## 9. Скачать настройку моста
+
+**Действие:** нажмите **«Скачать настройку моста»**. Сохраните файл как `bridge.json` в папку `Downloads` пользователя Windows.
+
+Для нескольких выходных VPS задайте один и тот же адрес моста и разные входные порты: например, первому `443/8444`, второму `9443/9444`. Скачанный файл объединяет выходы с тем же нормализованным адресом моста. Разные DNS-алиасы одной машины панель не объединяет.
+
+**Где:** браузер → **«Серверы»** → карточка выходного VPS. Путь файла в Git Bash: `$HOME/Downloads/bridge.json`.
+
+**Проверка:** в Git Bash:
+
+```bash
+test -s "$HOME/Downloads/bridge.json" && printf 'BRIDGE_CONFIG_FILE_OK\n'
+printf 'BRIDGE_CONFIG_PATH=%s\n' "$HOME/Downloads/bridge.json"
+```
+
+**Ожидаемый результат:** `BRIDGE_CONFIG_FILE_OK` и полный путь к файлу. Файл содержит назначения без ключей REALITY, UUID устройств и паролей.
+
+## 10. Скачать проверенный выпуск
+
+**Действие:** откройте [GitHub → Actions → CI/CD](https://github.com/rvburov/private-gateway/actions/workflows/ci.yml), выберите успешный запуск нужного коммита. В **Artifacts** скачайте `private-gateway-linux-amd64`. Распакуйте ZIP так, чтобы архив, checksum и папка `install` лежали непосредственно в `$HOME/Downloads/private-gateway-linux-amd64`. Запишите SHA выбранного коммита.
+
+**Где:** браузер и проводник Windows. В Git Bash `$HOME` — домашняя папка пользователя; полный путь покажет проверка.
+
+**Проверка:** в Git Bash:
 
 ```bash
 artifact="$HOME/Downloads/private-gateway-linux-amd64"
-bridge_config="$HOME/Downloads/bridge.json"
+test -s "$artifact/release.tar.gz" &&
+  test -s "$artifact/release.tar.gz.sha256" &&
+  test -s "$artifact/install/install-bridge.sh" &&
+  test -s "$artifact/install/verify-release.py" &&
+  printf 'BRIDGE_RELEASE_FILES_OK\n'
+printf 'ARTIFACT_PATH=%s\n' "$artifact"
+```
+
+**Ожидаемый результат:** `BRIDGE_RELEASE_FILES_OK` и полный путь. Если строки `BRIDGE_RELEASE_FILES_OK` нет, структура распакованной папки неверна или файлы отсутствуют.
+
+## 11. Передать файлы на мост
+
+**Действие:**
+
+```bash
 bridge_ip='IP_НОВОГО_VPS'
 bridge_user='SSH_ПОЛЬЗОВАТЕЛЬ'
 bridge_ssh_port='22'
-ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" 'mkdir -p ~/private-gateway-bridge-install'
+artifact="$HOME/Downloads/private-gateway-linux-amd64"
+ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" 'mkdir -p "$HOME/private-gateway-bridge-install"'
 scp -P "$bridge_ssh_port" "$artifact/release.tar.gz" "$artifact/release.tar.gz.sha256" \
-  "$bridge_config" "$bridge_user@$bridge_ip:private-gateway-bridge-install/"
+  "$HOME/Downloads/bridge.json" "$bridge_user@$bridge_ip:private-gateway-bridge-install/"
 scp -P "$bridge_ssh_port" -r "$artifact/install" \
   "$bridge_user@$bridge_ip:private-gateway-bridge-install/"
+```
+
+**Где:** Git Bash компьютера. Назначение на мосту: `$HOME/private-gateway-bridge-install/` SSH-пользователя.
+
+**Проверка:**
+
+```bash
+ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" \
+  'test -s "$HOME/private-gateway-bridge-install/bridge.json" && test -s "$HOME/private-gateway-bridge-install/release.tar.gz" && test -s "$HOME/private-gateway-bridge-install/install/install-bridge.sh" && printf "BRIDGE_UPLOAD_OK\n"'
+```
+
+**Ожидаемый результат:** `BRIDGE_UPLOAD_OK`. Во время `scp` файлы достигают `100%`; запрос SSH-пароля/пароля ключа при необходимости вводится только в вашем терминале.
+
+## 12. Проверить выпуск и конфигурацию до запуска
+
+**Действие:** в Git Bash подключитесь:
+
+```bash
 ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
 ```
 
-**Дальше в SSH-терминале нового VPS**:
+Затем в SSH:
 
 ```bash
 cd "$HOME/private-gateway-bridge-install"
@@ -208,57 +317,74 @@ python3 install/verify-release.py --tar release.tar.gz
 sudo bash install/install-bridge.sh --archive release.tar.gz --config bridge.json --check
 ```
 
-Сверьте напечатанный SHA с коммитом успешного Actions. `--check` проверяет файл,
-доступность выходов, свободные входные порты, скачивает закреплённый HAProxy-образ
-и проверяет конфигурации настоящим HAProxy; постоянные слушатели не запускает.
-При ошибке остановитесь и пришлите текст ошибки без профиля устройства.
+**Где:** вход — компьютер; проверка файлов — SSH нового VPS-моста, каталог `$HOME/private-gateway-bridge-install`.
 
-После успешной проверки, **в том же SSH-терминале**:
+**Проверка:** сразу после установщика:
 
 ```bash
-sudo bash install/install-bridge.sh --archive release.tar.gz --config bridge.json
-sudo docker compose -p private-gateway-bridge \
-  -f /etc/private-gateway-bridge/compose.json ps
+printf 'BRIDGE_CHECK_EXIT=%s\n' "$?"
 ```
 
-Ожидаются независимые сервисы `tcp` и `xhttp` (либо только настроенный транспорт).
-Для входного порта 443 управляющий HAProxy-процесс стартует с тремя разрешениями
-`NET_BIND_SERVICE`, `SETUID`, `SETGID`; рабочий процесс после открытия слушателей
-сбрасывает UID/GID до 65534. Файловая система контейнера доступна только для чтения,
-Docker socket и секреты выхода не передаются.
-Установщик отказывается работать на VPS с существующими контейнерами центральной
-панели/выходного узла, при назначении выхода на эту же машину, пересечении портов
-или невозможности соединиться с выходным VPS. TCP 22 зарезервирован для SSH;
-нестандартный SSH-порт защищается проверкой занятого порта.
+**Ожидаемый результат:** `release.tar.gz: OK`; отдельной строкой — SHA из 40 символов, совпадающий с выбранным коммитом Actions. Для каждого назначения — `TCP path to exit OK: <имя>; this does not verify VLESS authentication.`. В конце:
 
-Повторный запуск с тем же файлом сохраняет контейнеры и назначения. При изменении
-TCP-направления неизменённый XHTTP-сервис сохраняет контейнер. Пересоздание
-изменённого сервиса обрывает его активные соединения; применение планируйте на
-подходящее время. Ошибка запуска возвращает прежний стек; при первой неудачной
-установке останавливается только проект `private-gateway-bridge`.
+```text
+Bridge configuration and outbound TCP paths checked; no bridge was started.
+BRIDGE_CHECK_EXIT=0
+```
 
-Мост не включён в автоматический деплой основной панели. Он не добавляется через
-`scripts/add-server.sh`, не получает копию центральной БД и не регистрируется как
-выходной агент. Обновлять его нужно отдельным проверенным выпуском и этой же командой.
+`--check` проверяет выходы, свободные порты и конфигурацию настоящим HAProxy; скачивает закрепленный образ, постоянные слушатели не запускает. При ошибке дальше не переходите.
 
-## 5. Проверить с устройства и получить обычные ссылки
+## 13. Установить мост
 
-**На Windows в Git Bash**, отключив все VPN и их блок при обрыве, повторите для
-своих входных портов. Число после `tcp_connect` и строка `Established connection`
-или `Connected` подтверждают TCP; общий `CURL_EXIT=28` после соединения здесь
-допустим, потому что TELNET-проба не ведёт VLESS/REALITY-обмен:
+**Действие:**
+
+```bash
+cd "$HOME/private-gateway-bridge-install"
+sudo bash install/install-bridge.sh --archive release.tar.gz --config bridge.json
+```
+
+**Где:** SSH нового VPS-моста. Создаются `/etc/private-gateway-bridge/compose.json`, `installed.json` и `configs/`. Установщик отклоняет машину с панелью/выходным агентом, выход на сам мост и пересечения портов. SSH и firewall он не меняет.
+
+**Проверка:**
+
+```bash
+printf 'BRIDGE_INSTALL_EXIT=%s\n' "$?"
+sudo docker compose -p private-gateway-bridge \
+  -f /etc/private-gateway-bridge/compose.json ps --format '{{.Service}} {{.State}} {{.Health}}'
+```
+
+**Ожидаемый результат:**
+
+```text
+Bridge listeners are running. Import a normal profile and verify the exit IP on your device.
+BRIDGE_INSTALL_EXIT=0
+```
+
+В списке — `tcp running healthy` и `xhttp running healthy`. Состояние процессов не доказывает авторизацию VLESS. Мост пересылает исходный зашифрованный поток без завершения TLS/REALITY и без второго слоя шифрования. Сайты видят IP выхода; адрес американского VPS виден сети моста.
+
+## 14. Проверить TCP-порты моста с компьютера
+
+**Действие:** выключите на компьютере все VPN и их «Блок при обрыве / Kill Switch». Откройте второе окно Git Bash, SSH моста оставьте открытым:
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
 for port in 443 8444; do
+  printf 'BRIDGE_PORT=%s\n' "$port"
   curl.exe -q -4 --proxy '' --noproxy '*' --connect-timeout 5 --max-time 7 \
     --verbose --output /dev/null --write-out '\ntcp_connect=%{time_connect}\n' \
     "telnet://$bridge_ip:$port" < /dev/null
 done
 ```
 
-Для текущего основного VPS можно отдельно проверить HTTPS панели через мост.
-`--connect-to` сохраняет исходное TLS-имя и проверку сертификата:
+**Где:** Windows Git Bash компьютера. На macOS/Linux замените `curl.exe` на `curl`.
+
+**Проверка:** сверьте результат отдельно под `BRIDGE_PORT=443` и `BRIDGE_PORT=8444`.
+
+**Ожидаемый результат:** для обоих портов — `Connected` либо `Established connection` и `tcp_connect=<время больше 0>`. Последующий `curl: (28) Time-out` допустим: TELNET-проба не выполняет VLESS-обмен. `tcp_connect=0.000000` без строки соединения означает неуспешную проверку.
+
+## 15. Проверить HTTPS через мост
+
+**Действие:**
 
 ```bash
 curl.exe -q -4 --proxy '' --noproxy '*' \
@@ -268,36 +394,55 @@ curl.exe -q -4 --proxy '' --noproxy '*' \
   https://rb-gateway-3708079.duckdns.org:8443/readyz
 ```
 
-Затем **на сайте → Устройства → нужное устройство → Профиль** скопируйте обычную
-VLESS-ссылку TCP/Vision. Импортируйте её в Private Gateway Client или другой
-совместимый клиент и подключитесь. Посмотрите внешний IP на HTTPS-сайте проверки:
-для текущего основного выхода ожидается `162.35.172.6`, а не адрес моста.
-Откройте несколько HTTPS-сайтов. Отдельно повторите с XHTTP-профилем и с телефона.
-Проверьте на каждой нужной сети и сравните скорость/задержку: заранее обещать
-сохранение скорости или успех на всех операторах нельзя.
+**Где:** то же окно Git Bash компьютера; VPN выключены. `--connect-to` меняет адрес соединения только этой команды, сохраняя имя TLS и проверку сертификата.
 
-Нажатие **Напрямую** в панели возвращает адрес выходного VPS в новых профилях.
-После изменения маршрута обновите обычную подписку или замените импортированный
-URI и переподключитесь. Старый специальный JSON-профиль SOCKS5-цепочки необходимо
-удалить из клиента; обычная VLESS-ссылка такую локальную цепочку автоматически не снимает.
+**Проверка:**
 
-### Панель и загрузка подписки до подключения
+```bash
+printf 'BRIDGE_HTTPS_EXIT=%s\n' "$?"
+```
 
-Настройка моста не меняет DNS домена панели и адреса HTTPS-подписки. Если исходная
-панель напрямую недоступна, для первого входа/импорта используйте рабочее
-подключение; после подключения к новому VPN панель и подписка могут загружаться
-через него. Обычный VLESS URI, уже импортированный в клиент, не требует повторного
-скачивания подписки при каждом подключении.
+**Ожидаемый результат:** `HTTP=200 TCP=<время больше 0> TLS=<время больше 0>`, затем `BRIDGE_HTTPS_EXIT=0`. Браузер и подписка от этой команды автоматически через мост не переключаются.
 
-Не меняйте вручную HTTPS-ссылку подписки на IP моста и не отключайте проверку TLS:
-сертификат выдан домену панели. Отдельный постоянный домен для панели через мост
-потребует согласованной настройки DNS и сертификата; это не происходит при выдаче
-обычного VLESS-профиля. Успешный `curl --connect-to` — разовая диагностическая
-проверка, он не меняет настройки браузера или клиента.
+## 16. Проверить обычные профили TCP/Vision и XHTTP
 
-## Диагностика и возврат предыдущей конфигурации
+**Действие:** откройте **«Устройства → устройство американского выходного VPS → Профиль»**. В **«Формат профиля»** выберите **«VLESS · TCP + REALITY + Vision (URI и QR)»**, нажмите **«Скопировать ссылку»**. Импортируйте ссылку в Private Gateway Client или другой совместимый клиент. Включите системный VPN/TUN, чтобы следующая команда тоже шла через VPN. Старый специальный JSON-профиль SOCKS5-цепочки удалите из клиента; обычная ссылка его настройки автоматически не снимает.
 
-**В SSH на VPS-мосте**:
+После проверки TCP/Vision отключите его. В том же диалоге выберите **«VLESS · XHTTP + REALITY (URI и QR)»**, скопируйте и импортируйте отдельную ссылку, затем подключите ее в системном VPN/TUN-режиме. Для этого нужен клиент с поддержкой XHTTP + REALITY. Выполните ту же проверку отдельно для XHTTP.
+
+**Где:** браузер с панелью → указанный диалог; затем VPN-клиент компьютера. Ссылку с ключом устройства в чат не отправляйте.
+
+**Проверка:** после подключения, Git Bash компьютера:
+
+```bash
+curl.exe -q -4 --proxy '' --noproxy '*' --connect-timeout 5 --max-time 10 \
+  --fail --silent --show-error --write-out '\nHTTP=%{http_code}\n' https://api.ipify.org/
+```
+
+**Ожидаемый результат:**
+
+```text
+162.35.172.6
+HTTP=200
+```
+
+Откройте несколько HTTPS-сайтов. Виден IP американского выхода, а не моста. Одного успешного ответа TCP или `/readyz` для подтверждения работы VLESS недостаточно.
+
+Тот же результат нужен для XHTTP. Это две обычные ссылки с разными входными портами. Автоматическое переключение не добавляется; Hysteria2 и XHTTP H3/UDP этот мост не передает. TCP/Vision и XHTTP работают в отдельных процессах, но сеть и ресурсы VPS у них общие.
+
+## 17. Проверить телефон и нужные сети
+
+**Действие:** импортируйте обе обычные ссылки на телефон и подключите их по очереди. Повторите на компьютере и телефоне через нужные МТС, Теле2 и домашний Wi-Fi.
+
+**Где:** VPN-клиенты устройств; браузер каждого устройства → `https://api.ipify.org/`.
+
+**Проверка:** на Windows повторите команду шага 16 для каждого транспорта. На телефоне откройте `https://api.ipify.org/` и несколько HTTPS-сайтов.
+
+**Ожидаемый результат:** IP `162.35.172.6` и работающие сайты на каждом проверенном сочетании сети, устройства и транспорта. Измерьте скорость и задержку полной цепочки; российское размещение и тариф VPS не гарантируют доступность и прежнюю скорость.
+
+## 18. Собрать диагностику при ошибке
+
+**Действие:**
 
 ```bash
 sudo docker compose -p private-gateway-bridge -f /etc/private-gateway-bridge/compose.json ps
@@ -305,15 +450,21 @@ sudo docker compose -p private-gateway-bridge -f /etc/private-gateway-bridge/com
 sudo ss -ltnp
 ```
 
-Не включайте полный лог пользовательских соединений ради обычной диагностики.
-Состояние `healthy` проверяет процесс/конфигурацию, а не авторизацию VLESS или
-доступность сайтов. Для подтверждения работы нужны проверки шага 5.
+**Где:** SSH VPS-моста. Состояние: `/etc/private-gateway-bridge/installed.json`; предыдущее после успешного изменения: `/etc/private-gateway-bridge/previous.json`.
 
-При неудачном автоматическом откате установщик пишет отдельное сообщение.
-Не удаляйте файлы `/etc/private-gateway-bridge`: `installed.json` хранит текущие
-назначения, `previous.json` — предыдущие после успешного изменения, `compose-*.json`
-и `configs/` позволяют их восстановить. Чтобы вернуть предыдущее назначение,
-**на мосту** сохраните его в файл и повторите проверенный установщик:
+**Проверка:** сверьте состояния и порты, повторите сетевые проверки шагов 3, 14 и 16.
+
+**Ожидаемый результат:** в рабочем состоянии — оба сервиса `running/healthy`, слушатели 443/8444, реальный профиль дает IP выхода. При ошибке отправьте результаты без VLESS-ссылок, паролей и закрытых ключей. Не удаляйте `/etc/private-gateway-bridge` и не включайте полный журнал пользовательских соединений.
+
+## 19. Необязательно: восстановить прежнюю конфигурацию
+
+**Действие:** после успешного изменения убедитесь, что прежнее состояние существует:
+
+```bash
+sudo test -s /etc/private-gateway-bridge/previous.json && printf 'PREVIOUS_CONFIG_EXISTS\n'
+```
+
+Только при `PREVIOUS_CONFIG_EXISTS` выполните:
 
 ```bash
 sudo python3 - <<'PY' > "$HOME/bridge-previous.json"
@@ -322,12 +473,21 @@ from pathlib import Path
 data = json.loads(Path('/etc/private-gateway-bridge/previous.json').read_text())
 print(json.dumps(data['config'], indent=2))
 PY
-cd "$HOME/private-gateway-bridge-install"
-sudo bash install/install-bridge.sh --archive release.tar.gz --config "$HOME/bridge-previous.json"
+sudo bash "$HOME/private-gateway-bridge-install/install/install-bridge.sh" \
+  --archive "$HOME/private-gateway-bridge-install/release.tar.gz" \
+  --config "$HOME/bridge-previous.json" --check
 ```
 
-В панели затем верните те же адреса и порты. Если предыдущего файла ещё нет,
-восстанавливать нечего: исправьте исходный `bridge.json` после проверки ошибки.
+После успешной проверки запустите:
 
-Техническая основа: [TCP mode HAProxy](https://docs.haproxy.org/3.2/configuration.html#4.2-mode)
-и [host networking Docker](https://docs.docker.com/engine/network/drivers/host/).
+```bash
+sudo bash "$HOME/private-gateway-bridge-install/install/install-bridge.sh" \
+  --archive "$HOME/private-gateway-bridge-install/release.tar.gz" \
+  --config "$HOME/bridge-previous.json"
+```
+
+**Где:** SSH VPS-моста; файл восстановления — `$HOME/bridge-previous.json`. При первой установке прежней конфигурации нет. При ошибке запуска установщик сам пробует откат; сообщение `Automatic bridge rollback failed. Inspect the retained files and containers.` требует разбора сохраненного состояния.
+
+**Проверка:** повторите список контейнеров из шага 13 и подключение с устройства. Если настройки сайта уже изменены, верните там прежние адрес/порты, обновите подписку либо URI.
+
+**Ожидаемый результат:** `tcp running healthy` и `xhttp running healthy` для конфигурации с двумя транспортами; реальное подключение дает IP нужного выходного VPS.
