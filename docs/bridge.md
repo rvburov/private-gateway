@@ -1,8 +1,9 @@
 ## 1. Подключиться к отдельному VPS-мосту и проверить ОС
 
-**Действие:** арендуйте чистый VPS: Ubuntu 26.04 amd64, публичный IPv4, пользователь с `sudo`. Начальная конфигурация для личной нагрузки — 1 vCPU и 1 ГБ RAM. Запишите IP, SSH-порт и пользователя. Полноценный выходной VPS добавляется по [другой инструкции](node-setup.md).
+**Действие:** арендуйте чистый VPS: Ubuntu 26.04 amd64, публичный IPv4. Начальная конфигурация для личной нагрузки — 1 vCPU и 1 ГБ RAM. Запишите IP и SSH-порт. Полноценный выходной VPS добавляется по [другой инструкции](node-setup.md).
 
-Настройте вход по [SSH-ключу: создание, установка открытой части и проверка](ssh-access.md).
+Выполните [первую настройку доступа: консоль хостинга, создание пользователя
+`pgbridge`, права `sudo`, SSH-ключ и проверка входа](ssh-access.md).
 SSH-ключ используется для управления мостом. VPN-ключи REALITY остаются на
 американском выходном VPS; на мосту новые пары REALITY не создаются.
 
@@ -10,7 +11,7 @@ SSH-ключ используется для управления мостом. 
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
-bridge_user='SSH_ПОЛЬЗОВАТЕЛЬ'
+bridge_user='pgbridge'
 bridge_ssh_port='22'
 bridge_key="$HOME/.ssh/private_gateway_bridge_ed25519"
 ssh -i "$bridge_key" -o IdentitiesOnly=yes -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
@@ -284,7 +285,7 @@ printf 'ARTIFACT_PATH=%s\n' "$artifact"
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
-bridge_user='SSH_ПОЛЬЗОВАТЕЛЬ'
+bridge_user='pgbridge'
 bridge_ssh_port='22'
 bridge_key="$HOME/.ssh/private_gateway_bridge_ed25519"
 artifact="$HOME/Downloads/private-gateway-linux-amd64"
