@@ -41,6 +41,23 @@ json_quote() {
   REPLY="${output}\""
 }
 
+# Имя адаптера Windows бывает кириллическим. Сохраняем UTF-8, запрещаем
+# управляющие ASCII-байты; строгий ASCII-разбор полей VLESS остаётся прежним.
+json_quote_interface() {
+  local input=$1 output='"' character i
+  [[ -n $input && ${#input} -le 256 ]] || return 1
+  for (( i=0; i<${#input}; i++ )); do
+    character=${input:i:1}
+    [[ $character != [[:cntrl:]] ]] || return 1
+    case $character in
+      '"') output+='\"' ;;
+      '\') output+='\\' ;;
+      *) output+=$character ;;
+    esac
+  done
+  REPLY="${output}\""
+}
+
 valid_dns_name() {
   local rest=$1 label
   [[ ${#rest} -le 253 && $rest == *.* ]] || return 1
@@ -250,12 +267,13 @@ show_help() {
   cat <<'HELP'
 Проверка обычного VLESS/TCP Vision через VPS-мост отдельным Windows Xray.
 Перед запуском выключите все VPN и блок при обрыве. Права администратора не нужны.
-Запуск в Git Bash: bash diagnose-vless-windows-direct.sh [--app-targets] [путь-к-xray.exe]
+Запуск в Git Bash: bash diagnose-vless-windows-direct.sh [--app-targets] [--interface ИМЯ] [путь-к-xray.exe]
 По умолчанию ядро берётся из установленного Private Gateway.
 Принимается TCP/Vision профиль 87.199.131.176:443; ссылка вводится скрыто.
 Временный SOCKS слушает только 127.0.0.1; службы, маршруты и системный прокси не меняются.
 Дополнительно можно задать PG_DIAG_LOCAL_PORT (свободный порт 1024–65535).
 --app-targets: после api.ipify.org проверить адреса Cloudflare из приложения (по 10 с).
+--interface ИМЯ: привязать только сокет временного Xray к точному имени адаптера Windows.
 HELP
 }
 
@@ -265,17 +283,27 @@ main() {
   set -o pipefail
   export LC_ALL=C
   if [[ $# == 1 && $1 == --help ]]; then show_help; return 0; fi
-  local app_targets=false requested_xray='' argument
-  for argument in "$@"; do
+  local app_targets=false requested_xray='' argument interface_json='' outside_binding=off
+  while (( $# > 0 )); do
+    argument=$1
     case $argument in
       --app-targets)
         [[ $app_targets == false ]] || { fail 'параметр --app-targets указан повторно.'; return 1; }
         app_targets=true ;;
+      --interface)
+        [[ $outside_binding == off && $# -ge 2 && $2 != --* ]] || {
+          fail 'после --interface нужно одно имя адаптера; повтор параметра не допускается.'; return 1;
+        }
+        json_quote_interface "$2" || { fail 'недопустимое имя адаптера Windows.'; return 1; }
+        interface_json=',"sockopt":{"interface":'"$REPLY"'}'
+        outside_binding=on
+        shift ;;
       --*) fail 'неизвестный параметр; используйте --help.'; return 1 ;;
       *)
         [[ -z $requested_xray ]] || { fail 'укажите только один путь к xray.exe.'; return 1; }
         requested_xray=$argument ;;
     esac
+    shift
   done
   local xray=${requested_xray:-${PG_DIAG_XRAY:-}} candidate profile config response curl_exit port version_output
   local quoted_uuid quoted_sni quoted_fp quoted_pbk quoted_sid quoted_spx
@@ -293,6 +321,7 @@ main() {
   done
   version_output=$("$xray" version 2>/dev/null) || { fail 'не удалось проверить версию Xray.'; return 1; }
   printf 'XRAY_VERSION=%s\n' "${version_output%%$'\n'*}"
+  printf 'OUTSIDE_BINDING=%s\n' "$outside_binding"
   XRAY_PID=''
   SAVED_TTY=$(stty -g </dev/tty 2>/dev/null) || { fail 'нужен обычный интерактивный Git Bash.'; return 1; }
   trap cleanup EXIT
@@ -313,8 +342,9 @@ main() {
   json_quote "$PROFILE_SPX" || return 1; quoted_spx=$REPLY
   choose_port || return 1
   port=$REPLY
-  printf -v config '{"log":{"loglevel":"none","access":"none"},"inbounds":[{"listen":"127.0.0.1","port":%d,"protocol":"socks","settings":{"auth":"noauth","udp":false}}],"outbounds":[{"tag":"vpn","protocol":"vless","settings":{"vnext":[{"address":"87.199.131.176","port":%d,"users":[{"id":%s,"encryption":"none","flow":"xtls-rprx-vision"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":%s,"fingerprint":%s,"publicKey":%s,"shortId":%s,"spiderX":%s}}}]}' \
-    "$port" "$PROFILE_PORT" "$quoted_uuid" "$quoted_sni" "$quoted_fp" "$quoted_pbk" "$quoted_sid" "$quoted_spx"
+  printf -v config '{"log":{"loglevel":"none","access":"none"},"inbounds":[{"listen":"127.0.0.1","port":%d,"protocol":"socks","settings":{"auth":"noauth","udp":false}}],"outbounds":[{"tag":"vpn","protocol":"vless","settings":{"vnext":[{"address":"87.199.131.176","port":%d,"users":[{"id":%s,"encryption":"none","flow":"xtls-rprx-vision"}]}]},"streamSettings":{"network":"tcp","security":"reality","realitySettings":{"serverName":%s,"fingerprint":%s,"publicKey":%s,"shortId":%s,"spiderX":%s}%s}}]}' \
+    "$port" "$PROFILE_PORT" "$quoted_uuid" "$quoted_sni" "$quoted_fp" "$quoted_pbk" "$quoted_sid" "$quoted_spx" "$interface_json"
+  unset interface_json
   unset PROFILE_UUID PROFILE_PORT PROFILE_SNI PROFILE_FP PROFILE_PBK PROFILE_SID PROFILE_SPX
   unset quoted_uuid quoted_sni quoted_fp quoted_pbk quoted_sid quoted_spx
   if ! printf '%s' "$config" | "$xray" run -test -format json -config stdin: >/dev/null 2>&1; then

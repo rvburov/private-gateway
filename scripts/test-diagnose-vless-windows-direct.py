@@ -116,7 +116,9 @@ if url != "https://api.ipify.org/":
     print(secret, file=sys.stderr)
     raise SystemExit(code)
 (root / "curl-args.json").write_text(json.dumps(args))
-if mode == "curl_fail":
+config = json.loads((root / "configs.jsonl").read_text().splitlines()[-1])
+bound = "interface" in config["outbounds"][0]["streamSettings"].get("sockopt", {})
+if mode == "curl_fail" or (mode == "interface_curl_fail" and bound):
     print(os.environ["MOCK_SECRET"], file=sys.stderr)
     print(os.environ["MOCK_SECRET"])
     raise SystemExit(28)
@@ -134,7 +136,8 @@ class WindowsDirectTests(unittest.TestCase):
             path.write_text(content)
             path.chmod(0o755)
 
-    def run_probe(self, profile=PROFILE, mode="pass", foreign_pid="", interrupt=False, app_targets=False):
+    def run_probe(self, profile=PROFILE, mode="pass", foreign_pid="", interrupt=False, app_targets=False,
+                  extra_args=(), trailing_args=()):
         env = os.environ.copy()
         env.update(PATH=str(self.root) + os.pathsep + env["PATH"], MOCK_ROOT=str(self.root),
                    MOCK_MODE=mode, MOCK_SECRET=PROFILE, MOCK_FOREIGN_PID=foreign_pid,
@@ -144,7 +147,8 @@ class WindowsDirectTests(unittest.TestCase):
             args = ["bash", str(SCRIPT)]
             if app_targets:
                 args.append("--app-targets")
-            os.execve("/bin/bash", args + [str(self.root / "xray.exe")], env)
+            args.extend(extra_args)
+            os.execve("/bin/bash", args + [str(self.root / "xray.exe"), *trailing_args], env)
         content = bytearray()
         supplied = False
         deadline = time.monotonic() + 15
@@ -202,6 +206,7 @@ class WindowsDirectTests(unittest.TestCase):
     def test_preserves_profile_and_uses_only_one_loopback_proxy(self):
         code, output = self.run_probe()
         self.assertEqual(code, 0, output)
+        self.assertIn("OUTSIDE_BINDING=off", output)
         self.assertIn("RESULT=PASS", output)
         configs = [json.loads(row) for row in (self.root / "configs.jsonl").read_text().splitlines()]
         self.assertEqual(len(configs), 2)
@@ -223,6 +228,80 @@ class WindowsDirectTests(unittest.TestCase):
         self.assertIn("--fail", curl)
         self.assertNotIn("--insecure", curl)
         self.assertNotIn("-k", curl)
+
+    def test_unicode_interface_is_the_only_config_difference(self):
+        code, output = self.run_probe()
+        self.assertEqual(code, 0, output)
+        baseline = json.loads((self.root / "configs.jsonl").read_text().splitlines()[-1])
+        for name in ("xray.pid", "configs.jsonl", "curl-args.json", "curl-args.jsonl"):
+            (self.root / name).unlink(missing_ok=True)
+
+        interface = "Беспроводная сеть"
+        code, output = self.run_probe(extra_args=("--interface", interface), app_targets=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn("OUTSIDE_BINDING=on", output)
+        self.assertNotIn(interface, output)
+        self.assertIn("APP_TARGETS_RESULT=PASS", output)
+        configs = [json.loads(row) for row in (self.root / "configs.jsonl").read_text().splitlines()]
+        self.assertEqual(len(configs), 2)
+        self.assertEqual(configs[0], configs[1])
+        expected = json.loads(json.dumps(baseline))
+        expected["outbounds"][0]["streamSettings"]["sockopt"] = {"interface": interface}
+        self.assertEqual(configs[0], expected)
+
+    def test_interface_quotes_backslash_and_utf8_byte_boundary_are_encoded_safely(self):
+        for interface in ('Wi-Fi "bridge"\\adapter', "я" * 128):
+            with self.subTest(interface_bytes=len(interface.encode())):
+                for name in ("xray.pid", "configs.jsonl", "curl-args.json", "curl-args.jsonl"):
+                    (self.root / name).unlink(missing_ok=True)
+                code, output = self.run_probe(trailing_args=("--interface", interface, "--app-targets"))
+                self.assertEqual(code, 0, output)
+                self.assertIn("OUTSIDE_BINDING=on", output)
+                self.assertNotIn(interface, output)
+                self.assertIn("APP_TARGETS_RESULT=PASS", output)
+                configs = [json.loads(row) for row in (self.root / "configs.jsonl").read_text().splitlines()]
+                self.assertEqual(len(configs), 2)
+                self.assertEqual(configs[0], configs[1])
+                self.assertEqual(configs[0]["outbounds"][0]["streamSettings"]["sockopt"],
+                                 {"interface": interface})
+
+    def test_interface_invalid_values_are_rejected_before_core_start(self):
+        invalid = ("", "bridge\nforbidden", "bridge\tforbidden", "bridge\x7fforbidden",
+                   "bridge\x01forbidden", "x" * 257, "я" * 129)
+        for interface in invalid:
+            with self.subTest(interface_bytes=len(interface.encode())):
+                code, output = self.run_probe(trailing_args=("--interface", interface))
+                self.assertNotEqual(code, 0, output)
+                self.assertNotIn("STAGE=xray_running", output)
+                self.assertNotIn("RESULT=PASS", output)
+                self.assertNotIn("forbidden", output)
+                self.assertFalse((self.root / "configs.jsonl").exists())
+                self.assertFalse((self.root / "xray.pid").exists())
+                self.assertFalse((self.root / "curl-args.jsonl").exists())
+        code, output = self.run_probe(trailing_args=("--interface",))
+        self.assertNotEqual(code, 0, output)
+        self.assertNotIn("STAGE=xray_running", output)
+        self.assertFalse((self.root / "configs.jsonl").exists())
+
+    def test_binding_failure_does_not_change_unbound_result_or_leak_child_output(self):
+        code, output = self.run_probe(mode="interface_curl_fail", app_targets=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn("OUTSIDE_BINDING=off", output)
+        self.assertIn("APP_TARGETS_RESULT=PASS", output)
+        for name in ("xray.pid", "configs.jsonl", "curl-args.json", "curl-args.jsonl"):
+            (self.root / name).unlink(missing_ok=True)
+        interface = "Беспроводная сеть"
+        code, output = self.run_probe(mode="interface_curl_fail", app_targets=True,
+                                      extra_args=("--interface", interface))
+        self.assertNotEqual(code, 0, output)
+        self.assertIn("OUTSIDE_BINDING=on", output)
+        self.assertNotIn(interface, output)
+        self.assertIn("CURL_EXIT=28", output)
+        self.assertNotIn("BASELINE_RESULT=PASS", output)
+        self.assertNotIn("APP_TARGET=", output)
+        self.assertNotIn("RESULT=PASS", output)
+        requests = [json.loads(row) for row in (self.root / "curl-args.jsonl").read_text().splitlines()]
+        self.assertEqual([request[-1] for request in requests], ["https://api.ipify.org/"])
 
     def test_rejects_xhttp_duplicate_and_wrong_endpoint(self):
         for profile in (PROFILE.replace("type=tcp", "type=xhttp"),
