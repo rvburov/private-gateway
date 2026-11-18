@@ -74,13 +74,14 @@ for name in ("compose.yml", "compose.xhttp.yml", "compose.xhttp-legacy.yml", "co
              "render-caddy.py", "render-node-caddy.py", "haproxy.cfg.template", "Dockerfile.api", "Dockerfile.node", "Dockerfile.xray",
              "Dockerfile.browser", "browser-worker.py", "xray-worker.py", "wait-xray.py",
              "vpn-smoke.py", "change-reality-target.py", "rotate-admin-token.py", "admin-credentials.py", "configure-xhttp.py", "configure-proxy.py",
-             "image-tags.py", "release-ports.py", "install.sh", "install-node.sh", "install-bridge.sh", "bridge.py", "upgrade-updater.sh", "update.sh"):
+             "image-tags.py", "release-ports.py", "install.sh", "install-node.sh", "install-bridge.sh", "prepare-vps.sh", "setup-node.py", "bridge.py", "upgrade-updater.sh", "update.sh"):
     source = Path("deploy/docker") / name
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Docker release file must be regular: {source}")
     (payload / "docker").mkdir(exist_ok=True)
     shutil.copyfile(source, payload / "docker" / name)
 shutil.copyfile(Path("scripts/verify-release.py"), payload / "docker/verify-release.py")
+shutil.copyfile(Path("scripts/setup-vps.sh"), payload / "docker/setup-vps.sh")
 required = {"bin/gateway-api", "bin/gatewayctl", "bin/gateway-node", "bin/xray", "web/index.html",
             "browser/start.sh", "browser/healthcheck.sh", "browser/smoke.py",
             "docker/compose.yml", "docker/compose.xhttp.yml", "docker/compose.xhttp-legacy.yml", "docker/compose.xhttp-h3.yml",
@@ -90,7 +91,7 @@ required = {"bin/gateway-api", "bin/gatewayctl", "bin/gateway-node", "bin/xray",
             "docker/xray-worker.py", "docker/wait-xray.py", "docker/vpn-smoke.py",
             "docker/change-reality-target.py", "docker/rotate-admin-token.py", "docker/admin-credentials.py", "docker/configure-xhttp.py", "docker/configure-proxy.py",
             "docker/image-tags.py", "docker/release-ports.py", "docker/install.sh", "docker/install-node.sh", "docker/install-bridge.sh", "docker/bridge.py", "docker/update.sh",
-            "docker/verify-release.py"}
+            "docker/verify-release.py", "docker/prepare-vps.sh", "docker/setup-node.py", "docker/setup-vps.sh"}
 files = {path.relative_to(payload).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
          for path in sorted(payload.rglob("*")) if path.is_file()}
 if not required <= files.keys():
@@ -112,6 +113,7 @@ checksum = hashlib.sha256(archive_path.read_bytes()).hexdigest()
 # Файлы первой установки не содержат созданных ключей и локальных файлов окружения.
 install = temporary / "install"
 for source in (Path("deploy/docker/install.sh"), Path("deploy/docker/install-node.sh"), Path("deploy/docker/install-bridge.sh"),
+               Path("deploy/docker/prepare-vps.sh"), Path("deploy/docker/setup-node.py"), Path("scripts/setup-vps.sh"),
                Path("deploy/docker/upgrade-updater.sh"), Path("scripts/verify-release.py")):
     if not stat.S_ISREG(source.lstat().st_mode):
         raise SystemExit(f"Installer source must be a regular file: {source}")
@@ -119,7 +121,7 @@ for source in (Path("deploy/docker/install.sh"), Path("deploy/docker/install-nod
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, target)
 if not all((install / name).is_file() for name in
-           ("install.sh", "install-node.sh", "install-bridge.sh", "upgrade-updater.sh", "verify-release.py")):
+           ("install.sh", "install-node.sh", "install-bridge.sh", "prepare-vps.sh", "setup-node.py", "setup-vps.sh", "upgrade-updater.sh", "verify-release.py")):
     raise SystemExit("The Docker installer and release verifier are required")
 destination_install = output / "install"
 if destination_install.is_symlink() or (destination_install.exists() and not destination_install.is_dir()):
