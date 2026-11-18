@@ -177,15 +177,85 @@ cleanup() {
   return "$result"
 }
 
+# Сравниваются адреса приложения, но не его TUN, WFP или HTTP-клиент .NET.
+# Тело ответа и ошибки curl не печатаются: для trace оставляем только проверенный IP.
+check_app_targets() {
+  local port=$1 label url response curl_exit metrics body http tcp tls total line trace_ip
+  local reached result failed=0
+  printf 'APP_TARGETS_BEGIN\n'
+  for label in health trace; do
+    case $label in
+      health) url='https://cp.cloudflare.com/generate_204' ;;
+      trace) url='https://1.1.1.1/cdn-cgi/trace' ;;
+    esac
+    printf 'APP_TARGET=%s URL=%s\n' "$label" "$url"
+    # Без --fail: приложение считает ответом любой HTTP-код проверочного сайта.
+    if response=$(curl.exe -q -4 --silent --http1.1 --proto '=https' \
+        --proxy "socks5h://127.0.0.1:$port" --noproxy '' \
+        --connect-timeout 10 --max-time 10 --max-filesize 4096 \
+        --write-out '\nPG_METRICS:%{http_code}:%{time_connect}:%{time_appconnect}:%{time_total}' \
+        "$url" 2>/dev/null); then
+      curl_exit=0
+    else
+      curl_exit=$?
+    fi
+    printf 'APP_CURL_EXIT=%d\n' "$curl_exit"
+    metrics=${response##*$'\n'}
+    if [[ $response != *$'\n'* || ! $metrics =~ ^PG_METRICS:([0-9]{3}):([0-9]+[.][0-9]+):([0-9]+[.][0-9]+):([0-9]+[.][0-9]+)$ ]]; then
+      printf 'APP_METRICS=INVALID\nAPP_TARGET_RESULT=FAIL\n'
+      failed=1
+      continue
+    fi
+    http=${BASH_REMATCH[1]}
+    tcp=${BASH_REMATCH[2]}
+    tls=${BASH_REMATCH[3]}
+    total=${BASH_REMATCH[4]}
+    body=${response%$'\n'*}
+    printf 'APP_HTTP=%s APP_TCP=%s APP_TLS=%s APP_TOTAL=%s\n' "$http" "$tcp" "$tls" "$total"
+    reached=no
+    [[ $http =~ ^[1-5][0-9]{2}$ ]] && reached=yes
+    printf 'APP_HTTP_REACHED=%s\n' "$reached"
+    result=FAIL
+    if [[ $label == health ]]; then
+      # .NET заканчивает проверку по заголовкам. Тайм-аут чтения тела curl после
+      # полученного HTTP-ответа не объявляем отказом такой проверки приложения.
+      [[ $reached == yes ]] && result=PASS
+    elif (( curl_exit == 0 )) && [[ $http == 2[0-9][0-9] ]]; then
+      trace_ip=''
+      while IFS= read -r line; do
+        line=${line%$'\r'}
+        if [[ $line == ip=* ]] && valid_ipv4 "${line#ip=}"; then
+          trace_ip=${line#ip=}
+          break
+        fi
+      done <<< "$body"
+      if [[ -n $trace_ip ]]; then
+        printf 'APP_PUBLIC_IP=%s\n' "$trace_ip"
+        [[ $trace_ip == 162.35.172.6 ]] && result=PASS
+      fi
+    fi
+    kill -0 "$XRAY_PID" 2>/dev/null || result=FAIL
+    printf 'APP_TARGET_RESULT=%s\n' "$result"
+    [[ $result == PASS ]] || failed=1
+  done
+  if (( failed == 0 )); then
+    printf 'APP_TARGETS_RESULT=PASS\n'
+    return 0
+  fi
+  printf 'APP_TARGETS_RESULT=FAIL\n'
+  return 1
+}
+
 show_help() {
   cat <<'HELP'
 Проверка обычного VLESS/TCP Vision через VPS-мост отдельным Windows Xray.
 Перед запуском выключите все VPN и блок при обрыве. Права администратора не нужны.
-Запуск в Git Bash: bash diagnose-vless-windows-direct.sh [путь-к-xray.exe]
+Запуск в Git Bash: bash diagnose-vless-windows-direct.sh [--app-targets] [путь-к-xray.exe]
 По умолчанию ядро берётся из установленного Private Gateway.
 Принимается TCP/Vision профиль 87.199.131.176:443; ссылка вводится скрыто.
 Временный SOCKS слушает только 127.0.0.1; службы, маршруты и системный прокси не меняются.
 Дополнительно можно задать PG_DIAG_LOCAL_PORT (свободный порт 1024–65535).
+--app-targets: после api.ipify.org проверить адреса Cloudflare из приложения (по 10 с).
 HELP
 }
 
@@ -195,8 +265,19 @@ main() {
   set -o pipefail
   export LC_ALL=C
   if [[ $# == 1 && $1 == --help ]]; then show_help; return 0; fi
-  [[ $# -le 1 ]] || { fail 'укажите только путь к xray.exe.'; return 1; }
-  local xray=${1:-${PG_DIAG_XRAY:-}} candidate profile config response curl_exit port version_output
+  local app_targets=false requested_xray='' argument
+  for argument in "$@"; do
+    case $argument in
+      --app-targets)
+        [[ $app_targets == false ]] || { fail 'параметр --app-targets указан повторно.'; return 1; }
+        app_targets=true ;;
+      --*) fail 'неизвестный параметр; используйте --help.'; return 1 ;;
+      *)
+        [[ -z $requested_xray ]] || { fail 'укажите только один путь к xray.exe.'; return 1; }
+        requested_xray=$argument ;;
+    esac
+  done
+  local xray=${requested_xray:-${PG_DIAG_XRAY:-}} candidate profile config response curl_exit port version_output
   local quoted_uuid quoted_sni quoted_fp quoted_pbk quoted_sid quoted_spx
   if [[ -z $xray ]]; then
     for candidate in \
@@ -259,6 +340,10 @@ main() {
   valid_ipv4 "$response" || { fail 'сервис проверки IP вернул неверный адрес.'; return 1; }
   printf 'PUBLIC_IP=%s\n' "$response"
   [[ $response == 162.35.172.6 ]] || { fail 'адрес выхода не совпал с адресом VPS.'; return 1; }
+  if [[ $app_targets == true ]]; then
+    printf 'BASELINE_RESULT=PASS\n'
+    check_app_targets "$port" || return 1
+  fi
   printf 'RESULT=PASS\n'
 }
 
