@@ -2,13 +2,18 @@
 
 **Действие:** арендуйте чистый VPS: Ubuntu 26.04 amd64, публичный IPv4, пользователь с `sudo`. Начальная конфигурация для личной нагрузки — 1 vCPU и 1 ГБ RAM. Запишите IP, SSH-порт и пользователя. Полноценный выходной VPS добавляется по [другой инструкции](node-setup.md).
 
+Настройте вход по [SSH-ключу: создание, установка открытой части и проверка](ssh-access.md).
+SSH-ключ используется для управления мостом. VPN-ключи REALITY остаются на
+американском выходном VPS; на мосту новые пары REALITY не создаются.
+
 Выключите все VPN и их настройку «Блок при обрыве / Kill Switch». Подставьте данные нового VPS:
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
 bridge_user='SSH_ПОЛЬЗОВАТЕЛЬ'
 bridge_ssh_port='22'
-ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
+bridge_key="$HOME/.ssh/private_gateway_bridge_ed25519"
+ssh -i "$bridge_key" -o IdentitiesOnly=yes -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
 ```
 
 При первом входе сверьте отпечаток SSH с консолью хостинга.
@@ -281,11 +286,12 @@ printf 'ARTIFACT_PATH=%s\n' "$artifact"
 bridge_ip='IP_НОВОГО_VPS'
 bridge_user='SSH_ПОЛЬЗОВАТЕЛЬ'
 bridge_ssh_port='22'
+bridge_key="$HOME/.ssh/private_gateway_bridge_ed25519"
 artifact="$HOME/Downloads/private-gateway-linux-amd64"
-ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" 'mkdir -p "$HOME/private-gateway-bridge-install"'
-scp -P "$bridge_ssh_port" "$artifact/release.tar.gz" "$artifact/release.tar.gz.sha256" \
+ssh -i "$bridge_key" -o IdentitiesOnly=yes -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" 'mkdir -p "$HOME/private-gateway-bridge-install"'
+scp -i "$bridge_key" -o IdentitiesOnly=yes -P "$bridge_ssh_port" "$artifact/release.tar.gz" "$artifact/release.tar.gz.sha256" \
   "$HOME/Downloads/bridge.json" "$bridge_user@$bridge_ip:private-gateway-bridge-install/"
-scp -P "$bridge_ssh_port" -r "$artifact/install" \
+scp -i "$bridge_key" -o IdentitiesOnly=yes -P "$bridge_ssh_port" -r "$artifact/install" \
   "$bridge_user@$bridge_ip:private-gateway-bridge-install/"
 ```
 
@@ -294,7 +300,7 @@ scp -P "$bridge_ssh_port" -r "$artifact/install" \
 **Проверка:**
 
 ```bash
-ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" \
+ssh -i "$bridge_key" -o IdentitiesOnly=yes -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" \
   'test -s "$HOME/private-gateway-bridge-install/bridge.json" && test -s "$HOME/private-gateway-bridge-install/release.tar.gz" && test -s "$HOME/private-gateway-bridge-install/install/install-bridge.sh" && printf "BRIDGE_UPLOAD_OK\n"'
 ```
 
@@ -305,7 +311,7 @@ ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip" \
 **Действие:** в Git Bash подключитесь:
 
 ```bash
-ssh -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
+ssh -i "$bridge_key" -o IdentitiesOnly=yes -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
 ```
 
 Затем в SSH:
