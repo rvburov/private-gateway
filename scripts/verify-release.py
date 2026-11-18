@@ -73,8 +73,10 @@ def verify_tar(path, version, architecture="amd64"):
             if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
                 raise ValueError("Invalid file checksum")
             with archive.extractfile(member) as source:
-                actual = hashlib.file_digest(source, "sha256").hexdigest()
-            if actual != digest:
+                actual = hashlib.sha256()
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    actual.update(chunk)
+            if actual.hexdigest() != digest:
                 raise ValueError(f"Release file checksum mismatch: {name}")
 
 

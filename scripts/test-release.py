@@ -11,6 +11,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 sys.dont_write_bytecode = True
@@ -62,6 +63,16 @@ class ReleaseTests(unittest.TestCase):
         target = self.verify()
         self.assertEqual(target.name, "release.tar.gz")
         self.assertEqual([p.name for p in target.parent.iterdir()], ["release.tar.gz"])
+
+    def test_large_payload_without_python_311_file_digest(self):
+        content = b"release payload\n" * (128 * 1024)
+        with patch.object(verifier.hashlib, "file_digest", None, create=True):
+            target = self.verify(
+                payload_change=lambda files: files.update({"web/index.html": content}),
+                manifest_change=lambda manifest: manifest["files"].update(
+                    {"web/index.html": hashlib.sha256(content).hexdigest()}),
+            )
+            self.assertEqual(verifier.verify_standalone_tar(target), VERSION)
 
     def test_archive_checksum_mismatch(self):
         with self.assertRaisesRegex(ValueError, "Archive checksum mismatch"):

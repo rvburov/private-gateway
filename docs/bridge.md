@@ -1,17 +1,21 @@
 ## 1. Подключиться к отдельному VPS-мосту и проверить ОС
 
-**Действие:** арендуйте чистый VPS: Ubuntu 26.04 amd64, публичный IPv4. Начальная конфигурация для личной нагрузки — 1 vCPU и 1 ГБ RAM. Запишите IP и SSH-порт. Полноценный выходной VPS добавляется по [другой инструкции](node-setup.md).
+**Действие:** подготовьте отдельный VPS: Ubuntu 22.04/24.04/26.04 amd64, публичный IPv4. Начальная конфигурация для личной нагрузки — 1 vCPU и 1 ГБ RAM. Запишите IP и SSH-порт. Для Ubuntu 22.04 нужен новый артефакт с поддержкой Python 3.10; прежний установщик с `hashlib.file_digest` несовместим. Полноценный выходной VPS добавляется по [другой инструкции](node-setup.md).
 
-Выполните [первую настройку доступа: консоль хостинга, создание пользователя
-`pgbridge`, права `sudo`, SSH-ключ и проверка входа](ssh-access.md).
+Если уже есть пользователь с `sudo`, выполните [настройку SSH под существующей
+учетной записью](ssh-existing-user.md). При `romanburov@49649` используйте
+`bridge_user='romanburov'`; при `ubuntu@...` — `bridge_user='ubuntu'`.
+Если учетную запись еще нужно создать, используйте [создание `pgbridge` и SSH-ключа](ssh-access.md).
 SSH-ключ используется для управления мостом. VPN-ключи REALITY остаются на
 американском выходном VPS; на мосту новые пары REALITY не создаются.
 
-Выключите все VPN и их настройку «Блок при обрыве / Kill Switch». Подставьте данные нового VPS:
+Выключите все VPN и их настройку «Блок при обрыве / Kill Switch». Подставьте данные нового VPS.
+Вместо `ИМЯ_ИЗ_НАСТРОЙКИ_SSH` укажите реальную учетную запись, проверенную
+предыдущей инструкцией: `romanburov`, `ubuntu` или созданного `pgbridge`:
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
-bridge_user='pgbridge'
+bridge_user='ИМЯ_ИЗ_НАСТРОЙКИ_SSH'
 bridge_ssh_port='22'
 bridge_key="$HOME/.ssh/private_gateway_bridge_ed25519"
 ssh -i "$bridge_key" -o IdentitiesOnly=yes -p "$bridge_ssh_port" "$bridge_user@$bridge_ip"
@@ -40,6 +44,9 @@ printf 'ARCH=%s\n' "$(uname -m)"
 OS=ubuntu VERSION=26.04
 ARCH=x86_64
 ```
+
+Версия `22.04` или `24.04` для отдельного моста также допустима. Это не меняет
+требования Ubuntu 26.04 для основного стека панели и выходного VPS.
 
 ## 2. Установить утилиты
 
@@ -285,7 +292,7 @@ printf 'ARTIFACT_PATH=%s\n' "$artifact"
 
 ```bash
 bridge_ip='IP_НОВОГО_VPS'
-bridge_user='pgbridge'
+bridge_user='ИМЯ_ИЗ_НАСТРОЙКИ_SSH'
 bridge_ssh_port='22'
 bridge_key="$HOME/.ssh/private_gateway_bridge_ed25519"
 artifact="$HOME/Downloads/private-gateway-linux-amd64"

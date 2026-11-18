@@ -31,11 +31,15 @@ python3 - "$archive" "$checksum" <<'PY'
 import hashlib, pathlib, re, sys
 archive, checksum = map(pathlib.Path, sys.argv[1:])
 expected = checksum.read_text().strip()
+if (archive.name != 'release.tar.gz' or
+        not re.fullmatch(r'[0-9a-f]{64}  release\.tar\.gz', expected)):
+    raise SystemExit('Release checksum mismatch.')
 with archive.open('rb') as source:
-    if (archive.name != 'release.tar.gz' or
-            not re.fullmatch(r'[0-9a-f]{64}  release\.tar\.gz', expected) or
-            hashlib.file_digest(source, 'sha256').hexdigest() != expected[:64]):
-        raise SystemExit('Release checksum mismatch.')
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: source.read(1024 * 1024), b''):
+        digest.update(chunk)
+if digest.hexdigest() != expected[:64]:
+    raise SystemExit('Release checksum mismatch.')
 PY
 version=$(python3 "$script_dir/verify-release.py" --tar "$archive")
 [[ $version =~ ^[0-9a-f]{40}$ ]] || fail 'Release identity is invalid.'
