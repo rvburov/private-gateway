@@ -102,6 +102,7 @@ npm run build
 - [Архитектура и масштабирование](docs/architecture.md)
 - [Развёртывание, ключи и резервные копии](docs/deployment.md)
 - [Автоматическая настройка VPS-моста и выходного VPN-сервера](docs/setup-vps.md)
+- [Сеть VPS: восстановление IPv4, метрики и проверка после перезагрузки](docs/vps-network.md)
 - [OpenAPI 3.1](docs/openapi.yaml)
 - [Проверки IP, DNS, IPv6, WebRTC и kill switch](docs/privacy-checks.md)
 - [Импорт в совместимые клиенты](docs/clients.md)
